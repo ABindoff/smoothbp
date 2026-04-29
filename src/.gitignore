@@ -1,0 +1,9 @@
+*.o
+*.so
+*.dll
+target/
+rust/vendor/
+Makevars
+Makevars.win
+# .cargo/config.toml is intentionally tracked — needed for devtools::load_all()
+

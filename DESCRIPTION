@@ -1,0 +1,32 @@
+Package: smoothbp
+Title: Hierarchical Piecewise Regression with Smoothed Change-Points
+Version: 0.1.0
+Authors@R:
+    person("smoothbp", "Authors", , "author@example.com", role = c("aut", "cre"))
+Description: Fits Bayesian hierarchical piecewise regression models with a
+    logistic-smoothed change-point. Non-linear parameters (change-point location
+    and transition sharpness) and linear parameters can each be conditioned on
+    covariates and factors via flexible design matrices. A random-intercept
+    structure is supported for any parameter. Posterior inference uses a
+    Metropolis-within-Gibbs sampler implemented in Rust for speed.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Config/rextendr/version: 0.5.0
+SystemRequirements: Cargo (Rust's package manager), rustc >= 1.65.0
+Depends:
+    R (>= 4.2)
+Imports:
+    posterior,
+    ggplot2,
+    rlang,
+    stats,
+    methods
+Suggests:
+    testthat (>= 3.0.0),
+    withr,
+    knitr,
+    rmarkdown
+Config/testthat/edition: 3
+VignetteBuilder: knitr

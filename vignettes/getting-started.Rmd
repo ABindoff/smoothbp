@@ -1,0 +1,354 @@
+---
+title: "Getting Started with smoothbp"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with smoothbp}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+## Overview
+
+`smoothbp` fits hierarchical piecewise regression models in which the
+transition between two linear regimes is smoothed by a logistic sigmoid.
+The observation-level mean function is:
+
+$$
+\mu_i = b0_i + b1_i(\tau_i - \omega_i) + b2_i(\tau_i - \omega_i)\,\sigma\!\left[(\tau_i - \omega_i)\rho_i\right]
+$$
+
+where
+
+| Symbol | Role |
+|--------|------|
+| $\tau$ | time / covariate |
+| $\omega$ | change-point location |
+| $\rho$ | transition sharpness ($\rho \to \infty$ → hard kink) |
+| $b0$ | level at the change-point |
+| $b1$ | pre-change slope |
+| $b1 + b2$ | post-change slope (asymptotically) |
+
+Each of $b0$, $b1$, $b2$, $\omega$, $\rho$ has its own linear predictor
+specified via a formula. $b0$ may also include a random intercept
+`(1 | group)` for clustered / repeated-measures data.
+
+Posterior inference uses a **Metropolis-within-Gibbs sampler written in
+Rust** for speed:
+
+- $b0$, $b1$, $b2$, random intercepts — exact Gibbs (conjugate normal,
+  non-centred reparameterisation for random effects).
+- $\omega$, $\rho$ — random-walk Metropolis with adaptive step sizes
+  during warmup targeting ~23% acceptance.
+- $\sigma$, $\sigma_u$ — exact Gibbs (inverse-gamma conjugate).
+
+---
+
+## Simulating data
+
+`simulate_smoothbp()` generates synthetic data from the model.  It is
+useful for testing and for understanding how the parameters relate to the
+observable trajectory shape.
+
+```{r simulate}
+library(smoothbp)
+
+dat <- simulate_smoothbp(
+  n_subj    = 20,
+  n_obs     = 8,
+  b0        = 5.0,   # level at change-point
+  b1        = -0.3,  # pre-change slope
+  b2        =  1.2,  # change in slope
+  omega     =  3.0,  # change-point location
+  rho       =  4.0,  # transition sharpness
+  sigma     =  0.4,  # residual SD
+  sigma_u   =  0.5,  # between-subject SD
+  tau_range = c(0, 6),
+  seed      = 42
+)
+
+head(dat)
+#>   subject       tau       mu        y
+#> 1       1 0.0000000 6.588... 7.107...
+#> ...
+
+# Inspect the data-generating values
+true_params(dat)
+#> Data-generating parameters:
+#>   b0:        5
+#>   b1:        -0.3
+#>   ...
+```
+
+The returned data frame carries the true values as an attribute:
+
+```{r true-params-attr}
+attr(dat, "true_params")
+```
+
+Unbalanced designs are supported by passing a vector to `n_obs`:
+
+```{r unbalanced}
+dat_unbal <- simulate_smoothbp(n_subj = 10, n_obs = c(4, 6, 8, 5, 7, 6, 8, 4, 5, 6))
+```
+
+---
+
+## Fitting the model
+
+Pass a two-sided formula identifying the response and time variable, then
+one one-sided formula per parameter component.
+
+```{r fit}
+fit <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),   # random intercept per subject
+  b1      = ~ 1,
+  b2      = ~ 1,
+  omega   = ~ 1,
+  rho     = ~ 1,
+  data    = dat,
+  priors  = smoothbp_priors(
+    omega = prior_normal(3, 2, lb = 0)
+  ),
+  chains  = 4L,
+  iter    = 2000L,
+  warmup  = 1000L,
+  seed    = 42L
+)
+```
+
+### Progress bar
+
+While sampling, each chain prints an ASCII progress bar that distinguishes
+warmup from sampling:
+
+```
+Chain 1/4
+  Chain 1/4 [                    ]   0%  (warmup  )  iter 0/2000
+  Chain 1/4 [~~                  ]  10%  (warmup  )  iter 200/2000
+  ...
+  Chain 1/4 [~~~~~~~~~~          ]  50%  (sampling)  iter 1000/2000
+  Chain 1/4 [~~~~~~~~~~==        ]  60%  (sampling)  iter 1200/2000
+  ...
+  Chain 1/4 [~~~~~~~~~~==========] 100%  (done    )  iter 2000/2000
+```
+
+`~` marks the warmup portion; `=` marks post-warmup sampling.  Pass
+`.verbose = FALSE` to suppress output.
+
+### Parallel chains
+
+By default chains run sequentially with the full progress bar.  Pass
+`cores` to run them in parallel using Rayon:
+
+```{r fit-parallel}
+fit <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),
+  data    = dat,
+  priors  = smoothbp_priors(omega = prior_normal(3, 2, lb = 0)),
+  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L,
+  cores   = 4L    # run all 4 chains concurrently
+)
+#> Running 4 chains in parallel on 4 thread(s)...
+#> All 4 chains complete.
+```
+
+The per-iteration progress bar is suppressed in parallel mode (interleaved
+output from multiple threads would be unreadable); only the start/done
+messages are printed.  Results are **identical** to the sequential run for
+the same `seed` — each chain's seed is derived deterministically.
+
+To make parallel the default for a project, add this to `.Rprofile`:
+
+```{r rprofile, eval=FALSE}
+options(smoothbp.cores = parallel::detectCores())
+```
+
+### Posterior summary
+
+`print()` displays results in labelled sections; `summary()` returns a
+data frame.  The `effects` argument (accepted by both) filters which
+parameters are shown — mirroring `brms`:
+
+```{r summary}
+print(fit)                               # all sections (default)
+print(fit, effects = "fixed")            # population-level only
+summary(fit, effects = "fixed")          # same, as a data frame
+summary(fit, effects = c("fixed", "ran_pars"))  # fixed + sigma_u, no u[j]
+summary(fit, effects = "ran_vals")       # individual u[j] only
+```
+
+| `effects` value | Parameters shown |
+|-----------------|-----------------|
+| `"fixed"` | Regression coefficients + $\sigma$ |
+| `"ran_pars"` | Random-effect SD $\sigma_u$ |
+| `"ran_vals"` | Individual deviations $u_j$ |
+| `"all"` | Everything (default) |
+
+---
+
+## Diagnostics
+
+### Trace plots with mixing indicators
+
+`trace_plot()` annotates each panel with $\hat{R}$ and bulk-ESS, and
+highlights poorly mixing parameters with a red background.
+
+```{r trace}
+trace_plot(fit)
+```
+
+Parameters with $\hat{R} > 1.05$ or bulk-ESS $< 100$ are flagged with a
+⚠ symbol in the panel header, a red-tinted background, and a warning
+message listing the affected parameters.  The thresholds are adjustable:
+
+```{r trace-strict}
+trace_plot(fit, rhat_thresh = 1.01, ess_thresh = 400)
+```
+
+`type = "density"` or `type = "both"` produces posterior density overlays
+instead of (or alongside) the trace:
+
+```{r density}
+trace_plot(fit, type = "both")
+```
+
+`plot(fit)` is a convenient alias for `trace_plot(fit)`.
+
+### Posterior predictive check
+
+```{r pp-check}
+pp_check(fit)
+```
+
+Overlays the marginal predictive densities from 50 posterior draws over
+the observed response density.
+
+---
+
+## Parameter recovery
+
+When fitting a model to data from `simulate_smoothbp()`, use
+`recovery_plot()` to compare the posterior against the known truth.
+
+```{r recovery}
+recovery_plot(fit, dat)
+```
+
+Each row shows one population-level parameter:
+
+- **Filled circle** — posterior mean
+- **Horizontal line** — 95% credible interval (width set by `level`)
+- **×** — true data-generating value
+- **Green** — interval contains truth; **red** — interval misses truth
+
+The subtitle reports the overall coverage count and turns red if any
+interval misses the truth.
+
+```{r recovery-90}
+recovery_plot(fit, dat, level = 0.90)
+```
+
+---
+
+## Prior specification
+
+`smoothbp_priors()` accepts either a single prior applied to all
+coefficients of a component, or a named list for per-coefficient overrides.
+All priors are truncated normal (via `prior_normal()`) or inverse-gamma
+(via `prior_invgamma()`).
+
+```{r priors}
+smoothbp_priors(
+  b0    = prior_normal(0, 10),
+  b1    = prior_normal(0, 5),
+  b2    = prior_normal(0, 5),
+  omega = list(
+    "(Intercept)"    = prior_normal(3, 2, lb = 0, ub = 6),
+    "groupTreatment" = prior_normal(0, 2)
+  ),
+  rho   = prior_normal(4, 2, lb = 0),
+  sigma = prior_invgamma(shape = 2, scale = 1)
+)
+```
+
+The `lb` and `ub` arguments to `prior_normal()` impose hard bounds.
+`omega` should always have `lb = 0` (it is a location on the time axis).
+`rho` should have `lb = 0` (sharpness must be positive).
+
+---
+
+## Hypothesis tests and evidence ratios
+
+`hypothesis()` evaluates directional hypotheses and linear contrasts directly
+against the posterior draws.
+
+```{r hypothesis-directional}
+# Is the change in slope positive?
+hypothesis(fit, "b2_(Intercept) > 0")
+
+# Does the change-point fall before time 4?
+hypothesis(fit, "omega_(Intercept) < 4")
+```
+
+Multiple hypotheses can be tested in one call:
+
+```{r hypothesis-multiple}
+hypothesis(fit, c(
+  "b2_(Intercept) > 0",
+  "b1_(Intercept) < 0",
+  "omega_(Intercept) < 4",
+  "b2_(Intercept) - b1_(Intercept) > 0"
+))
+```
+
+Passing an expression **without** a comparison operator returns the full
+posterior summary of that derived quantity:
+
+```{r hypothesis-contrast}
+# Posterior distribution of the net slope change
+hypothesis(fit, "b2_(Intercept) - b1_(Intercept)")
+```
+
+### How evidence ratios are computed
+
+For a directional hypothesis $H: A > B$ the function:
+
+1. Computes the contrast $c = A - B$ for every posterior draw.
+2. Reports $P(H) = P(c > 0)$ and the **evidence ratio**
+   $ER = P(H) \,/\, (1 - P(H))$.
+
+For $H: A < B$ the contrast is reversed so $P(H) = P(B - A > 0)$.  The
+reported `Estimate` and credible interval always describe the contrast
+(direction-adjusted), making it easy to see both the magnitude and the
+uncertainty of the effect alongside the probability.
+
+| Stars | ER | $P(H)$ |
+|-------|----|--------|
+| `***` | > 99 | > 0.99 |
+| `**` | > 19 | > 0.95 |
+| `*`  | > 3  | > 0.75 |
+
+Point-null tests ($H: \theta = 0$) are not supported because they require
+the Savage-Dickey density ratio.  For equivalence testing use
+`bayestestR::rope()` on `posterior_draws(fit)`.
+
+---
+
+## Extracting results
+
+```{r extract}
+# Full draws_array (posterior package format)
+posterior_draws(fit)
+
+# Fitted values with 95% CI per observation
+fitted(fit)
+
+# Fitted draws matrix (n_draws × n_obs) — for custom summaries
+fitted(fit, summary = FALSE)
+```
