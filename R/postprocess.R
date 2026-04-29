@@ -337,7 +337,49 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
   om_parsed  <- .parse_re(object$omega_formula)
   rho_parsed <- .parse_re(object$rho_formula)
 
-  mk_mm <- function(fml, dat) stats::model.matrix(fml, data = dat)
+  # Build a model matrix for newdata, recovering factor levels and scale()
+  # parameters from the training data.
+  #
+  # Issue 1: When newdata holds a constant numeric column (e.g. mean(x)),
+  # scale() computes sd = 0 and returns NaN; na.omit then drops every row.
+  # Solution: pass NAs through and replace them using training means/SDs.
+  #
+  # Issue 2: When newdata has a factor with fewer levels than training data
+  # (e.g. Sex = 'Female' only), model.matrix fails on contrasts.
+  # Solution: coerce all factors in newdata to use training-data levels first.
+  mk_mm <- function(fml, dat) {
+    # Align factor levels with training data
+    for (col in names(dat)) {
+      if (col %in% names(object$data)) {
+        train_col <- object$data[[col]]
+        if (is.factor(train_col)) {
+          dat[[col]] <- factor(dat[[col]], levels = levels(train_col))
+        }
+      }
+    }
+
+    old_na <- getOption("na.action")
+    options(na.action = "na.pass")
+    on.exit(options(na.action = old_na), add = TRUE)
+    mm <- stats::model.matrix(fml, data = dat)
+
+    nan_cols <- which(colSums(is.nan(mm)) > 0)
+    if (length(nan_cols) > 0) {
+      for (j in nan_cols) {
+        col_nm  <- colnames(mm)[j]
+        raw_var <- sub("^scale\\((.+)\\)$", "\\1", col_nm)
+        if (raw_var != col_nm && raw_var %in% names(object$data) &&
+            raw_var %in% names(dat)) {
+          train_mean <- mean(object$data[[raw_var]], na.rm = TRUE)
+          train_sd   <- stats::sd(object$data[[raw_var]], na.rm = TRUE)
+          mm[, j] <- (dat[[raw_var]] - train_mean) / train_sd
+        } else {
+          mm[is.nan(mm[, j]), j] <- 0
+        }
+      }
+    }
+    mm
+  }
 
   X_b0  <- mk_mm(b0_parsed$fixed,  newdata)
   X_b1  <- mk_mm(b1_parsed$fixed,  newdata)
@@ -381,6 +423,115 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
   )
 }
 
+#' Log-likelihood for smoothbp_fit objects
+#'
+#' Computes the pointwise log-likelihood matrix for leave-one-out
+#' cross-validation and model comparison. Each row is a posterior draw;
+#' each column is an observation.
+#'
+#' @param x A \code{smoothbp_fit} object.
+#' @param ... Unused.
+#' @return A matrix of dimensions (n_draws × n_obs) with log-likelihood values.
+#'   Rows are posterior draws, columns are observations.
+#' @details
+#' The model likelihood is normal: \eqn{y_i ~ N(\mu_i, \sigma^2)}.
+#' This function returns \eqn{\log p(y_i | \mu_i, \sigma)} for each
+#' observation and posterior draw.
+#' @examples
+#' \dontrun{
+#' ll <- log_lik(fit)
+#' dim(ll)  # n_draws × n_obs
+#'
+#' # Use with loo package for model comparison
+#' loo::loo(ll)
+#' }
+#' @export
+log_lik.smoothbp_fit <- function(x, ...) {
+  y_obs <- as.double(x$data[[x$response]])
+  n_obs <- length(y_obs)
+
+  # Fitted draws: n_draws × n_obs matrix of μᵢ
+  fit_draws <- fitted(x, summary = FALSE)
+  n_draws <- nrow(fit_draws)
+
+  # Sigma draws: vector of length n_draws
+  draw_mat <- posterior::as_draws_matrix(x$draws)
+  sigma_draws <- as.numeric(draw_mat[, "sigma"])
+
+  # Log-likelihood matrix: dnorm(y, μ, σ, log = TRUE)
+  ll_matrix <- matrix(0, nrow = n_draws, ncol = n_obs)
+  for (i in seq_len(n_obs)) {
+    ll_matrix[, i] <- stats::dnorm(
+      y_obs[i],
+      mean = fit_draws[, i],
+      sd = sigma_draws,
+      log = TRUE
+    )
+  }
+
+  ll_matrix
+}
+
+#' Leave-one-out cross-validation for smoothbp_fit objects
+#'
+#' Computes leave-one-out information criterion (LOO-IC) using Pareto
+#' smoothed importance sampling (PSIS). Compatible with
+#' \code{\link[loo]{loo_compare}} for model comparison, including comparisons
+#' with \code{brmsfit} objects (which also return \code{psis_loo} objects from
+#' their own \code{loo()} method).
+#'
+#' For Bayes factor comparisons (rather than predictive comparisons), see
+#' \code{\link{bayes_factor.smoothbp_fit}}.
+#'
+#' @param x A \code{smoothbp_fit} object.
+#' @param ... Additional arguments passed to \code{\link[loo]{loo}}.
+#' @return An object of class \code{psis_loo} (from the \code{loo} package).
+#' @examples
+#' \dontrun{
+#' loo_fit <- loo(fit)
+#'
+#' # Compare two smoothbp models
+#' loo::loo_compare(loo(fit1), loo(fit2))
+#'
+#' # Compare a smoothbp model with a brmsfit
+#' library(brms)
+#' fit_linear <- brm(y ~ tau + (1|subject), data = d)
+#' loo::loo_compare(loo(fit_piece), loo(fit_linear))
+#' }
+#' @export
+loo.smoothbp_fit <- function(x, ...) {
+  if (!requireNamespace("loo", quietly = TRUE)) {
+    stop("The 'loo' package is required for LOO-IC computation.")
+  }
+  ll <- log_lik(x)
+  loo::loo(ll, ...)
+}
+
+#' Watanabe-Akaike information criterion for smoothbp_fit objects
+#'
+#' Computes WAIC for model comparison and assessment.
+#'
+#' @param x A \code{smoothbp_fit} object.
+#' @param ... Additional arguments passed to \code{\link[loo]{waic}}.
+#' @return An object of class \code{waic} (from the \code{loo} package).
+#' @examples
+#' \dontrun{
+#' waic_fit <- waic(fit)
+#'
+#' # Compare two smoothbp models
+#' loo::loo_compare(waic(fit1), waic(fit2))
+#' }
+#' @export
+waic.smoothbp_fit <- function(x, ...) {
+  if (!requireNamespace("loo", quietly = TRUE)) {
+    stop("The 'loo' package is required for WAIC computation.")
+  }
+  ll <- log_lik(x)
+  loo::waic(ll, ...)
+}
+
+pp_check <- function(object, ...) UseMethod("pp_check")
+
 #' Posterior predictive check (density overlay)
 #'
 #' Overlays densities of a random sample of posterior predictive draws over the
@@ -390,9 +541,6 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
 #' @param n_draws Number of predictive draws to overlay. Default 50.
 #' @param ... Unused.
 #' @return A \code{ggplot} object.
-#' @export
-pp_check <- function(object, ...) UseMethod("pp_check")
-
 #' @export
 pp_check.smoothbp_fit <- function(object, n_draws = 50, ...) {
   y_obs  <- as.double(object$data[[object$response]])

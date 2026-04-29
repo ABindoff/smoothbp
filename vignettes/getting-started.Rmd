@@ -340,6 +340,177 @@ the Savage-Dickey density ratio.  For equivalence testing use
 
 ---
 
+## Model comparison
+
+### Leave-one-out cross-validation (LOO-IC)
+
+Compare models using leave-one-out cross-validation with Pareto smoothed
+importance sampling:
+
+```{r loo}
+# Compute LOO-IC for a single model
+loo1 <- loo(fit)
+
+# Fit an alternative model and compare
+fit2 <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ Group + (1 | subject),  # different formula
+  b1      = ~ 1,
+  b2      = ~ 1,
+  omega   = ~ 1,
+  rho     = ~ 1,
+  data    = dat,
+  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
+)
+
+loo2 <- loo(fit2)
+
+# Compare: negative elpd_diff favours the first model
+loo::loo_compare(loo1, loo2)
+#>       elpd_diff se_diff
+#> fit1    0.0      0.0
+#> fit2  -45.2     10.8  # model 1 is preferred
+```
+
+Negative `elpd_diff` indicates that the first model has better expected
+log predictive density (higher is better).
+
+### Watanabe-Akaike Information Criterion (WAIC)
+
+Alternatively, use WAIC for model comparison:
+
+```{r waic}
+waic1 <- waic(fit)
+waic2 <- waic(fit2)
+
+loo::loo_compare(waic1, waic2)
+```
+
+### Comparing smoothbp and brms models
+
+Because both `loo.smoothbp_fit` and `loo.brmsfit` return `psis_loo` objects,
+`loo::loo_compare()` works directly across packages:
+
+```{r loo-cross-package}
+library(brms)
+
+fit_linear <- brm(
+  y ~ tau + (1 | subject),
+  data      = dat,
+  chains    = 4L, iter = 2000L, warmup = 1000L, seed = 42L,
+  save_pars = save_pars(all = TRUE)  # required for bridge sampling
+)
+
+# LOO comparison: smoothbp (piecewise) vs brms (linear)
+loo::loo_compare(loo(fit), loo(fit_linear))
+#>            elpd_diff se_diff
+#> model1       0.0       0.0
+#> fit_linear -22.9       4.6   # piecewise model preferred
+```
+
+A negative `elpd_diff` for `fit_linear` indicates the smoothbp model has
+better expected log predictive density.
+
+### Bayes factors via bridge sampling
+
+LOO quantifies **predictive** performance.  For **posterior model
+probabilities** (Bayes factors), use bridge sampling.  The Bayes factor
+BF10 = p(data | model 1) / p(data | model 2) penalises model complexity
+automatically through the prior (Occam's razor), and so can be more
+decisive than LOO when models differ substantially in their number of
+parameters.
+
+#### Computing the Bayes factor
+
+The package registers a `bridge_sampler.smoothbp_fit` method that integrates
+with the [bridgesampling](https://cran.r-project.org/package=bridgesampling)
+package:
+
+```{r bridge-sampler}
+library(bridgesampling)
+
+# Compute log marginal likelihoods
+bs_piece  <- bridge_sampler(fit)          # smoothbp model
+bs_linear <- bridge_sampler(fit_linear)   # brms model (save_pars required)
+
+# Bayes factor: piecewise (numerator) vs linear (denominator)
+bayes_factor(bs_piece, bs_linear)
+#> Estimated Bayes factor in favor of x1 over x2: 2699738
+```
+
+Alternatively, use the convenience wrapper that handles both types:
+
+```{r bayes-factor-wrapper}
+# Dispatches on the first argument; smoothbp model must be first
+bayes_factor(fit, fit_linear)
+```
+
+#### Assessing reliability with error_measures()
+
+Bridge sampling is a stochastic approximation.  Always check the
+uncertainty of the log marginal likelihood estimate before interpreting
+the Bayes factor:
+
+```{r error-measures}
+error_measures(bs_piece)
+#> $re2        # relative squared error
+#> [1] 0.011
+#>
+#> $cv         # coefficient of variation (ideal: < 0.05)
+#> [1] 0.106
+#>
+#> $percentage # expressed as a percentage
+#> [1] "11%"
+```
+
+| `cv` value | Interpretation |
+|---|---|
+| < 5% | Reliable estimate |
+| 5–15% | Moderate uncertainty; increase iterations if possible |
+| > 15% | Unreliable; consider more iterations or use LOO instead |
+
+A high CV most commonly means the MCMC chains did not fully explore the
+posterior — check `trace_plot()` and increase `iter` before trusting the
+Bayes factor.
+
+#### When the change-point is weakly identified
+
+When data are close to linear, the change-point parameters ($\omega$, $\rho$)
+become weakly identified, chains mix poorly, and bridge sampling estimates
+carry high uncertainty.  In this situation, LOO-IC is a more robust
+comparison tool because it only requires the pointwise log-likelihood:
+
+```{r loo-vs-bf}
+# Check mixing before computing Bayes factors
+trace_plot(fit, params = c("b2_(Intercept)", "omega_(Intercept)"))
+
+# If Rhat > 1.05 or bulk-ESS < 400, prefer LOO over Bayes factors
+loo::loo_compare(loo(fit), loo(fit_linear))
+```
+
+#### Two smoothbp models
+
+The same workflow applies when both models are `smoothbp_fit` objects:
+
+```{r bf-two-smoothbp}
+fit_grouped <- smoothbp(
+  y ~ tau,
+  b0     = ~ group + (1 | subject),   # group effect on intercept
+  data   = dat,
+  chains = 4L, iter = 2000L, warmup = 1000L, seed = 43L
+)
+
+# Compare: random-effects-only vs group-effect model
+bs_base    <- bridge_sampler(fit)
+bs_grouped <- bridge_sampler(fit_grouped)
+
+bayes_factor(bs_base, bs_grouped)
+error_measures(bs_base)
+error_measures(bs_grouped)
+```
+
+---
+
 ## Extracting results
 
 ### Posterior draws
