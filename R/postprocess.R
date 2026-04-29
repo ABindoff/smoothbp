@@ -181,21 +181,74 @@ posterior_draws.smoothbp_fit <- function(x, ...) x$draws
 
 #' Compute fitted (posterior mean) values for each observation
 #'
+#' Computes the posterior distribution of the latent mean \eqn{\mu_i} at each
+#' observation. By default, fitted values are computed for the observations in
+#' the training data. A \code{newdata} argument allows evaluation at arbitrary
+#' covariate combinations, enabling marginal (population-level) or conditional
+#' (group-specific) predictions.
+#'
 #' @param object A \code{smoothbp_fit} object.
 #' @param newdata Optional data frame of new observations at which to evaluate
-#'   the model. Must contain the time variable and any covariates used in the
-#'   model formulas. If the random-effect grouping variable is present in
-#'   \code{newdata} and its levels match those seen during fitting, the
-#'   corresponding group-level deviations are included (conditional prediction).
-#'   If the grouping variable is absent, predictions are population-level only
-#'   (marginal prediction, \eqn{u_j = 0}). Defaults to \code{NULL}, in which
-#'   case the original training data are used.
-#' @param summary Logical; if \code{TRUE} (default) return posterior mean and
-#'   95% credible interval per observation. If \code{FALSE} return a matrix of
-#'   draws (n_draws × n_obs).
+#'   the model. Must contain:
+#'   \describe{
+#'     \item{The time variable}{Required; covariate values at which predictions
+#'       are needed.}
+#'     \item{Covariates in model formulas}{Any variables appearing in the
+#'       \code{b0}, \code{b1}, \code{b2}, \code{omega}, or \code{rho} formulas.}
+#'     \item{Random effect grouping variable (optional)}{If the grouping variable
+#'       (e.g. from \code{(1 | group)} in the \code{b0} formula) is present and
+#'       its levels match those in the training data, corresponding group-level
+#'       deviations are included (conditional prediction). If absent or contains
+#'       unknown levels, predictions are population-level only (marginal
+#'       prediction, with \eqn{u_j = 0}).}
+#'   }
+#'   Defaults to \code{NULL}, in which case predictions are computed for the
+#'   original training data observations.
+#' @param summary Logical; if \code{TRUE} (default) return a data frame with
+#'   posterior mean and 95\% credible interval per observation. If \code{FALSE}
+#'   return a matrix of n_draws × n_obs posterior draws, useful for custom
+#'   summaries or visualization.
 #' @param ... Unused.
-#' @return A data frame (if \code{summary = TRUE}) or matrix of draws
-#'   (n_draws × n_obs).
+#' @return
+#'   \describe{
+#'     \item{If \code{summary = TRUE}}{A data frame with columns:
+#'       \describe{
+#'         \item{\code{.observation}}{Row index (1 to n).}
+#'         \item{\code{fitted_mean}}{Posterior mean of \eqn{\mu_i}.}
+#'         \item{\code{fitted_Q2.5}}{2.5\% posterior quantile (lower credible limit).}
+#'         \item{\code{fitted_Q97.5}}{97.5\% posterior quantile (upper credible limit).}
+#'       }}
+#'     \item{If \code{summary = FALSE}}{A matrix of posterior draws with
+#'       dimensions n_draws × n_obs, suitable for custom summaries or
+#'       integration with other packages.}
+#'   }
+#' @examples
+#' \dontrun{
+#' # Fitted values at training observations (conditional on subjects)
+#' fitted(fit)
+#'
+#' # Population-level predictions at new time points
+#' # (omit the grouping variable for marginal predictions)
+#' newdata_marginal <- data.frame(
+#'   time  = seq(0, 10, by = 0.5),
+#'   group = "Control"
+#' )
+#' fitted(fit, newdata = newdata_marginal)
+#'
+#' # Subject-specific predictions
+#' # (include the grouping variable for conditional predictions)
+#' newdata_conditional <- data.frame(
+#'   time    = seq(0, 10, by = 0.5),
+#'   group   = "Control",
+#'   subject = "SUBJ001"
+#' )
+#' fitted(fit, newdata = newdata_conditional)
+#'
+#' # Posterior draws for custom summaries
+#' draws_mat <- fitted(fit, summary = FALSE)
+#' # e.g. P(fitted value > 5) per observation
+#' colMeans(draws_mat > 5)
+#' }
 #' @export
 fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
 

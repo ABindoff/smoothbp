@@ -19,6 +19,7 @@ smoothbp(
   seed = NULL,
   step_om = 0.3,
   step_rho = 0.3,
+  cores = getOption("smoothbp.cores", 1L),
   .verbose = TRUE
 )
 }
@@ -56,6 +57,13 @@ Tuned automatically during warmup. Default 0.3.}
 
 \item{step_rho}{Initial Metropolis step size for \eqn{\rho} coefficients.
 Default 0.3.}
+
+\item{cores}{Number of CPU cores used to run chains in parallel.  When
+\code{cores > 1} all chains run concurrently via Rayon (the per-iteration
+progress bar is suppressed in this mode — only a start and done message
+are printed).  Defaults to \code{getOption("smoothbp.cores", 1L)}.  Set
+\code{options(smoothbp.cores = parallel::detectCores())} in your
+\code{.Rprofile} to make parallel the default.}
 
 \item{.verbose}{Logical; print progress messages. Default \code{TRUE}.}
 }

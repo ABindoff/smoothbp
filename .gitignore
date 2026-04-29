@@ -18,3 +18,4 @@ src/rust/vendor/
 # Vignette build output
 vignettes/*.html
 vignettes/*.R
+.positai

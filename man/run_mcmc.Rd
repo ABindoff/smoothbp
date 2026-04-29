@@ -32,7 +32,9 @@ run_mcmc(
   chains,
   iter,
   warmup,
-  seed
+  seed,
+  verbose,
+  n_cores
 )
 }
 \arguments{
@@ -91,16 +93,16 @@ run_mcmc(
 \item{warmup}{Number of warmup iterations discarded.}
 
 \item{seed}{Integer random seed.}
+
+\item{verbose}{Print progress to the R console.}
+
+\item{n_cores}{Number of threads for parallel chain execution.
+1 = sequential (with progress bar); > 1 = parallel
+(progress bar suppressed; chains run concurrently).}
 }
 \value{
 List with one matrix per chain (rows = post-warmup draws, cols = parameters).
 }
 \description{
-The observation-level mean function is:
-mu_i = b0_i + b1_i*(tau_i-omega_i) + b2_i*(tau_i-omega_i)*sigmoid((tau_i-omega_i)*rho_i)
-}
-\details{
-Each of b0, b1, b2, omega, rho gets its own design matrix passed as a
-flat column-major numeric vector together with its number of columns (nrow
-is inferred from length(y)).
+Run Metropolis-within-Gibbs sampler for the smooth change-point model.
 }

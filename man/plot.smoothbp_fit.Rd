@@ -2,7 +2,7 @@
 % Please edit documentation in R/plot_methods.R
 \name{plot.smoothbp_fit}
 \alias{plot.smoothbp_fit}
-\title{Plot method for smoothbp_fit}
+\title{Trace and density plots for a smoothbp_fit}
 \usage{
 \method{plot}{smoothbp_fit}(x, type = "trace", pars = NULL, ...)
 }
@@ -12,15 +12,16 @@
 \item{type}{One of \code{"trace"} (default), \code{"density"}, or
 \code{"both"}.}
 
-\item{pars}{Character vector of parameter names to plot. Defaults to
+\item{pars}{Character vector of parameter names.  Defaults to all
 non-random-effect parameters.}
 
-\item{...}{Unused.}
+\item{...}{Passed to \code{\link{trace_plot}}.}
 }
 \value{
-A \code{ggplot} object (or list of two when \code{type = "both"}).
+A \code{ggplot} object, or a named list of two when
+\code{type = "both"}.
 }
 \description{
-Produces trace plots and marginal posterior density plots for selected
-parameters.
+A thin wrapper around \code{\link{trace_plot}} for the standard
+\code{plot()} interface.
 }

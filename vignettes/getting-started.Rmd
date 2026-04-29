@@ -342,13 +342,72 @@ the Savage-Dickey density ratio.  For equivalence testing use
 
 ## Extracting results
 
-```{r extract}
+### Posterior draws
+
+Access the full posterior draws in `posterior` package format:
+
+```{r extract-draws}
 # Full draws_array (posterior package format)
 posterior_draws(fit)
-
-# Fitted values with 95% CI per observation
-fitted(fit)
-
-# Fitted draws matrix (n_draws × n_obs) — for custom summaries
-fitted(fit, summary = FALSE)
 ```
+
+### Fitted values
+
+Compute posterior distributions of the latent mean $\mu_i$ for each observation:
+
+```{r fitted-training}
+# Fitted values with 95% CI at training observations
+fitted(fit)
+#>   .observation fitted_mean fitted_Q2.5 fitted_Q97.5
+#> 1            1      6.420      6.120       6.720
+#> 2            2      ...
+```
+
+Access the full posterior draws instead of summaries:
+
+```{r fitted-draws}
+# Fitted draws matrix (n_draws × n_obs) — for custom summaries
+draws_mat <- fitted(fit, summary = FALSE)
+
+# Derive custom summaries, e.g. P(μ > 6) per observation
+colMeans(draws_mat > 6)
+```
+
+### Marginal predictions
+
+To obtain **population-level predictions** at arbitrary covariate values, 
+provide `newdata` **without** the random-effect grouping variable:
+
+```{r fitted-marginal}
+# New time points, no subject specified → marginal (population-level)
+newdata_marginal <- data.frame(
+  tau = seq(0, 6, by = 0.5),
+  # omit 'subject' to get population-level predictions
+)
+
+fitted(fit, newdata = newdata_marginal)
+#>   .observation fitted_mean fitted_Q2.5 fitted_Q97.5
+#> 1            1      6.310      6.010       6.610
+#> ...
+```
+
+### Conditional predictions
+
+To obtain **subject-specific (group-level) predictions**, include the 
+random-effect grouping variable in `newdata`:
+
+```{r fitted-conditional}
+# Include 'subject' → conditional predictions for that subject
+newdata_conditional <- data.frame(
+  tau     = seq(0, 6, by = 0.5),
+  subject = "1"  # must be a level from the training data
+)
+
+fitted(fit, newdata = newdata_conditional)
+#>   .observation fitted_mean fitted_Q2.5 fitted_Q97.5
+#> 1            1      6.512      6.212       6.812
+#> ...
+```
+
+Subjects not present in the training data will be treated as marginal (u = 0) 
+with a warning.
