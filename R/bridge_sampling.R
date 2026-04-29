@@ -288,13 +288,21 @@ bridge_sampler.smoothbp_fit <- function(
   }
 
   # ---- Parameter bounds ----------------------------------------------------
-  bounds   <- .smoothbp_param_bounds(fit)
-  lb_vec   <- bounds$lb[colnames(samp_mat)]
-  ub_vec   <- bounds$ub[colnames(samp_mat)]
+  # Initialise every parameter as unbounded, then overwrite with known bounds.
+  # (Using subsetting to build lb/ub can produce NA *names* for unrecognised
+  # parameters, which causes `lb[[p]] : subscript out of bounds` inside
+  # bridgesampling's .transform2Real.)
+  param_names <- colnames(samp_mat)
+  lb_vec <- stats::setNames(rep(-Inf, length(param_names)), param_names)
+  ub_vec <- stats::setNames(rep( Inf, length(param_names)), param_names)
 
-  # Replace NA (any unmapped parameters) with -Inf/Inf
-  lb_vec[is.na(lb_vec)] <- -Inf
-  ub_vec[is.na(ub_vec)] <-  Inf
+  bounds <- .smoothbp_param_bounds(fit)
+  for (nm in names(bounds$lb)) {
+    if (nm %in% param_names) {
+      lb_vec[[nm]] <- bounds$lb[[nm]]
+      ub_vec[[nm]] <- bounds$ub[[nm]]
+    }
+  }
 
   # ---- Data list for log posterior -----------------------------------------
   dm <- fit$dm
