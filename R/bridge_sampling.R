@@ -79,9 +79,10 @@
   # sigma: InvGamma => lb = 0
   lb["sigma"] <- 0; ub["sigma"] <- Inf
 
-  # Random effects and sigma_u
+  # Random effects and sigma_u.
+  # Use group_levels_b0 for u names — may be string IDs, not integers.
   if (dm$n_groups_b0 > 0) {
-    u_names <- paste0("u[", seq_len(dm$n_groups_b0), "]")
+    u_names <- paste0("u[", dm$group_levels_b0, "]")
     lb[u_names] <- -Inf
     ub[u_names] <-  Inf
     lb["sigma_u"] <- 0; ub["sigma_u"] <- Inf
@@ -129,9 +130,11 @@
   s_i  <- 1 / (1 + exp(-d_i * rho_i))
   mu_i <- b0_i + b1_i * d_i + b2_i * d_i * s_i
 
-  # Add random intercepts where available
+  # Add random intercepts where available.
+  # Use group_levels_b0 to construct names (may be string IDs, not integers).
   if (n_groups > 0) {
-    u_vals <- pars[paste0("u[", seq_len(n_groups), "]")]
+    u_names <- paste0("u[", dm$group_levels_b0, "]")
+    u_vals  <- pars[u_names]
     for (i in seq_along(y)) {
       g <- dm$group_b0[i]
       if (g >= 0L) mu_i[i] <- mu_i[i] + u_vals[g + 1L]
@@ -171,7 +174,9 @@
   # present in pars (it was stripped before calling bridge_sampler).
   if (n_groups > 0 && "sigma_u" %in% names(pars)) {
     sigma_u <- pars["sigma_u"]
-    u_vals  <- pars[paste0("u[", seq_len(n_groups), "]")]
+    # Use group_levels_b0 for names — these may be string IDs, not integers.
+    u_names <- paste0("u[", dm$group_levels_b0, "]")
+    u_vals  <- pars[u_names]
 
     # u[i] ~ N(0, sigma_u)
     lp <- lp + sum(stats::dnorm(u_vals, mean = 0, sd = sigma_u, log = TRUE))
