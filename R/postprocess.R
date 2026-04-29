@@ -182,63 +182,76 @@ posterior_draws.smoothbp_fit <- function(x, ...) x$draws
 #' Compute fitted (posterior mean) values for each observation
 #'
 #' @param object A \code{smoothbp_fit} object.
+#' @param newdata Optional data frame of new observations at which to evaluate
+#'   the model. Must contain the time variable and any covariates used in the
+#'   model formulas. If the random-effect grouping variable is present in
+#'   \code{newdata} and its levels match those seen during fitting, the
+#'   corresponding group-level deviations are included (conditional prediction).
+#'   If the grouping variable is absent, predictions are population-level only
+#'   (marginal prediction, \eqn{u_j = 0}). Defaults to \code{NULL}, in which
+#'   case the original training data are used.
 #' @param summary Logical; if \code{TRUE} (default) return posterior mean and
 #'   95% credible interval per observation. If \code{FALSE} return a matrix of
 #'   draws (n_draws × n_obs).
 #' @param ... Unused.
-#' @return A data frame or matrix.
+#' @return A data frame (if \code{summary = TRUE}) or matrix of draws
+#'   (n_draws × n_obs).
 #' @export
-fitted.smoothbp_fit <- function(object, summary = TRUE, ...) {
-  dm   <- object$dm
-  data <- object$data
-  da   <- object$draws
-  pn   <- object$param_names
+fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
 
-  y   <- as.double(data[[object$response]])
-  tau <- as.double(data[[object$time]])
-  n   <- length(y)
+  # ---- Design matrices and tau ----------------------------------------------
+  if (is.null(newdata)) {
+    dm  <- object$dm
+    tau <- as.double(object$data[[object$time]])
+  } else {
+    if (!object$time %in% names(newdata)) {
+      stop(sprintf("'newdata' must contain the time variable '%s'.", object$time))
+    }
+    tau <- as.double(newdata[[object$time]])
+    dm  <- .build_newdata_dm(object, newdata)
+  }
 
-  # Extract draw matrix: (n_draws × n_params)
-  draw_mat <- posterior::as_draws_matrix(da)
-  colnames(draw_mat) <- posterior::variables(da)
-  n_draws  <- nrow(draw_mat)
+  n <- length(tau)
 
-  p_b0      <- ncol(dm$X_b0)
-  n_groups  <- dm$n_groups_b0
-  p_b1      <- ncol(dm$X_b1)
-  p_b2      <- ncol(dm$X_b2)
-  p_om      <- ncol(dm$X_om)
-  p_rho     <- ncol(dm$X_rho)
+  # ---- Posterior draws ------------------------------------------------------
+  draw_mat  <- posterior::as_draws_matrix(object$draws)
+  col_names <- posterior::variables(object$draws)
+  n_draws   <- nrow(draw_mat)
 
-  # Column offsets in draw_mat (matching State::to_vec order)
-  off_b0  <- 0L
-  off_u   <- off_b0  + p_b0
-  off_b1  <- off_u   + n_groups
-  off_b2  <- off_b1  + p_b1
-  off_om  <- off_b2  + p_b2
-  off_rho <- off_om  + p_om
+  # Column index vectors (computed once, outside loop)
+  b0_cols  <- grepl("^b0_",    col_names)
+  b1_cols  <- grepl("^b1_",    col_names)
+  b2_cols  <- grepl("^b2_",    col_names)
+  u_cols   <- grepl("^u\\[",   col_names)
+  om_cols  <- grepl("^omega_", col_names)
+  rho_cols <- grepl("^rho_",   col_names)
 
+  n_groups <- dm$n_groups_b0
+
+  # ---- Draw loop ------------------------------------------------------------
   fitted_draws <- matrix(0, nrow = n_draws, ncol = n)
 
   for (s in seq_len(n_draws)) {
-    beta_b0  <- draw_mat[s, (off_b0  + 1):(off_b0  + p_b0)]
-    u_b0     <- if (n_groups > 0) draw_mat[s, (off_u + 1):(off_u + n_groups)] else numeric(0)
-    beta_b1  <- draw_mat[s, (off_b1  + 1):(off_b1  + p_b1)]
-    beta_b2  <- draw_mat[s, (off_b2  + 1):(off_b2  + p_b2)]
-    beta_om  <- draw_mat[s, (off_om  + 1):(off_om  + p_om)]
-    beta_rho <- draw_mat[s, (off_rho + 1):(off_rho + p_rho)]
+    # Extract parameter vectors. Subsetting a draws_matrix returns a draws
+    # object, so coerce to plain numeric.
+    beta_b0  <- as.numeric(draw_mat[s, b0_cols])
+    beta_b1  <- as.numeric(draw_mat[s, b1_cols])
+    beta_b2  <- as.numeric(draw_mat[s, b2_cols])
+    beta_om  <- as.numeric(draw_mat[s, om_cols])
+    beta_rho <- as.numeric(draw_mat[s, rho_cols])
+    u_b0     <- if (n_groups > 0) as.numeric(draw_mat[s, u_cols]) else numeric(0)
 
-    omega_i  <- as.vector(dm$X_om  %*% beta_om)
-    rho_i    <- as.vector(dm$X_rho %*% beta_rho)
-    b0_i     <- as.vector(dm$X_b0  %*% beta_b0)
-    b1_i     <- as.vector(dm$X_b1  %*% beta_b1)
-    b2_i     <- as.vector(dm$X_b2  %*% beta_b2)
+    omega_i <- as.vector(dm$X_om  %*% beta_om)
+    rho_i   <- as.vector(dm$X_rho %*% beta_rho)
+    b0_i    <- as.vector(dm$X_b0  %*% beta_b0)
+    b1_i    <- as.vector(dm$X_b1  %*% beta_b1)
+    b2_i    <- as.vector(dm$X_b2  %*% beta_b2)
 
-    d_i <- tau - omega_i
-    s_i <- 1 / (1 + exp(-d_i * rho_i))
-
+    d_i  <- tau - omega_i
+    s_i  <- 1 / (1 + exp(-d_i * rho_i))
     mu_i <- b0_i + b1_i * d_i + b2_i * d_i * s_i
 
+    # Add group-level deviations where available (g == -1L means no RE)
     if (n_groups > 0) {
       for (i in seq_len(n)) {
         g <- dm$group_b0[i]
@@ -256,6 +269,62 @@ fitted.smoothbp_fit <- function(object, summary = TRUE, ...) {
     fitted_mean  = colMeans(fitted_draws),
     fitted_Q2.5  = apply(fitted_draws, 2, stats::quantile, probs = 0.025),
     fitted_Q97.5 = apply(fitted_draws, 2, stats::quantile, probs = 0.975)
+  )
+}
+
+# ---------------------------------------------------------------------------
+# Internal: build design matrices for newdata, reusing training-data factor
+# levels for the random-effect grouping variable.
+# ---------------------------------------------------------------------------
+.build_newdata_dm <- function(object, newdata) {
+
+  b0_parsed  <- .parse_re(object$b0_formula)
+  b1_parsed  <- .parse_re(object$b1_formula)
+  b2_parsed  <- .parse_re(object$b2_formula)
+  om_parsed  <- .parse_re(object$omega_formula)
+  rho_parsed <- .parse_re(object$rho_formula)
+
+  mk_mm <- function(fml, dat) stats::model.matrix(fml, data = dat)
+
+  X_b0  <- mk_mm(b0_parsed$fixed,  newdata)
+  X_b1  <- mk_mm(b1_parsed$fixed,  newdata)
+  X_b2  <- mk_mm(b2_parsed$fixed,  newdata)
+  X_om  <- mk_mm(om_parsed$fixed,  newdata)
+  X_rho <- mk_mm(rho_parsed$fixed, newdata)
+
+  # Random effects: use training-data group levels so indices align with draws
+  re_var          <- b0_parsed$re_group
+  group_levels_b0 <- object$dm$group_levels_b0
+  n_groups_b0     <- object$dm$n_groups_b0
+
+  if (!is.null(re_var) && re_var %in% names(newdata)) {
+    gvar   <- newdata[[re_var]]
+    gfac   <- factor(gvar, levels = group_levels_b0)  # use training levels
+    n_new  <- nlevels(factor(gvar))   # how many distinct values in newdata
+    n_unknown <- sum(is.na(gfac) & !is.na(gvar))
+    if (n_unknown > 0) {
+      warning(sprintf(
+        "%d row(s) in newdata have a '%s' level not seen during fitting; ",
+        n_unknown, re_var,
+        "their random effects will be set to 0 (population-level)."
+      ))
+    }
+    group_b0 <- ifelse(is.na(gfac), -1L, as.integer(gfac) - 1L)
+  } else {
+    # Grouping variable absent from newdata: marginal (population-level) predictions
+    group_b0 <- rep(-1L, nrow(newdata))
+    n_groups_b0 <- 0L
+  }
+
+  list(
+    X_b0            = X_b0,
+    X_b1            = X_b1,
+    X_b2            = X_b2,
+    X_om            = X_om,
+    X_rho           = X_rho,
+    group_b0        = group_b0,
+    n_groups_b0     = n_groups_b0,
+    group_levels_b0 = group_levels_b0
   )
 }
 
