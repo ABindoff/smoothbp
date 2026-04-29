@@ -34,18 +34,17 @@ summaries or visualization.}
 \item{...}{Unused.}
 }
 \value{
-\describe{
-\item{If \code{summary = TRUE}}{A data frame with columns:
-\describe{
-\item{\code{.observation}}{Row index (1 to n).}
-\item{\code{fitted_mean}}{Posterior mean of \eqn{\mu_i}.}
-\item{\code{fitted_Q2.5}}{2.5\\% posterior quantile (lower credible limit).}
-\item{\code{fitted_Q97.5}}{97.5\\% posterior quantile (upper credible limit).}
-}}
-\item{If \code{summary = FALSE}}{A matrix of posterior draws with
-dimensions n_draws × n_obs, suitable for custom summaries or
-integration with other packages.}
+If \code{summary = TRUE}, a data frame with columns:
+\itemize{
+\item \code{.observation}: Row index (1 to n).
+\item \code{fitted_mean}: Posterior mean of \eqn{\mu_i}.
+\item \code{fitted_Q2.5}: 2.5\% posterior quantile (lower credible limit).
+\item \code{fitted_Q97.5}: 97.5\% posterior quantile (upper credible limit).
 }
+
+If \code{summary = FALSE}, a matrix of posterior draws with dimensions
+n_draws × n_obs, suitable for custom summaries or integration with
+other packages.
 }
 \description{
 Computes the posterior distribution of the latent mean \eqn{\mu_i} at each

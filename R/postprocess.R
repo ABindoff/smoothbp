@@ -210,18 +210,15 @@ posterior_draws.smoothbp_fit <- function(x, ...) x$draws
 #'   summaries or visualization.
 #' @param ... Unused.
 #' @return
-#'   \describe{
-#'     \item{If \code{summary = TRUE}}{A data frame with columns:
-#'       \describe{
-#'         \item{\code{.observation}}{Row index (1 to n).}
-#'         \item{\code{fitted_mean}}{Posterior mean of \eqn{\mu_i}.}
-#'         \item{\code{fitted_Q2.5}}{2.5\% posterior quantile (lower credible limit).}
-#'         \item{\code{fitted_Q97.5}}{97.5\% posterior quantile (upper credible limit).}
-#'       }}
-#'     \item{If \code{summary = FALSE}}{A matrix of posterior draws with
-#'       dimensions n_draws × n_obs, suitable for custom summaries or
-#'       integration with other packages.}
-#'   }
+#'   If `summary = TRUE`, a data frame with columns:
+#'   * `.observation`: Row index (1 to n).
+#'   * `fitted_mean`: Posterior mean of \eqn{\mu_i}.
+#'   * `fitted_Q2.5`: 2.5% posterior quantile (lower credible limit).
+#'   * `fitted_Q97.5`: 97.5% posterior quantile (upper credible limit).
+#'
+#'   If `summary = FALSE`, a matrix of posterior draws with dimensions
+#'   n_draws × n_obs, suitable for custom summaries or integration with
+#'   other packages.
 #' @examples
 #' \dontrun{
 #' # Fitted values at training observations (conditional on subjects)

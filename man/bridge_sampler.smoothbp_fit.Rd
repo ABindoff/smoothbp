@@ -68,7 +68,7 @@ error_measures(bs)  # inspect $cv (coefficient of variation)
 A coefficient of variation (\verb{$cv}) below 0.05 (5\%) indicates a reliable
 estimate.  Values above ~0.15 suggest the posterior was poorly explored
 — check \code{trace_plot(fit)} and consider increasing \code{iter}.  When
-convergence is poor, \code{\link[loo:loo]{loo::loo()}} is a more robust comparison tool.
+convergence is poor, \code{\link[=loo]{loo()}} is a more robust comparison tool.
 }
 }
 \examples{
