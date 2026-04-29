@@ -1,4 +1,4 @@
-# install.packages("pak")
+/# install.packages("pak")
 pak::pkg_install("ABindoff/smoothbp")
 
 Fits smoothed hierarchical piecewise regression with a single breakpoint (changepoint) using an optimised Metropolis-within-Gibbs sampler  
