@@ -19,19 +19,26 @@ knitr::opts_chunk$set(
 
 ## Why this vignette exists
 
-`smoothbp` is a bespoke Metropolis-within-Gibbs sampler, written in Rust, for
-one specific model: a hierarchical piecewise regression with a logistic-smoothed
-change-point. The recovery test in `tests/testthat/test-smoothbp.R` shows the
-sampler returns posterior intervals that contain the data-generating values,
-which is necessary, but it is a self-consistency check, simulator and likelihood
-share the same code path. To trust the package for inference one also wants to
-see that it agrees with an independent implementation. `brms` (and Stan
-underneath it) is the natural reference because it can fit the exact same
-generative model via NUTS on a custom non-linear formula.
+`smoothbp` is a bespoke Metropolis-within-Gibbs sampler for one specific
+model: a hierarchical piecewise regression with a logistic-smoothed
+change-point. The recovery test in `tests/testthat/test-smoothbp.R` shows
+the sampler returns posterior intervals that contain the data-generating
+values, which is necessary, but it is a self-consistency check: simulator
+and likelihood share the same code path. To trust the package one also
+wants to see that it agrees with an independent implementation. `brms`
+(via Stan) is the natural reference, fitting the same generative model
+via NUTS on a custom non-linear formula.
 
-This vignette fits the same intercept-only data with both packages and overlays
-the marginal posteriors. Identical models, identical priors, comparable wall
-clock, no Bayes factor sleight of hand.
+### One important practical note before we start
+
+When the change-point parameter `omega` drifts outside the range of the
+time variable, the smoothing term collapses and `b2` becomes effectively
+unidentified. NUTS chains that initialise in that region can get stuck
+there for the entire run, producing an artificially multimodal posterior
+that has nothing to do with the data. The clean fix is to bound `omega`
+above at `max(tau)` in both samplers, and to initialise brms chains near
+the prior mean (which is what smoothbp does internally). Both fixes
+applied below.
 
 ```{r setup, message = FALSE, warning = FALSE}
 library(smoothbp)
@@ -47,9 +54,6 @@ if (!have_brms) {
 ```
 
 ## Simulate one dataset
-
-We use the same generative model the package fits, with no covariates in any
-component so the brms parameterisation stays compact.
 
 ```{r simulate}
 set.seed(31)
@@ -79,7 +83,7 @@ fit_sbp <- smoothbp(
     b0      = prior_normal(0, 10),
     b1      = prior_normal(0, 2),
     b2      = prior_normal(0, 2),
-    omega   = prior_normal(3, 2, lb = 0),
+    omega   = prior_normal(3, 2, lb = 0, ub = max(dat$tau)),
     rho     = prior_normal(3, 2, lb = 0)
   ),
   chains  = 4L, iter = 2000L, warmup = 1000L,
@@ -90,10 +94,6 @@ time_sbp <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 
 ## Fit with brms (Stan / NUTS)
 
-The model is written as a non-linear `brms` formula matching the `smoothbp`
-specification. Priors are deliberately the same as above so the two posteriors
-should differ only by Monte Carlo error.
-
 ```{r fit-brms, eval = have_brms, message = FALSE, warning = FALSE, results = "hide"}
 suppressPackageStartupMessages(library(brms))
 
@@ -101,19 +101,34 @@ bf_smoothed <- brms::bf(
   y ~ b0 + b1 * (tau - omega) +
         b2 * (tau - omega) / (1 + exp(-(tau - omega) * rho)),
   b0 ~ 1 + (1 | subject),
-  b1 ~ 1,
-  b2 ~ 1,
-  omega ~ 1,
-  rho ~ 1,
+  b1 ~ 1, b2 ~ 1, omega ~ 1, rho ~ 1,
   nl = TRUE
 )
+
+# brms::prior() captures arguments by non-standard evaluation, so
+# `ub = max(dat$tau)` would be embedded literally in the generated Stan
+# code. Pre-compute the value and pass it via prior_string() which uses
+# standard evaluation and accepts numeric bounds.
+ub_omega <- max(dat$tau)
 
 priors_brms <- c(
   brms::prior(normal(0, 10), nlpar = "b0"),
   brms::prior(normal(0, 2),  nlpar = "b1"),
   brms::prior(normal(0, 2),  nlpar = "b2"),
-  brms::prior(normal(3, 2),  nlpar = "omega", lb = 0),
+  brms::prior_string("normal(3, 2)", nlpar = "omega",
+                     lb = 0, ub = ub_omega),
   brms::prior(normal(3, 2),  nlpar = "rho",   lb = 0)
+)
+
+# Initialise every chain near the prior mean.  Without this, Stan's default
+# uniform-on-(-2, 2) initialisation lands some chains in the unidentifiable
+# omega > max(tau) trap and they never escape.
+init_fun <- function() list(
+  b_b0    = array(rnorm(1, 5, 1)),
+  b_b1    = array(rnorm(1, 0, 0.3)),
+  b_b2    = array(rnorm(1, 0, 0.3)),
+  b_omega = array(rnorm(1, 3, 0.3)),
+  b_rho   = array(rnorm(1, 3, 0.5))
 )
 
 t0 <- Sys.time()
@@ -123,16 +138,15 @@ fit_brms <- brms::brm(
   prior   = priors_brms,
   chains  = 4, iter = 2000, warmup = 1000,
   seed    = 31, refresh = 0,
+  init    = init_fun,
   control = list(adapt_delta = 0.95)
 )
 time_brms <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 ```
 
-## Compare posterior summaries
+## Did brms converge?
 
-```{r compare-summaries, eval = have_brms}
-# Pull marginal posteriors for the five population-level scalars and the
-# two variance components.
+```{r brms-convergence, eval = have_brms}
 sbp_names <- c(
   "b0_(Intercept)", "b1_(Intercept)", "b2_(Intercept)",
   "omega_(Intercept)", "rho_(Intercept)",
@@ -144,6 +158,24 @@ brms_names <- c(
   "sigma", "sd_subject__b0_Intercept"
 )
 
+posterior::summarise_draws(
+  posterior::as_draws_df(fit_brms), rhat, ess_bulk
+) %>%
+  dplyr::filter(variable %in% brms_names) %>%
+  dplyr::transmute(parameter = sbp_names[match(variable, brms_names)],
+                   rhat, ess_bulk) %>%
+  knitr::kable(digits = 3,
+               caption = "brms convergence on population-level parameters.")
+```
+
+If any `rhat` exceeds 1.05, brms has not mixed and the comparison below is
+contaminated; do not interpret disagreements as smoothbp errors. With the
+bounded `omega` prior and the seeded `init_fun`, all four chains should land
+in the same basin.
+
+## Compare posterior summaries
+
+```{r compare-summaries, eval = have_brms}
 sbp_draws  <- posterior::as_draws_df(fit_sbp$draws)[, sbp_names]
 brms_draws <- as.data.frame(posterior::as_draws_df(fit_brms))[, brms_names]
 colnames(brms_draws) <- sbp_names
@@ -157,7 +189,7 @@ draws_long <- dplyr::bind_rows(
     dplyr::mutate(package = "brms")
 )
 
-summary_tbl <- draws_long %>%
+draws_long %>%
   dplyr::group_by(parameter, package) %>%
   dplyr::summarise(
     mean = mean(value),
@@ -174,10 +206,9 @@ summary_tbl <- draws_long %>%
   dplyr::mutate(
     delta_mean_pct = 100 * abs(smoothbp_mean - brms_mean) /
                        (abs(brms_mean) + 1e-8)
-  )
-
-knitr::kable(summary_tbl, digits = 3,
-             caption = "Posterior summaries for both packages on the same data.")
+  ) %>%
+  knitr::kable(digits = 3,
+               caption = "Posterior summaries for both packages.")
 ```
 
 ## Overlaid marginal posteriors
@@ -202,21 +233,15 @@ ggplot(draws_long, aes(x = value, fill = package, colour = package)) +
 
 ## Effective sample size per second
 
-ESS / second is the right quantity for comparing samplers, since smoothbp
-trades NUTS's per-iteration sophistication for many more iterations per
-second.
-
 ```{r ess, eval = have_brms}
 ess_sbp  <- posterior::summarise_draws(fit_sbp$draws, ess_bulk) %>%
   dplyr::filter(variable %in% sbp_names) %>%
   dplyr::transmute(parameter = variable,
                    smoothbp_ess_per_sec = ess_bulk / time_sbp)
 
-# Pull bulk ESS from the brms fit, matching the column subset.
-ess_brms_full <- posterior::summarise_draws(
+ess_brms <- posterior::summarise_draws(
   posterior::as_draws_df(fit_brms), ess_bulk
-)
-ess_brms <- ess_brms_full %>%
+) %>%
   dplyr::filter(variable %in% brms_names) %>%
   dplyr::mutate(parameter = sbp_names[match(variable, brms_names)]) %>%
   dplyr::transmute(parameter, brms_ess_per_sec = ess_bulk / time_brms)
@@ -228,14 +253,27 @@ dplyr::full_join(ess_sbp, ess_brms, by = "parameter") %>%
 
 ## What to look for
 
-If `smoothbp` is doing its job, the marginal posteriors overlay almost
-exactly, the posterior means agree to within Monte Carlo error (`delta_mean_pct`
-should be a fraction of a per cent on most parameters), and the credible
-intervals are within sampling variability of each other. ESS per second
-should be substantially higher for `smoothbp` because each iteration is
-cheaper, even though NUTS gets more out of each iteration.
+If both samplers have converged, the marginal posteriors overlay almost
+exactly, the means agree to within Monte Carlo error (`delta_mean_pct`
+should be a fraction of a per cent), and the credible intervals are within
+sampling variability of each other. ESS per second is substantially higher
+for `smoothbp` because each iteration is cheaper, even though NUTS gets
+more out of each iteration.
 
-Disagreement on a parameter, especially `omega`, would be a signal to dig:
-either the smoothbp sampler is misspecified, the priors are not actually
-identical (truncation in particular is easy to mis-encode), or one of the
-chains has not mixed and the comparison is contaminated by Monte Carlo noise.
+If you remove the `ub = max(dat$tau)` bound or the `init_fun`, you will
+likely see the brms posterior on `omega` and `b2` go bimodal: one cluster
+near the truth, and a second cluster in the unidentifiable region with
+`omega > max(tau)` and `b2` pinned at a ridiculous value matching the
+right-edge slope. That is a sampler-mixing artefact, not a real feature of
+the posterior, and worth demonstrating in your own analyses before trusting
+results from change-point models that allow `omega` to escape the data
+range.
+
+A note on smoothbp's robustness: smoothbp initialises every chain near the
+prior mean, which keeps it out of the degenerate region by construction.
+That is excellent in practice when the user has a sensible prior on
+`omega`, and is the typical case. It also means that on a problem where
+the posterior is genuinely multimodal, the chains may all converge to
+whichever mode is closest to the prior mean and fail to explore the
+others. If you suspect multimodality, fit with deliberately overdispersed
+initial values by varying the prior across runs.
