@@ -172,4 +172,34 @@ smoothbp <- function(
   n_params <- ncol(raw$draws[[1]])
   chain_arr <- array(
     data     = unlist(lapply(raw$draws, function(m) t(m))),  # params × draws per chain
-    dim      = c(n_params, n
+    dim      = c(n_params, n_post, chains),
+    dimnames = list(variable = pnames, draw = NULL, chain = NULL)
+  )
+  # posterior::draws_array expects [draw, chain, variable]
+  da <- posterior::as_draws_array(aperm(chain_arr, c(2, 3, 1)))
+
+  # ---- Assemble fit object ------------------------------------------------
+  structure(
+    list(
+      draws         = da,
+      param_names   = pnames,
+      formula       = formula,
+      b0_formula    = b0,
+      b1_formula    = b1,
+      b2_formula    = b2,
+      omega_formula = omega,
+      rho_formula   = rho,
+      priors        = priors,
+      data          = data,
+      response      = response_name,
+      time          = time_name,
+      dm            = dm,
+      chains        = as.integer(chains),
+      iter          = as.integer(iter),
+      warmup        = as.integer(warmup),
+      seed          = seed,
+      cores         = as.integer(max(1L, cores))
+    ),
+    class = "smoothbp_fit"
+  )
+}

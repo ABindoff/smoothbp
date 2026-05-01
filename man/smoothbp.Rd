@@ -53,10 +53,12 @@ May include a single random-intercept term, e.g.
 \item{seed}{Integer random seed for reproducibility.}
 
 \item{step_om}{Initial Metropolis step size for \eqn{\omega} coefficients.
-Tuned automatically during warmup. Default 0.3.}
+Used as the initial per-coordinate proposal SD during the componentwise
+warmup phase and to seed the joint adaptive Metropolis scale. Tuned
+automatically during warmup; see Details. Default 0.3.}
 
 \item{step_rho}{Initial Metropolis step size for \eqn{\rho} coefficients.
-Default 0.3.}
+Same semantics as \code{step_om}. Default 0.3.}
 
 \item{cores}{Number of CPU cores used to run chains in parallel.  When
 \code{cores > 1} all chains run concurrently via Rayon (the per-iteration
@@ -87,11 +89,22 @@ compiled in Rust:
 \itemize{
 \item \strong{Gibbs} (exact conjugate) for \eqn{b0}, \eqn{b1}, \eqn{b2}
 coefficients and the random intercepts.
-\item \strong{Metropolis} (random-walk with adaptive step size) for
-\eqn{\omega} and \eqn{\rho} coefficients.
+\item \strong{Metropolis} (random-walk with adaptive proposal) for
+\eqn{\omega} and \eqn{\rho} coefficients. For multi-coefficient
+linear predictors the sampler runs a componentwise random walk
+with per-coordinate step tuning during the first 30\\% of warmup,
+then switches to a joint Haario-style adaptive Metropolis with
+covariance learned online and global scale tuned to ~23.4\\%
+acceptance, then freezes the proposal at end of warmup. For 1-D
+linear predictors (e.g. \code{omega = ~ 1}) the sampler is the
+classical scalar adaptive random walk targeting ~23.4\\%.
 \item \strong{Gibbs} (inverse-gamma conjugate) for \eqn{\sigma} and
 \eqn{\sigma_u}.
 }
+
+To keep the per-iteration cost low, the MH steps for \eqn{\omega} and
+\eqn{\rho} reuse a precomputed linear-predictor cache so each proposal
+costs O(n) rather than recomputing the entire fitted-mean function.
 }
 \examples{
 \dontrun{

@@ -238,4 +238,7 @@ fn run_mcmc(
 }
 
 // Macro to register exports with R
-extendr_module! {
+extendr_module! {
+    mod smoothbp;
+    fn run_mcmc;
+}

@@ -504,4 +504,383 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
 // ---------------------------------------------------------------------------
 
 fn sample_random_effects_nc(
-    dat
+    data: &ModelData,
+    state: &mut State,
+    rng: &mut StdRng,
+) {
+    let sigma2    = state.sigma   * state.sigma;
+    let sigma_u2  = state.sigma_u * state.sigma_u;
+    let n_groups  = data.n_groups_b0;
+
+    // Fixed-part fitted values (no random effects)
+    let omega = state.omega_vec(&data.x_om);
+    let rho   = state.rho_vec(&data.x_rho);
+    let d: DVector<f64> = data.tau.zip_map(&omega, |t, w| t - w);
+    let s: DVector<f64> = d.zip_map(&rho, |di, ri| sigmoid(di * ri));
+
+    let b0_fixed   = &data.x_b0 * &state.beta_b0;
+    let b1_vals    = &data.x_b1 * &state.beta_b1;
+    let b2_vals    = &data.x_b2 * &state.beta_b2;
+    let b1_contrib: DVector<f64> = d.zip_map(&b1_vals, |di, b| di * b);
+    let b2_contrib: DVector<f64> = d.zip_map(&s, |di, si| di * si).zip_map(&b2_vals, |ds, b| ds * b);
+    let fixed_fit  = b0_fixed + b1_contrib + b2_contrib;
+
+    // Sufficient statistics per group: sum of residuals and count
+    let mut sum_r = vec![0.0f64; n_groups];
+    let mut n_j   = vec![0u32;   n_groups];
+    for i in 0..data.n {
+        let g = data.group_b0[i] as usize;
+        sum_r[g] += data.y[i] - fixed_fit[i];
+        n_j[g]   += 1;
+    }
+
+    let normal = Normal::new(0.0, 1.0f64).unwrap();
+    for j in 0..n_groups {
+        let nj     = n_j[j] as f64;
+        let tau_j  = nj * sigma_u2 / sigma2 + 1.0;
+        let v_j    = 1.0 / tau_j;
+        let mu_j   = v_j * state.sigma_u / sigma2 * sum_r[j];
+        let z_j    = mu_j + v_j.sqrt() * normal.sample(rng);
+        state.u_b0[j] = state.sigma_u * z_j;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Block 1b: Sample (beta_b0, beta_b1, beta_b2) jointly | u, omega, rho, sigma
+// (Normal-normal conjugate via Cholesky.)
+// ---------------------------------------------------------------------------
+
+fn sample_linear_coefs(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    rng: &mut StdRng,
+) {
+    let n = data.n;
+    let p_b0 = priors.p_b0;
+    let p_b1 = priors.p_b1;
+    let p_b2 = priors.p_b2;
+    let p_lin = p_b0 + p_b1 + p_b2;
+    let sigma2 = state.sigma * state.sigma;
+
+    let omega = state.omega_vec(&data.x_om);
+    let rho   = state.rho_vec(&data.x_rho);
+    let d: Vec<f64> = (0..n).map(|i| data.tau[i] - omega[i]).collect();
+    let s: Vec<f64> = (0..n).map(|i| sigmoid(d[i] * rho[i])).collect();
+
+    // Build effective design matrix X_full (n × p_lin)
+    let mut x_full = DMatrix::<f64>::zeros(n, p_lin);
+    for i in 0..n {
+        for k in 0..p_b0 {
+            x_full[(i, k)] = data.x_b0[(i, k)];
+        }
+        for k in 0..p_b1 {
+            x_full[(i, p_b0 + k)] = d[i] * data.x_b1[(i, k)];
+        }
+        for k in 0..p_b2 {
+            x_full[(i, p_b0 + p_b1 + k)] = d[i] * s[i] * data.x_b2[(i, k)];
+        }
+    }
+
+    let mut y_tilde = data.y.clone();
+    if data.n_groups_b0 > 0 {
+        for i in 0..n {
+            let g = data.group_b0[i];
+            if g >= 0 {
+                y_tilde[i] -= state.u_b0[g as usize];
+            }
+        }
+    }
+
+    let b0_r = priors.b0_range();
+    let b1_r = priors.b1_range();
+    let b2_r = priors.b2_range();
+    let mut prec_prior = DVector::<f64>::zeros(p_lin);
+    let mut mu_prior = DVector::<f64>::zeros(p_lin);
+    for (k, i) in b0_r.enumerate() {
+        prec_prior[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[k] = priors.mean[i];
+    }
+    for (k, i) in b1_r.enumerate() {
+        prec_prior[p_b0 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[p_b0 + k] = priors.mean[i];
+    }
+    for (k, i) in b2_r.enumerate() {
+        prec_prior[p_b0 + p_b1 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[p_b0 + p_b1 + k] = priors.mean[i];
+    }
+
+    let xt = x_full.transpose();
+    let xtx = &xt * &x_full;
+    let mut prec_post = xtx / sigma2;
+    for k in 0..p_lin {
+        prec_post[(k, k)] += prec_prior[k];
+    }
+
+    let xty: DVector<f64> = &xt * &y_tilde / sigma2;
+    let rhs: DVector<f64> = xty + prec_prior.zip_map(&mu_prior, |p, m| p * m);
+
+    let chol = prec_post.clone().cholesky().expect("Precision matrix not positive definite");
+    let mu_post = chol.solve(&rhs);
+
+    let normal = Normal::new(0.0, 1.0f64).unwrap();
+    let z = DVector::from_iterator(p_lin, (0..p_lin).map(|_| normal.sample(rng)));
+    let l = chol.l();
+    let x = l.transpose().solve_upper_triangular(&z)
+        .expect("Triangular solve failed");
+    let theta = mu_post + x;
+
+    for k in 0..p_b0 {
+        state.beta_b0[k] = theta[k];
+    }
+    for k in 0..p_b1 {
+        state.beta_b1[k] = theta[p_b0 + k];
+    }
+    for k in 0..p_b2 {
+        state.beta_b2[k] = theta[p_b0 + p_b1 + k];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Block 2a: MH for beta_om
+// ---------------------------------------------------------------------------
+
+fn mh_step_om(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    ll: &mut f64,
+    lp_om: &mut f64,
+    cache: &LinearCache,
+    omega_cur: &mut DVector<f64>,
+    rho_cur:   &DVector<f64>,
+    adapt:     &mut AdaptProposal,
+    rng: &mut StdRng,
+) {
+    if priors.p_om == 0 { return; }
+
+    let r_idx = priors.om_range();
+    let prior_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
+    let prior_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
+    let prior_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
+    let prior_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
+
+    if adapt.is_componentwise() {
+        // One coordinate at a time.  Cheaper per proposal because we can
+        // update omega_cur with a single column scaling instead of a full
+        // matrix-vector product.
+        for k in 0..priors.p_om {
+            let normal = Normal::new(0.0, adapt.comp_steps[k]).unwrap();
+            let delta = normal.sample(rng);
+            let proposed_val = state.beta_om[k] + delta;
+            adapt.comp_attempts[k] += 1;
+
+            if proposed_val < prior_lb[k] || proposed_val > prior_ub[k] {
+                continue;
+            }
+
+            // Proposed log-prior (vector-form: only kth coord changes)
+            let mut beta_prop = state.beta_om.clone();
+            beta_prop[k] = proposed_val;
+            let lp_prop = log_truncated_normal_prior(
+                beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+            );
+            if lp_prop == f64::NEG_INFINITY { continue; }
+
+            // omega_prop = omega_cur + delta * X_om[:, k]
+            let mut omega_prop = omega_cur.clone();
+            for i in 0..data.n {
+                omega_prop[i] += delta * data.x_om[(i, k)];
+            }
+
+            let ll_prop = cache.log_likelihood(data, &omega_prop, rho_cur, state.sigma);
+            let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_om);
+            if rng.gen::<f64>().ln() < log_alpha {
+                state.beta_om[k] = proposed_val;
+                *omega_cur = omega_prop;
+                *ll = ll_prop;
+                *lp_om = lp_prop;
+                adapt.comp_accepts[k] += 1;
+            }
+        }
+    } else {
+        // Joint proposal.  In the Frozen and Adaptive phases we propose using
+        // the most recently learned Cholesky factor; if none exists yet (e.g.
+        // first joint iteration before refresh_chol has been called), we fall
+        // back to a diagonal proposal built from the componentwise steps.
+        let p = priors.p_om;
+        let normal = Normal::new(0.0, 1.0f64).unwrap();
+        let z = DVector::from_iterator(p, (0..p).map(|_| normal.sample(rng)));
+
+        let raw_step: DVector<f64> = if let Some(l) = adapt.proposal_chol.as_ref() {
+            l * &z
+        } else {
+            // No covariance estimate yet; fall back to a diagonal proposal
+            // using the per-coordinate componentwise SDs.  The joint Haario
+            // scaling kicks in once `refresh_chol` has been called.
+            DVector::from_iterator(p, (0..p).map(|k| z[k] * adapt.comp_steps[k]))
+        };
+
+        let beta_prop: DVector<f64> = &state.beta_om + &raw_step;
+        adapt.joint_attempts += 1;
+
+        // Bounds check
+        for (k, i) in r_idx.clone().enumerate() {
+            if beta_prop[k] < priors.lb[i] || beta_prop[k] > priors.ub[i] {
+                return;
+            }
+        }
+        let lp_prop = log_truncated_normal_prior(
+            beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+        );
+        if lp_prop == f64::NEG_INFINITY { return; }
+
+        // Recompute omega from scratch (cheaper than tracking column-wise deltas
+        // because all coordinates moved).
+        let omega_prop = &data.x_om * &beta_prop;
+        let ll_prop = cache.log_likelihood(data, &omega_prop, rho_cur, state.sigma);
+
+        let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_om);
+        if rng.gen::<f64>().ln() < log_alpha {
+            state.beta_om = beta_prop;
+            *omega_cur = omega_prop;
+            *ll = ll_prop;
+            *lp_om = lp_prop;
+            adapt.joint_accepts += 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Block 2b: MH for beta_rho  (mirrors mh_step_om)
+// ---------------------------------------------------------------------------
+
+fn mh_step_rho(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    ll: &mut f64,
+    lp_rho: &mut f64,
+    cache: &LinearCache,
+    omega_cur: &DVector<f64>,
+    rho_cur:   &mut DVector<f64>,
+    adapt:     &mut AdaptProposal,
+    rng: &mut StdRng,
+) {
+    if priors.p_rho == 0 { return; }
+
+    let r_idx = priors.rho_range();
+    let prior_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
+    let prior_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
+    let prior_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
+    let prior_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
+
+    if adapt.is_componentwise() {
+        for k in 0..priors.p_rho {
+            let normal = Normal::new(0.0, adapt.comp_steps[k]).unwrap();
+            let delta = normal.sample(rng);
+            let proposed_val = state.beta_rho[k] + delta;
+            adapt.comp_attempts[k] += 1;
+
+            if proposed_val < prior_lb[k] || proposed_val > prior_ub[k] {
+                continue;
+            }
+
+            let mut beta_prop = state.beta_rho.clone();
+            beta_prop[k] = proposed_val;
+            let lp_prop = log_truncated_normal_prior(
+                beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+            );
+            if lp_prop == f64::NEG_INFINITY { continue; }
+
+            let mut rho_prop = rho_cur.clone();
+            for i in 0..data.n {
+                rho_prop[i] += delta * data.x_rho[(i, k)];
+            }
+
+            let ll_prop = cache.log_likelihood(data, omega_cur, &rho_prop, state.sigma);
+            let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_rho);
+            if rng.gen::<f64>().ln() < log_alpha {
+                state.beta_rho[k] = proposed_val;
+                *rho_cur = rho_prop;
+                *ll = ll_prop;
+                *lp_rho = lp_prop;
+                adapt.comp_accepts[k] += 1;
+            }
+        }
+    } else {
+        let p = priors.p_rho;
+        let normal = Normal::new(0.0, 1.0f64).unwrap();
+        let z = DVector::from_iterator(p, (0..p).map(|_| normal.sample(rng)));
+
+        let raw_step: DVector<f64> = if let Some(l) = adapt.proposal_chol.as_ref() {
+            l * &z
+        } else {
+            // No covariance estimate yet; fall back to a diagonal proposal
+            // using the per-coordinate componentwise SDs.  The joint Haario
+            // scaling kicks in once `refresh_chol` has been called.
+            DVector::from_iterator(p, (0..p).map(|k| z[k] * adapt.comp_steps[k]))
+        };
+
+        let beta_prop: DVector<f64> = &state.beta_rho + &raw_step;
+        adapt.joint_attempts += 1;
+
+        for (k, i) in r_idx.clone().enumerate() {
+            if beta_prop[k] < priors.lb[i] || beta_prop[k] > priors.ub[i] {
+                return;
+            }
+        }
+        let lp_prop = log_truncated_normal_prior(
+            beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+        );
+        if lp_prop == f64::NEG_INFINITY { return; }
+
+        let rho_prop = &data.x_rho * &beta_prop;
+        let ll_prop = cache.log_likelihood(data, omega_cur, &rho_prop, state.sigma);
+
+        let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_rho);
+        if rng.gen::<f64>().ln() < log_alpha {
+            state.beta_rho = beta_prop;
+            *rho_cur = rho_prop;
+            *ll = ll_prop;
+            *lp_rho = lp_prop;
+            adapt.joint_accepts += 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Block 3a: Sample sigma^2 | everything  (InvGamma conjugate)
+// ---------------------------------------------------------------------------
+
+fn sample_sigma(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    rng: &mut StdRng,
+) {
+    let mu = state.means(data);
+    let ssr: f64 = (0..data.n).map(|i| (data.y[i] - mu[i]).powi(2)).sum();
+
+    let shape_post = priors.sigma_shape + 0.5 * data.n as f64;
+    let rate_post = priors.sigma_scale + 0.5 * ssr;
+
+    let g = Gamma::new(shape_post, 1.0 / rate_post).unwrap();
+    let x = g.sample(rng);
+    state.sigma = (1.0 / x).sqrt();
+}
+
+// ---------------------------------------------------------------------------
+// Block 3b: Sample sigma_u^2 | u  (InvGamma conjugate Gibbs)
+// ---------------------------------------------------------------------------
+
+fn sample_sigma_u(priors: &Priors, state: &mut State, rng: &mut StdRng) {
+    let m       = state.u_b0.len() as f64;
+    let ss_u: f64 = state.u_b0.iter().map(|u| u * u).sum();
+
+    let shape_post = priors.sigma_u_shape + 0.5 * m;
+    let rate_post  = priors.sigma_u_scale  + 0.5 * ss_u;
+
+    let g = Gamma::new(shape_post, 1.0 / rate_post).unwrap();
+    state.sigma_u = (1.0 / g.sample(rng)).sqrt();
+}
