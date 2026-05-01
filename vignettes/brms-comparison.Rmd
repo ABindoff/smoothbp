@@ -1,0 +1,241 @@
+---
+title: "Validating smoothbp against brms"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Validating smoothbp against brms}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.width  = 7,
+  fig.height = 4,
+  dpi        = 96
+)
+```
+
+## Why this vignette exists
+
+`smoothbp` is a bespoke Metropolis-within-Gibbs sampler, written in Rust, for
+one specific model: a hierarchical piecewise regression with a logistic-smoothed
+change-point. The recovery test in `tests/testthat/test-smoothbp.R` shows the
+sampler returns posterior intervals that contain the data-generating values,
+which is necessary, but it is a self-consistency check, simulator and likelihood
+share the same code path. To trust the package for inference one also wants to
+see that it agrees with an independent implementation. `brms` (and Stan
+underneath it) is the natural reference because it can fit the exact same
+generative model via NUTS on a custom non-linear formula.
+
+This vignette fits the same intercept-only data with both packages and overlays
+the marginal posteriors. Identical models, identical priors, comparable wall
+clock, no Bayes factor sleight of hand.
+
+```{r setup, message = FALSE, warning = FALSE}
+library(smoothbp)
+library(posterior)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+have_brms <- requireNamespace("brms", quietly = TRUE)
+if (!have_brms) {
+  message("brms not installed -- install.packages('brms') to render the comparison.")
+}
+```
+
+## Simulate one dataset
+
+We use the same generative model the package fits, with no covariates in any
+component so the brms parameterisation stays compact.
+
+```{r simulate}
+set.seed(31)
+dat <- simulate_smoothbp(
+  n_subj = 25, n_obs = 10,
+  b0 = 5.0, b1 = -0.4, b2 = 1.4,
+  omega = 3.2, rho = 4.0,
+  sigma = 0.4, sigma_u = 0.7,
+  seed = 31L
+)
+true_params(dat)
+```
+
+## Fit with smoothbp
+
+```{r fit-smoothbp}
+t0 <- Sys.time()
+fit_sbp <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),
+  b1      = ~ 1,
+  b2      = ~ 1,
+  omega   = ~ 1,
+  rho     = ~ 1,
+  data    = dat,
+  priors  = smoothbp_priors(
+    b0      = prior_normal(0, 10),
+    b1      = prior_normal(0, 2),
+    b2      = prior_normal(0, 2),
+    omega   = prior_normal(3, 2, lb = 0),
+    rho     = prior_normal(3, 2, lb = 0)
+  ),
+  chains  = 4L, iter = 2000L, warmup = 1000L,
+  seed    = 31L, .verbose = FALSE
+)
+time_sbp <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+```
+
+## Fit with brms (Stan / NUTS)
+
+The model is written as a non-linear `brms` formula matching the `smoothbp`
+specification. Priors are deliberately the same as above so the two posteriors
+should differ only by Monte Carlo error.
+
+```{r fit-brms, eval = have_brms, message = FALSE, warning = FALSE, results = "hide"}
+suppressPackageStartupMessages(library(brms))
+
+bf_smoothed <- brms::bf(
+  y ~ b0 + b1 * (tau - omega) +
+        b2 * (tau - omega) / (1 + exp(-(tau - omega) * rho)),
+  b0 ~ 1 + (1 | subject),
+  b1 ~ 1,
+  b2 ~ 1,
+  omega ~ 1,
+  rho ~ 1,
+  nl = TRUE
+)
+
+priors_brms <- c(
+  brms::prior(normal(0, 10), nlpar = "b0"),
+  brms::prior(normal(0, 2),  nlpar = "b1"),
+  brms::prior(normal(0, 2),  nlpar = "b2"),
+  brms::prior(normal(3, 2),  nlpar = "omega", lb = 0),
+  brms::prior(normal(3, 2),  nlpar = "rho",   lb = 0)
+)
+
+t0 <- Sys.time()
+fit_brms <- brms::brm(
+  bf_smoothed,
+  data    = dat,
+  prior   = priors_brms,
+  chains  = 4, iter = 2000, warmup = 1000,
+  seed    = 31, refresh = 0,
+  control = list(adapt_delta = 0.95)
+)
+time_brms <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+```
+
+## Compare posterior summaries
+
+```{r compare-summaries, eval = have_brms}
+# Pull marginal posteriors for the five population-level scalars and the
+# two variance components.
+sbp_names <- c(
+  "b0_(Intercept)", "b1_(Intercept)", "b2_(Intercept)",
+  "omega_(Intercept)", "rho_(Intercept)",
+  "sigma", "sigma_u"
+)
+brms_names <- c(
+  "b_b0_Intercept", "b_b1_Intercept", "b_b2_Intercept",
+  "b_omega_Intercept", "b_rho_Intercept",
+  "sigma", "sd_subject__b0_Intercept"
+)
+
+sbp_draws  <- posterior::as_draws_df(fit_sbp$draws)[, sbp_names]
+brms_draws <- as.data.frame(posterior::as_draws_df(fit_brms))[, brms_names]
+colnames(brms_draws) <- sbp_names
+
+draws_long <- dplyr::bind_rows(
+  tidyr::pivot_longer(sbp_draws,  cols = dplyr::everything(),
+                      names_to = "parameter", values_to = "value") %>%
+    dplyr::mutate(package = "smoothbp"),
+  tidyr::pivot_longer(brms_draws, cols = dplyr::everything(),
+                      names_to = "parameter", values_to = "value") %>%
+    dplyr::mutate(package = "brms")
+)
+
+summary_tbl <- draws_long %>%
+  dplyr::group_by(parameter, package) %>%
+  dplyr::summarise(
+    mean = mean(value),
+    sd   = sd(value),
+    q025 = quantile(value, 0.025),
+    q975 = quantile(value, 0.975),
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_wider(
+    names_from  = package,
+    values_from = c(mean, sd, q025, q975),
+    names_glue  = "{package}_{.value}"
+  ) %>%
+  dplyr::mutate(
+    delta_mean_pct = 100 * abs(smoothbp_mean - brms_mean) /
+                       (abs(brms_mean) + 1e-8)
+  )
+
+knitr::kable(summary_tbl, digits = 3,
+             caption = "Posterior summaries for both packages on the same data.")
+```
+
+## Overlaid marginal posteriors
+
+```{r overlay, eval = have_brms, fig.height = 5}
+ggplot(draws_long, aes(x = value, fill = package, colour = package)) +
+  geom_density(alpha = 0.35) +
+  facet_wrap(~ parameter, scales = "free", ncol = 3) +
+  scale_fill_manual(values  = c(smoothbp = "#1f77b4", brms = "#d62728")) +
+  scale_colour_manual(values = c(smoothbp = "#1f77b4", brms = "#d62728")) +
+  labs(
+    title    = "Marginal posteriors: smoothbp vs brms",
+    subtitle = sprintf(
+      "Same simulated data, same priors. smoothbp: %.1fs   brms: %.1fs",
+      time_sbp, time_brms
+    ),
+    x = NULL, y = "density"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+```
+
+## Effective sample size per second
+
+ESS / second is the right quantity for comparing samplers, since smoothbp
+trades NUTS's per-iteration sophistication for many more iterations per
+second.
+
+```{r ess, eval = have_brms}
+ess_sbp  <- posterior::summarise_draws(fit_sbp$draws, ess_bulk) %>%
+  dplyr::filter(variable %in% sbp_names) %>%
+  dplyr::transmute(parameter = variable,
+                   smoothbp_ess_per_sec = ess_bulk / time_sbp)
+
+# Pull bulk ESS from the brms fit, matching the column subset.
+ess_brms_full <- posterior::summarise_draws(
+  posterior::as_draws_df(fit_brms), ess_bulk
+)
+ess_brms <- ess_brms_full %>%
+  dplyr::filter(variable %in% brms_names) %>%
+  dplyr::mutate(parameter = sbp_names[match(variable, brms_names)]) %>%
+  dplyr::transmute(parameter, brms_ess_per_sec = ess_bulk / time_brms)
+
+dplyr::full_join(ess_sbp, ess_brms, by = "parameter") %>%
+  knitr::kable(digits = 1,
+               caption = "Bulk ESS / second by package and parameter.")
+```
+
+## What to look for
+
+If `smoothbp` is doing its job, the marginal posteriors overlay almost
+exactly, the posterior means agree to within Monte Carlo error (`delta_mean_pct`
+should be a fraction of a per cent on most parameters), and the credible
+intervals are within sampling variability of each other. ESS per second
+should be substantially higher for `smoothbp` because each iteration is
+cheaper, even though NUTS gets more out of each iteration.
+
+Disagreement on a parameter, especially `omega`, would be a signal to dig:
+either the smoothbp sampler is misspecified, the priors are not actually
+identical (truncation in particular is easy to mis-encode), or one of the
+chains has not mixed and the comparison is contaminated by Monte Carlo noise.
