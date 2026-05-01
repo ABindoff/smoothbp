@@ -38,8 +38,14 @@ fn flat_to_dmatrix(data: &[f64], nrow: usize, ncol: usize) -> DMatrix<f64> {
 /// @param sigma_scale Scale of InvGamma prior on residual variance.
 /// @param sigma_u_shape Shape of InvGamma prior on RE variance.
 /// @param sigma_u_scale Scale of InvGamma prior on RE variance.
-/// @param step_om     Initial MH step size for omega coefficients.
-/// @param step_rho    Initial MH step size for rho coefficients.
+/// @param step_om     Initial step size for omega coefficients (scalar MH
+///                    proposal SD when p_om == 1; initial HMC leapfrog
+///                    step size when p_om >= 2).
+/// @param step_rho    Initial step size for rho coefficients (same semantics
+///                    as step_om).
+/// @param target_accept Target acceptance probability for HMC dual averaging
+///                    (used only when p_om >= 2 or p_rho >= 2).  Recommended
+///                    range 0.6–0.85; default 0.65.
 /// @param chains      Number of independent chains.
 /// @param iter        Total iterations per chain (warmup + sampling).
 /// @param warmup      Number of warmup iterations discarded.
@@ -71,6 +77,7 @@ fn run_mcmc(
     sigma_u_scale: f64,
     step_om: f64,
     step_rho: f64,
+    target_accept: f64,
     chains: i32,
     iter: i32,
     warmup: i32,
@@ -157,6 +164,7 @@ fn run_mcmc(
                         &data, &priors,
                         n_iter, n_warmup,
                         step_om, step_rho,
+                        target_accept,
                         chain_seed,
                         false,           // verbose = false inside worker
                         c, n_chains,
@@ -202,6 +210,7 @@ fn run_mcmc(
                     &data, &priors,
                     n_iter, n_warmup,
                     step_om, step_rho,
+                    target_accept,
                     chain_seed,
                     verbose, c, n_chains,
                     &progress_fn,

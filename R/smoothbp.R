@@ -15,22 +15,23 @@
 #' \itemize{
 #'   \item \strong{Gibbs} (exact conjugate) for \eqn{b0}, \eqn{b1}, \eqn{b2}
 #'         coefficients and the random intercepts.
-#'   \item \strong{Metropolis} (random-walk with adaptive proposal) for
-#'         \eqn{\omega} and \eqn{\rho} coefficients. For multi-coefficient
-#'         linear predictors the sampler runs a componentwise random walk
-#'         with per-coordinate step tuning during the first 30\% of warmup,
-#'         then switches to a joint Haario-style adaptive Metropolis with
-#'         covariance learned online and global scale tuned to ~23.4\%
-#'         acceptance, then freezes the proposal at end of warmup. For 1-D
-#'         linear predictors (e.g. \code{omega = ~ 1}) the sampler is the
-#'         classical scalar adaptive random walk targeting ~23.4\%.
+#'   \item \strong{HMC-within-Gibbs} for \eqn{\omega} and \eqn{\rho}
+#'         coefficients when their linear predictor has \eqn{p \ge 2}
+#'         columns.  Uses a short leapfrog trajectory (L drawn uniformly
+#'         from 5--15) with analytical gradients, boundary reflection for
+#'         truncated priors, diagonal mass-matrix adaptation (refreshed at
+#'         60\% of warmup), and Nesterov dual-averaging step-size
+#'         adaptation targeting \code{target_accept}.  For 1-D linear
+#'         predictors (e.g. \code{omega = ~ 1}) the sampler uses a
+#'         classical scalar adaptive random-walk MH targeting ~23.4\%.
 #'   \item \strong{Gibbs} (inverse-gamma conjugate) for \eqn{\sigma} and
 #'         \eqn{\sigma_u}.
 #' }
 #'
-#' To keep the per-iteration cost low, the MH steps for \eqn{\omega} and
-#' \eqn{\rho} reuse a precomputed linear-predictor cache so each proposal
-#' costs O(n) rather than recomputing the entire fitted-mean function.
+#' To keep the per-iteration cost low, the HMC and MH steps for \eqn{\omega}
+#' and \eqn{\rho} reuse a precomputed linear-predictor cache so each
+#' gradient/energy evaluation costs O(n) rather than recomputing the entire
+#' fitted-mean function.
 #'
 #' @param formula A two-sided formula identifying the response and time variable,
 #'   e.g. \code{value ~ tau}.
@@ -48,12 +49,18 @@
 #' @param iter Total iterations per chain (warmup + sampling). Default 2000.
 #' @param warmup Number of warmup iterations (discarded). Default 1000.
 #' @param seed Integer random seed for reproducibility.
-#' @param step_om Initial Metropolis step size for \eqn{\omega} coefficients.
-#'   Used as the initial per-coordinate proposal SD during the componentwise
-#'   warmup phase and to seed the joint adaptive Metropolis scale. Tuned
-#'   automatically during warmup; see Details. Default 0.3.
-#' @param step_rho Initial Metropolis step size for \eqn{\rho} coefficients.
-#'   Same semantics as \code{step_om}. Default 0.3.
+#' @param step_om Initial step size for \eqn{\omega} coefficients.  When the
+#'   omega linear predictor has a single column (\code{omega = ~ 1}), this is
+#'   the scalar MH proposal SD.  When the predictor has \eqn{p \ge 2} columns,
+#'   this is the initial HMC leapfrog step size (tuned automatically via dual
+#'   averaging during warmup). Default 0.3.
+#' @param step_rho Initial step size for \eqn{\rho} coefficients.  Same
+#'   semantics as \code{step_om}. Default 0.3.
+#' @param target_accept Target acceptance probability for the HMC dual-averaging
+#'   step-size adaptation.  Only used when \code{omega} or \code{rho} has two
+#'   or more predictor columns; ignored for intercept-only specifications.
+#'   Recommended range \code{[0.6, 0.85]}.  Higher values produce smaller step
+#'   sizes and more conservative trajectories. Default 0.65.
 #' @param cores Number of CPU cores used to run chains in parallel.  When
 #'   \code{cores > 1} all chains run concurrently via Rayon (the per-iteration
 #'   progress bar is suppressed in this mode — only a start and done message
@@ -100,6 +107,7 @@ smoothbp <- function(
     seed   = NULL,
     step_om  = 0.3,
     step_rho = 0.3,
+    target_accept = 0.65,
     cores    = getOption("smoothbp.cores", 1L),
     .verbose = TRUE
 ) {
@@ -156,6 +164,7 @@ smoothbp <- function(
     sigma_u_scale = priors$sigma_u$scale,
     step_om  = step_om,
     step_rho = step_rho,
+    target_accept = as.double(target_accept),
     chains   = as.integer(chains),
     iter     = as.integer(iter),
     warmup   = as.integer(warmup),

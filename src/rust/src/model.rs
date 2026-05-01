@@ -156,29 +156,6 @@ impl State {
         mu
     }
 
-    /// Log-prior for beta_om (used in MH acceptance ratio)
-    pub fn log_prior_om(&self, priors: &Priors) -> f64 {
-        let r = priors.om_range();
-        log_truncated_normal_prior(
-            self.beta_om.as_slice(),
-            &priors.mean[r.clone()],
-            &priors.sd[r.clone()],
-            &priors.lb[r.clone()],
-            &priors.ub[r],
-        )
-    }
-
-    /// Log-prior for beta_rho (used in MH acceptance ratio)
-    pub fn log_prior_rho(&self, priors: &Priors) -> f64 {
-        let r = priors.rho_range();
-        log_truncated_normal_prior(
-            self.beta_rho.as_slice(),
-            &priors.mean[r.clone()],
-            &priors.sd[r.clone()],
-            &priors.lb[r.clone()],
-            &priors.ub[r],
-        )
-    }
 }
 
 // ---------------------------------------------------------------------------

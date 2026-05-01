@@ -30,7 +30,8 @@ NULL
 #' @param p_rho       Number of columns in x_rho.
 #' @param group_b0    0-based group indices for b0 random intercept (-1 = no RE).
 #' @param n_groups_b0 Number of RE groups (0 = no random effect).
-#' @param prior_mean  Prior means concatenated [b0 | b1 | b2 | omega | rho].
+#' @param prior_mean  Prior means concatenated in the order
+#'                    `b0`, `b1`, `b2`, `omega`, `rho`.
 #' @param prior_sd    Prior SDs (same order).
 #' @param prior_lb    Lower bounds (-Inf for unconstrained).
 #' @param prior_ub    Upper bounds (+Inf for unconstrained).
@@ -38,8 +39,14 @@ NULL
 #' @param sigma_scale Scale of InvGamma prior on residual variance.
 #' @param sigma_u_shape Shape of InvGamma prior on RE variance.
 #' @param sigma_u_scale Scale of InvGamma prior on RE variance.
-#' @param step_om     Initial MH step size for omega coefficients.
-#' @param step_rho    Initial MH step size for rho coefficients.
+#' @param step_om     Initial step size for omega coefficients (scalar MH
+#'                    proposal SD when p_om == 1; initial HMC leapfrog
+#'                    step size when p_om >= 2).
+#' @param step_rho    Initial step size for rho coefficients (same semantics
+#'                    as step_om).
+#' @param target_accept Target acceptance probability for HMC dual averaging
+#'                    (used only when p_om >= 2 or p_rho >= 2).  Recommended
+#'                    range 0.6–0.85; default 0.65.
 #' @param chains      Number of independent chains.
 #' @param iter        Total iterations per chain (warmup + sampling).
 #' @param warmup      Number of warmup iterations discarded.
@@ -50,6 +57,6 @@ NULL
 #'                    (progress bar suppressed; chains run concurrently).
 #' @return List with one matrix per chain (rows = post-warmup draws, cols = parameters).
 #' @export
-run_mcmc <- function(y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, chains, iter, warmup, seed, verbose, n_cores) .Call(wrap__run_mcmc, y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, chains, iter, warmup, seed, verbose, n_cores)
+run_mcmc <- function(y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, chains, iter, warmup, seed, verbose, n_cores) .Call(wrap__run_mcmc, y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, chains, iter, warmup, seed, verbose, n_cores)
 
 # nolint end

@@ -7,12 +7,12 @@ use rand_distr::{Normal, Gamma, Distribution};
 use crate::model::{ModelData, Priors, State, log_truncated_normal_prior, sigmoid};
 
 
-
 // ---------------------------------------------------------------------------
 // LinearCache: precomputed parts of the mean function that do NOT depend on
 // beta_om or beta_rho.  Refreshed once per outer iteration after the linear
-// coefficient block is sampled.  Used by the MH steps for omega and rho so
-// each proposal does O(n) work instead of O(n * (p_b0 + p_b1 + p_b2)).
+// coefficient block is sampled.  Used by the HMC steps for omega and rho so
+// each gradient/energy evaluation does O(n) work instead of
+// O(n * (p_b0 + p_b1 + p_b2)).
 //
 // mu_i = b0_fixed_i + d_i * b1_vals_i + d_i * s_i * b2_vals_i + re_contrib_i
 //   where d_i = tau_i - omega_i and s_i = sigmoid(d_i * rho_i).
@@ -68,150 +68,270 @@ impl LinearCache {
         }
         ll
     }
+
+    /// Gradient of the log-likelihood with respect to beta_om.
+    ///
+    /// ∂mu_i/∂omega_i = -(b1_i + s_i*b2_i + d_i*rho_i*s_i*(1-s_i)*b2_i)
+    /// ∂ll/∂beta_om_k = Σ_i  r_i/σ² * (∂mu_i/∂omega_i) * x_om[i,k]
+    ///
+    /// Note: ∂omega_i/∂beta_om_k = x_om[i,k], and the chain rule gives
+    /// ∂ll/∂beta_om_k = Σ_i (∂ll/∂mu_i)(∂mu_i/∂omega_i)(∂omega_i/∂beta_om_k).
+    fn grad_beta_om(
+        &self,
+        data: &ModelData,
+        omega: &DVector<f64>,
+        rho:   &DVector<f64>,
+        sigma: f64,
+        p_om:  usize,
+    ) -> DVector<f64> {
+        let n = data.n;
+        let inv_sigma2 = 1.0 / (sigma * sigma);
+        let mut grad = DVector::<f64>::zeros(p_om);
+        for i in 0..n {
+            let di = data.tau[i] - omega[i];
+            let ri = rho[i];
+            let si = sigmoid(di * ri);
+            let b1i = self.b1_vals[i];
+            let b2i = self.b2_vals[i];
+            let mu = self.b0_fixed[i]
+                + di * b1i
+                + di * si * b2i
+                + self.re_contrib[i];
+            let resid = data.y[i] - mu;
+
+            // ∂mu_i/∂omega_i (note the sign: omega_i enters as tau_i - omega_i)
+            let dmu_domega = -(b1i + si * b2i + di * ri * si * (1.0 - si) * b2i);
+
+            // scalar factor for this observation
+            let factor = resid * inv_sigma2 * dmu_domega;
+            for k in 0..p_om {
+                grad[k] += factor * data.x_om[(i, k)];
+            }
+        }
+        grad
+    }
+
+    /// Gradient of the log-likelihood with respect to beta_rho.
+    ///
+    /// ∂mu_i/∂rho_i = d_i² * s_i * (1 - s_i) * b2_i
+    /// ∂ll/∂beta_rho_k = Σ_i  r_i/σ² * (∂mu_i/∂rho_i) * x_rho[i,k]
+    fn grad_beta_rho(
+        &self,
+        data: &ModelData,
+        omega: &DVector<f64>,
+        rho:   &DVector<f64>,
+        sigma: f64,
+        p_rho: usize,
+    ) -> DVector<f64> {
+        let n = data.n;
+        let inv_sigma2 = 1.0 / (sigma * sigma);
+        let mut grad = DVector::<f64>::zeros(p_rho);
+        for i in 0..n {
+            let di = data.tau[i] - omega[i];
+            let ri = rho[i];
+            let si = sigmoid(di * ri);
+            let b2i = self.b2_vals[i];
+            let b1i = self.b1_vals[i];
+            let mu = self.b0_fixed[i]
+                + di * b1i
+                + di * si * b2i
+                + self.re_contrib[i];
+            let resid = data.y[i] - mu;
+
+            // ∂mu_i/∂rho_i = d_i² * s_i * (1 - s_i) * b2_i
+            let dmu_drho = di * di * si * (1.0 - si) * b2i;
+
+            let factor = resid * inv_sigma2 * dmu_drho;
+            for k in 0..p_rho {
+                grad[k] += factor * data.x_rho[(i, k)];
+            }
+        }
+        grad
+    }
 }
 
 // ---------------------------------------------------------------------------
-// AdaptProposal: state for the adaptive Metropolis proposal on either beta_om
-// or beta_rho.
-//
-// Three phases inside warmup:
-//   Componentwise: random-walk MH one coordinate at a time, each coordinate
-//     tuned to ~44% acceptance (1D optimum).  Used for the first portion of
-//     warmup so each scale settles before we estimate covariance.  Skipped
-//     entirely when p == 1 (the joint and componentwise updates coincide).
-//   Adaptive: joint random-walk MH with proposal covariance Sigma_t = scale *
-//     (Cov_t + eps*I), where Cov_t is the running sample covariance of post-
-//     componentwise iterates (Welford-updated) and `scale` is tuned to ~23.4%
-//     joint acceptance.  Initialised at scale = 2.4^2 / d (Roberts & Rosenthal).
-//   Frozen: post-warmup, no further updates to step sizes, Cov, or scale.
-//     The proposal Cholesky from the end of warmup is used unchanged for the
-//     entire sampling phase, so the chain is a valid time-homogeneous Markov
-//     chain.
-//
-// For p == 1 the implementation degenerates to the original scalar adaptive
-// random-walk MH (target rate 0.234).
+// Gradient of the truncated-normal log-prior w.r.t. the parameter vector.
+// For each coordinate: ∂logp/∂θ_k = -(θ_k - μ_k) / σ_k².
+// Returns a zero vector if the point is outside bounds (though callers
+// should not evaluate gradients at out-of-bounds points).
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq)]
-enum ProposalPhase {
-    Componentwise,
-    Adaptive,
-    Frozen,
+fn grad_truncated_normal_prior(
+    values: &[f64],
+    means:  &[f64],
+    sds:    &[f64],
+    lbs:    &[f64],
+    ubs:    &[f64],
+) -> DVector<f64> {
+    let p = values.len();
+    let mut g = DVector::<f64>::zeros(p);
+    for i in 0..p {
+        if values[i] < lbs[i] || values[i] > ubs[i] {
+            return DVector::<f64>::zeros(p);
+        }
+        g[i] = -(values[i] - means[i]) / (sds[i] * sds[i]);
+    }
+    g
 }
 
-struct AdaptProposal {
+// ---------------------------------------------------------------------------
+// HmcAdapt: dual-averaging step-size adaptation and optional diagonal mass
+// matrix estimation for the HMC-within-Gibbs steps on beta_om / beta_rho.
+//
+// During warmup the step size epsilon is tuned via Nesterov dual averaging
+// (Algorithm 5 from Hoffman & Gelman 2014, i.e. the NUTS paper) targeting
+// a user-specified acceptance probability.
+//
+// A diagonal mass matrix (inverse variances) is estimated from warmup draws
+// via Welford online accumulation and refreshed at a mid-warmup window
+// boundary.
+//
+// Post-warmup, epsilon and the mass matrix are frozen so the chain is a
+// valid time-homogeneous Markov chain.
+// ---------------------------------------------------------------------------
+
+struct HmcAdapt {
     p: usize,
-    phase: ProposalPhase,
 
-    // Componentwise (Phase A) and 1D scalar fall-back: per-coordinate step,
-    // accept and attempt counters reset every tune_window.
-    comp_steps:    Vec<f64>,
-    comp_accepts:  Vec<u32>,
-    comp_attempts: Vec<u32>,
+    // Leapfrog trajectory length (number of steps).  Randomised per
+    // proposal as Uniform(l_min, l_max) to avoid periodic-orbit resonance.
+    l_min: usize,
+    l_max: usize,
 
-    // Adaptive joint (Phase B) and frozen (Phase C):
-    joint_scale:    f64,
-    joint_accepts:  u32,
-    joint_attempts: u32,
+    // Current step size.
+    epsilon: f64,
 
-    // Welford running mean and "M2" matrix (sum of (x - mean)(x - new_mean)^T)
-    // accumulated over post-componentwise iterates.  Cov = M2 / (n - 1).
-    n_seen: usize,
-    mean:   DVector<f64>,
-    m2:     DMatrix<f64>,
+    // Dual-averaging state (Hoffman & Gelman 2014, §3.2).
+    target_accept: f64,
+    mu:         f64,       // log(10 * epsilon_0) -- shrinkage target
+    log_eps_bar: f64,
+    h_bar:      f64,
+    gamma:      f64,       // 0.05 (default)
+    t0:         f64,       // 10.0  (default)
+    kappa:      f64,       // 0.75  (default)
+    da_count:   usize,     // number of dual-averaging updates so far
 
-    // Cholesky factor L such that L L^T = scale * (Cov + eps*I).
-    // Lazily refreshed during Phase B; held fixed in Phase C.
-    proposal_chol: Option<DMatrix<f64>>,
+    // Diagonal mass matrix: inv_mass[k] = 1/M_kk (used to scale momentum).
+    // Initialised to 1.0 (identity).  Updated from Welford variance estimates
+    // during warmup.
+    inv_mass: Vec<f64>,
+
+    // Welford accumulators for diagonal variance of the position.
+    welford_n:    usize,
+    welford_mean: DVector<f64>,
+    welford_m2:   DVector<f64>,
+
+    // Whether adaptation is still active.
+    adapting: bool,
 }
 
-impl AdaptProposal {
-    fn new(p: usize, init_step: f64) -> Self {
-        // Initial joint scale follows Roberts & Rosenthal (2001): 2.4^2 / d.
-        let init_joint_scale = if p > 0 {
-            init_step * init_step * 2.4 * 2.4 / (p as f64)
-        } else {
-            init_step * init_step
-        };
-        AdaptProposal {
+impl HmcAdapt {
+    fn new(p: usize, init_epsilon: f64, target_accept: f64, l_min: usize, l_max: usize) -> Self {
+        HmcAdapt {
             p,
-            phase: ProposalPhase::Componentwise,
-            comp_steps:    vec![init_step; p],
-            comp_accepts:  vec![0; p],
-            comp_attempts: vec![0; p],
-            joint_scale:    init_joint_scale,
-            joint_accepts:  0,
-            joint_attempts: 0,
-            n_seen: 0,
-            mean:   DVector::<f64>::zeros(p),
-            m2:     DMatrix::<f64>::zeros(p, p),
-            proposal_chol: None,
+            l_min,
+            l_max,
+            epsilon: init_epsilon,
+            target_accept,
+            mu: (10.0 * init_epsilon).ln(),
+            log_eps_bar: 0.0,
+            h_bar: 0.0,
+            gamma: 0.05,
+            t0: 10.0,
+            kappa: 0.75,
+            da_count: 0,
+            inv_mass: vec![1.0; p],
+            welford_n: 0,
+            welford_mean: DVector::<f64>::zeros(p),
+            welford_m2:   DVector::<f64>::zeros(p),
+            adapting: true,
         }
     }
 
-    /// Welford-style update of running mean and M2 with one new sample x.
-    fn observe(&mut self, x: &DVector<f64>) {
-        if self.p == 0 { return; }
-        self.n_seen += 1;
-        let n = self.n_seen as f64;
-        let delta1 = x - &self.mean;
-        self.mean += &delta1 / n;
-        let delta2 = x - &self.mean;
-        // m2 += delta1 * delta2^T  (outer product)
-        for i in 0..self.p {
-            for j in 0..self.p {
-                self.m2[(i, j)] += delta1[i] * delta2[j];
-            }
+    /// Update dual averaging with the acceptance probability from one HMC step.
+    fn update_epsilon(&mut self, accept_prob: f64) {
+        if !self.adapting { return; }
+        self.da_count += 1;
+        let m = self.da_count as f64;
+        let w = 1.0 / (m + self.t0);
+        self.h_bar = (1.0 - w) * self.h_bar + w * (self.target_accept - accept_prob);
+        let log_eps = self.mu - (m.sqrt() / self.gamma) * self.h_bar;
+        self.epsilon = log_eps.exp();
+        let mk = m.powf(-self.kappa);
+        self.log_eps_bar = mk * log_eps + (1.0 - mk) * self.log_eps_bar;
+    }
+
+    /// Accumulate a position sample for mass matrix estimation.
+    fn observe(&mut self, q: &DVector<f64>) {
+        if !self.adapting { return; }
+        self.welford_n += 1;
+        let n = self.welford_n as f64;
+        for k in 0..self.p {
+            let delta = q[k] - self.welford_mean[k];
+            self.welford_mean[k] += delta / n;
+            let delta2 = q[k] - self.welford_mean[k];
+            self.welford_m2[k] += delta * delta2;
         }
     }
 
-    /// Recompute the proposal Cholesky from the running covariance, scaled by
-    /// `joint_scale` and ridge-regularised by `eps` on the diagonal.  Returns
-    /// false if Cholesky failed (proposal_chol left unchanged).
-    fn refresh_chol(&mut self) -> bool {
-        if self.p == 0 || self.n_seen < 2 { return false; }
-        let n = self.n_seen as f64;
-        let mut sigma = (&self.m2) / (n - 1.0);
-        sigma *= self.joint_scale;
-        // Tikhonov ridge for numerical stability and to keep the proposal
-        // non-degenerate while the chain is still exploring.
-        let eps = 1e-6_f64.max(self.joint_scale * 1e-8);
-        for i in 0..self.p {
-            sigma[(i, i)] += eps;
+    /// Refresh the diagonal mass matrix from Welford variance estimates.
+    /// Called at a mid-warmup window boundary.
+    fn refresh_mass_matrix(&mut self) {
+        if self.welford_n < 20 { return; }
+        let n = self.welford_n as f64;
+        for k in 0..self.p {
+            let var_k = self.welford_m2[k] / (n - 1.0);
+            // inv_mass = 1/M_kk = variance (so momentum sampling uses
+            // p_k ~ N(0, M_kk) i.e. N(0, 1/inv_mass_k)).
+            // Clamp to avoid degeneracy.
+            self.inv_mass[k] = var_k.max(1e-8);
         }
-        if let Some(chol) = sigma.cholesky() {
-            self.proposal_chol = Some(chol.l());
-            true
+    }
+
+    /// Freeze adaptation: set epsilon to the smoothed dual-averaging estimate
+    /// and stop updating.
+    fn freeze(&mut self) {
+        self.epsilon = self.log_eps_bar.exp().max(1e-10);
+        self.adapting = false;
+    }
+
+    /// Sample the number of leapfrog steps for this proposal.
+    fn sample_l(&self, rng: &mut StdRng) -> usize {
+        if self.l_min == self.l_max {
+            self.l_min
         } else {
-            // Fall back to a heavier ridge once before giving up.
-            let mut sigma2 = (&self.m2) / (n - 1.0);
-            sigma2 *= self.joint_scale;
-            for i in 0..self.p {
-                sigma2[(i, i)] += 1e-3;
-            }
-            if let Some(chol) = sigma2.cholesky() {
-                self.proposal_chol = Some(chol.l());
-                true
-            } else {
-                false
-            }
+            rng.gen_range(self.l_min..=self.l_max)
         }
     }
-
-    fn is_componentwise(&self) -> bool { self.phase == ProposalPhase::Componentwise }
 }
 
-// Multiplicative scaling used by the per-window adaptation.  Same shape as
-// the original `adapt_step` but parameterised by target rate.
-fn adapt_scalar(step: f64, accept_rate: f64, target: f64) -> f64 {
-    let factor = (accept_rate / target).clamp(0.5, 2.0);
-    (step * factor).max(1e-8)
+// ---------------------------------------------------------------------------
+// Scalar adaptive random-walk MH state: retained for p == 1 parameters
+// where HMC overhead is unnecessary (single-dimensional targets are
+// efficiently sampled with a tuned scalar random walk).
+// ---------------------------------------------------------------------------
+
+struct ScalarAdapt {
+    step: f64,
+    accepts:  u32,
+    attempts: u32,
 }
 
-// Same shape but for a multiplicative scale factor (joint Haario scale).
-fn adapt_log_scale(scale: f64, accept_rate: f64, target: f64) -> f64 {
-    let factor = (accept_rate / target).clamp(0.5, 2.0);
-    (scale * factor).max(1e-12)
+impl ScalarAdapt {
+    fn new(init_step: f64) -> Self {
+        ScalarAdapt { step: init_step, accepts: 0, attempts: 0 }
+    }
+
+    fn tune(&mut self, target: f64) {
+        if self.attempts > 0 {
+            let rate = self.accepts as f64 / self.attempts as f64;
+            let factor = (rate / target).clamp(0.5, 2.0);
+            self.step = (self.step * factor).max(1e-8);
+        }
+        self.accepts  = 0;
+        self.attempts = 0;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +353,7 @@ pub fn run_chain(
     n_warmup: usize,
     step_om_init: f64,
     step_rho_init: f64,
+    target_accept: f64,
     seed: u64,
     verbose: bool,
     chain_id: usize,
@@ -248,38 +369,39 @@ pub fn run_chain(
     // draws stored row-major: rows = posterior samples, cols = parameters
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
-    // Adaptive proposal state for omega and rho.
-    let mut adapt_om  = AdaptProposal::new(priors.p_om,  step_om_init);
-    let mut adapt_rho = AdaptProposal::new(priors.p_rho, step_rho_init);
+    // -----------------------------------------------------------------------
+    // Adaptation state for omega and rho.
+    //
+    // Strategy selection:
+    //   p == 0  → nothing to sample
+    //   p == 1  → scalar adaptive random-walk MH (efficient for 1D)
+    //   p >= 2  → HMC-within-Gibbs with dual-averaging step-size adaptation
+    //             and diagonal mass matrix estimation
+    // -----------------------------------------------------------------------
+    let use_hmc_om  = priors.p_om  >= 2;
+    let use_hmc_rho = priors.p_rho >= 2;
 
-    // Phase boundaries within warmup.
-    //
-    // For multivariate proposals we spend the first 30% of warmup doing
-    // componentwise tuning and accumulating samples for covariance estimation,
-    // then switch to adaptive joint MH for the remainder of warmup, then
-    // freeze at end of warmup.  For 1D proposals (p == 1) we skip the
-    // componentwise -> joint distinction (they are identical) and stay in
-    // Componentwise the whole warmup, freezing at end of warmup.
-    //
-    // If the warmup is too short to estimate a covariance reliably we also
-    // stay in Componentwise.
-    let use_adaptive_joint_om  = priors.p_om  >= 2 && n_warmup >= 200;
-    let use_adaptive_joint_rho = priors.p_rho >= 2 && n_warmup >= 200;
-    let phase_a_end_om  = if use_adaptive_joint_om  { (n_warmup as f64 * 0.30) as usize } else { n_warmup };
-    let phase_a_end_rho = if use_adaptive_joint_rho { (n_warmup as f64 * 0.30) as usize } else { n_warmup };
+    // HMC adaptation state (only used when p >= 2).
+    let mut hmc_om  = if use_hmc_om  {
+        Some(HmcAdapt::new(priors.p_om,  step_om_init,  target_accept, 5, 15))
+    } else { None };
+    let mut hmc_rho = if use_hmc_rho {
+        Some(HmcAdapt::new(priors.p_rho, step_rho_init, target_accept, 5, 15))
+    } else { None };
+
+    // Scalar adaptive MH state (only used when p == 1).
+    let mut scalar_om  = if priors.p_om  == 1 { Some(ScalarAdapt::new(step_om_init))  } else { None };
+    let mut scalar_rho = if priors.p_rho == 1 { Some(ScalarAdapt::new(step_rho_init)) } else { None };
 
     let tune_window = 100usize;
 
-    // Cached log-likelihood + log-priors that survive across MH steps.
-    let mut ll     = 0.0f64;
-    let mut lp_om  = 0.0f64;
-    let mut lp_rho = 0.0f64;
+    // Mass matrix refresh: at 60% of warmup, refresh the diagonal mass
+    // matrix from accumulated Welford samples and reset the dual-averaging
+    // step-size adaptation so it can re-converge with the new metric.
+    let mass_refresh_iter_om  = (n_warmup as f64 * 0.60) as usize;
+    let mass_refresh_iter_rho = (n_warmup as f64 * 0.60) as usize;
 
     // Cached current omega and rho linear predictors plus the LinearCache.
-    // These are unconditionally rebuilt at the top of every iteration after
-    // the linear coefficient block, so the initial values would be discarded
-    // on iter 0 -- start them as zero-length placeholders to keep the borrow
-    // checker happy without doing redundant initial work.
     let mut omega_cur: DVector<f64> = DVector::<f64>::zeros(0);
     let mut rho_cur:   DVector<f64> = DVector::<f64>::zeros(0);
     let mut cache: LinearCache = LinearCache {
@@ -300,9 +422,6 @@ pub fn run_chain(
         }
         // ---------------------------------------------------------------
         // Block 1a: Sample random intercepts via non-centred reparameterisation.
-        // Sample z_j ~ N(0,1) using the conjugate full conditional, then set
-        // u_j = sigma_u * z_j.  This breaks the strong posterior correlation
-        // between the overall intercept (beta_b0) and the group effects (u_j).
         // ---------------------------------------------------------------
         if data.n_groups_b0 > 0 {
             sample_random_effects_nc(data, &mut state, &mut rng);
@@ -313,52 +432,53 @@ pub fn run_chain(
         // ---------------------------------------------------------------
         sample_linear_coefs(data, priors, &mut state, &mut rng);
 
-        // After both updates the linear cache, omega/rho vectors, ll and
-        // log-priors all need refreshing.
+        // Rebuild cache and linear predictors after the Gibbs blocks.
         cache     = LinearCache::build(&state, data);
-        // omega/rho only depend on the betas we have not yet touched in this
-        // iteration, so they are still current; rebuild defensively in case
-        // beta_om/beta_rho have been overwritten elsewhere (cheap).
         omega_cur = &data.x_om  * &state.beta_om;
         rho_cur   = &data.x_rho * &state.beta_rho;
-        ll = cache.log_likelihood(data, &omega_cur, &rho_cur, state.sigma);
-        lp_om  = state.log_prior_om(priors);
-        lp_rho = state.log_prior_rho(priors);
-
-        // Determine the phase for this iteration.
-        let phase_om = phase_for(iter, n_warmup, phase_a_end_om,  use_adaptive_joint_om);
-        let phase_rho = phase_for(iter, n_warmup, phase_a_end_rho, use_adaptive_joint_rho);
-        adapt_om.phase  = phase_om;
-        adapt_rho.phase = phase_rho;
 
         // ---------------------------------------------------------------
-        // Block 2a: MH for beta_om
+        // Block 2a: Update beta_om (HMC for p>=2, scalar MH for p==1)
         // ---------------------------------------------------------------
-        mh_step_om(
-            data, priors, &mut state,
-            &mut ll, &mut lp_om,
-            &cache, &mut omega_cur, &rho_cur,
-            &mut adapt_om,
-            &mut rng,
-        );
+        if use_hmc_om {
+            hmc_step_om(
+                data, priors, &mut state,
+                &cache, &mut omega_cur, &rho_cur,
+                hmc_om.as_mut().unwrap(),
+                &mut rng,
+            );
+        } else if priors.p_om == 1 {
+            scalar_mh_step_om(
+                data, priors, &mut state,
+                &cache, &mut omega_cur, &rho_cur,
+                scalar_om.as_mut().unwrap(),
+                &mut rng,
+            );
+        }
 
         // ---------------------------------------------------------------
-        // Block 2b: MH for beta_rho
+        // Block 2b: Update beta_rho (HMC for p>=2, scalar MH for p==1)
         // ---------------------------------------------------------------
-        mh_step_rho(
-            data, priors, &mut state,
-            &mut ll, &mut lp_rho,
-            &cache, &omega_cur, &mut rho_cur,
-            &mut adapt_rho,
-            &mut rng,
-        );
+        if use_hmc_rho {
+            hmc_step_rho(
+                data, priors, &mut state,
+                &cache, &omega_cur, &mut rho_cur,
+                hmc_rho.as_mut().unwrap(),
+                &mut rng,
+            );
+        } else if priors.p_rho == 1 {
+            scalar_mh_step_rho(
+                data, priors, &mut state,
+                &cache, &omega_cur, &mut rho_cur,
+                scalar_rho.as_mut().unwrap(),
+                &mut rng,
+            );
+        }
 
         // ---------------------------------------------------------------
         // Block 3a: Sample sigma (Gibbs, InvGamma conjugate)
         // ---------------------------------------------------------------
         sample_sigma(data, priors, &mut state, &mut rng);
-        // sigma changed but cache, omega_cur, rho_cur are still valid.
-        ll = cache.log_likelihood(data, &omega_cur, &rho_cur, state.sigma);
 
         // ---------------------------------------------------------------
         // Block 3b: Sample sigma_u (Gibbs, InvGamma conjugate).
@@ -368,34 +488,45 @@ pub fn run_chain(
         }
 
         // ---------------------------------------------------------------
-        // Adaptation of step sizes / proposal covariance during warmup.
+        // Adaptation during warmup
         // ---------------------------------------------------------------
         if iter < n_warmup {
-            // Per-window adaptation of componentwise scales.
+            // Scalar MH: tune step sizes every window.
             if (iter + 1) % tune_window == 0 {
-                tune_componentwise(&mut adapt_om);
-                tune_componentwise(&mut adapt_rho);
-                tune_joint(&mut adapt_om);
-                tune_joint(&mut adapt_rho);
+                if let Some(ref mut s) = scalar_om  { s.tune(0.234); }
+                if let Some(ref mut s) = scalar_rho { s.tune(0.234); }
             }
 
-            // Welford accumulation: feed the current draw into the running
-            // mean/cov estimator once we have entered the joint-adaptation
-            // window for that parameter (we want covariance from samples
-            // collected after the componentwise scales settled).
-            if use_adaptive_joint_om && iter >= phase_a_end_om {
-                adapt_om.observe(&state.beta_om);
-                // Refresh proposal occasionally during Phase B.
-                if (iter + 1) % tune_window == 0 {
-                    adapt_om.refresh_chol();
+            // HMC: accumulate Welford samples for mass matrix.
+            if let Some(ref mut h) = hmc_om  { h.observe(&state.beta_om);  }
+            if let Some(ref mut h) = hmc_rho { h.observe(&state.beta_rho); }
+
+            // Mass matrix refresh at the mid-warmup window boundary.
+            if iter == mass_refresh_iter_om {
+                if let Some(ref mut h) = hmc_om {
+                    h.refresh_mass_matrix();
+                    // Reset dual averaging so epsilon can re-adapt to new metric.
+                    h.da_count = 0;
+                    h.h_bar = 0.0;
+                    h.mu = (10.0 * h.epsilon).ln();
+                    h.log_eps_bar = h.epsilon.ln();
                 }
             }
-            if use_adaptive_joint_rho && iter >= phase_a_end_rho {
-                adapt_rho.observe(&state.beta_rho);
-                if (iter + 1) % tune_window == 0 {
-                    adapt_rho.refresh_chol();
+            if iter == mass_refresh_iter_rho {
+                if let Some(ref mut h) = hmc_rho {
+                    h.refresh_mass_matrix();
+                    h.da_count = 0;
+                    h.h_bar = 0.0;
+                    h.mu = (10.0 * h.epsilon).ln();
+                    h.log_eps_bar = h.epsilon.ln();
                 }
             }
+        }
+
+        // Freeze adaptation at end of warmup.
+        if iter + 1 == n_warmup {
+            if let Some(ref mut h) = hmc_om  { h.freeze(); }
+            if let Some(ref mut h) = hmc_rho { h.freeze(); }
         }
 
         // ---------------------------------------------------------------
@@ -414,44 +545,7 @@ pub fn run_chain(
         progress_fn(chain_id, n_chains, n_iter, n_iter, false);
     }
 
-    // Suppress unused-variable warnings for the per-iteration `ll` cache; it
-    // is intentionally maintained but not read after the final iteration.
-    let _ = (ll, lp_om, lp_rho);
-
     draws
-}
-
-fn phase_for(iter: usize, n_warmup: usize, phase_a_end: usize, use_joint: bool) -> ProposalPhase {
-    if iter >= n_warmup {
-        ProposalPhase::Frozen
-    } else if !use_joint || iter < phase_a_end {
-        ProposalPhase::Componentwise
-    } else {
-        ProposalPhase::Adaptive
-    }
-}
-
-fn tune_componentwise(adapt: &mut AdaptProposal) {
-    // Only tune when in or just leaving componentwise phase; harmless if
-    // counters are zero.
-    let target = if adapt.p > 1 { 0.44 } else { 0.234 };
-    for k in 0..adapt.p {
-        if adapt.comp_attempts[k] > 0 {
-            let rate = adapt.comp_accepts[k] as f64 / adapt.comp_attempts[k] as f64;
-            adapt.comp_steps[k] = adapt_scalar(adapt.comp_steps[k], rate, target);
-        }
-        adapt.comp_accepts[k]  = 0;
-        adapt.comp_attempts[k] = 0;
-    }
-}
-
-fn tune_joint(adapt: &mut AdaptProposal) {
-    if adapt.joint_attempts > 0 {
-        let rate = adapt.joint_accepts as f64 / adapt.joint_attempts as f64;
-        adapt.joint_scale = adapt_log_scale(adapt.joint_scale, rate, 0.234);
-    }
-    adapt.joint_accepts  = 0;
-    adapt.joint_attempts = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -642,210 +736,320 @@ fn sample_linear_coefs(
 }
 
 // ---------------------------------------------------------------------------
-// Block 2a: MH for beta_om
+// Block 2a: HMC-within-Gibbs for beta_om  (p >= 2)
+//
+// Runs a short HMC trajectory (L leapfrog steps) with boundary reflection
+// and diagonal mass matrix preconditioning.  Step size is adapted via
+// Nesterov dual averaging during warmup.
 // ---------------------------------------------------------------------------
 
-fn mh_step_om(
+fn hmc_step_om(
     data: &ModelData,
     priors: &Priors,
     state: &mut State,
-    ll: &mut f64,
-    lp_om: &mut f64,
     cache: &LinearCache,
     omega_cur: &mut DVector<f64>,
     rho_cur:   &DVector<f64>,
-    adapt:     &mut AdaptProposal,
+    adapt:     &mut HmcAdapt,
     rng: &mut StdRng,
 ) {
-    if priors.p_om == 0 { return; }
-
+    let p = priors.p_om;
     let r_idx = priors.om_range();
     let prior_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
     let prior_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
     let prior_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
     let prior_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
 
-    if adapt.is_componentwise() {
-        // One coordinate at a time.  Cheaper per proposal because we can
-        // update omega_cur with a single column scaling instead of a full
-        // matrix-vector product.
-        for k in 0..priors.p_om {
-            let normal = Normal::new(0.0, adapt.comp_steps[k]).unwrap();
-            let delta = normal.sample(rng);
-            let proposed_val = state.beta_om[k] + delta;
-            adapt.comp_attempts[k] += 1;
+    // Potential energy U = -(log-likelihood + log-prior).
+    // We work with the negative log-posterior so the leapfrog integrates
+    // the Hamiltonian H = U(q) + K(p) = U(q) + 0.5 * p^T M^{-1} p.
 
-            if proposed_val < prior_lb[k] || proposed_val > prior_ub[k] {
-                continue;
-            }
+    let q0 = state.beta_om.clone();
+    let omega0 = omega_cur.clone();
 
-            // Proposed log-prior (vector-form: only kth coord changes)
-            let mut beta_prop = state.beta_om.clone();
-            beta_prop[k] = proposed_val;
-            let lp_prop = log_truncated_normal_prior(
-                beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
-            );
-            if lp_prop == f64::NEG_INFINITY { continue; }
+    // Gradient of log-posterior = grad_ll + grad_prior.
+    // grad_U = -grad_logpost.
+    let grad_ll = cache.grad_beta_om(data, &omega0, rho_cur, state.sigma, p);
+    let grad_pr = grad_truncated_normal_prior(
+        q0.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+    let mut grad_logpost = &grad_ll + &grad_pr;
 
-            // omega_prop = omega_cur + delta * X_om[:, k]
-            let mut omega_prop = omega_cur.clone();
-            for i in 0..data.n {
-                omega_prop[i] += delta * data.x_om[(i, k)];
-            }
+    // Sample momentum: p_k ~ N(0, M_kk) where M_kk = 1/inv_mass[k].
+    let normal = Normal::new(0.0, 1.0f64).unwrap();
+    let mut mom = DVector::<f64>::from_iterator(
+        p, (0..p).map(|k| normal.sample(rng) / adapt.inv_mass[k].sqrt())
+    );
 
-            let ll_prop = cache.log_likelihood(data, &omega_prop, rho_cur, state.sigma);
-            let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_om);
-            if rng.gen::<f64>().ln() < log_alpha {
-                state.beta_om[k] = proposed_val;
-                *omega_cur = omega_prop;
-                *ll = ll_prop;
-                *lp_om = lp_prop;
-                adapt.comp_accepts[k] += 1;
+    // Initial kinetic energy: K = 0.5 * Σ p_k² * inv_mass_k.
+    let kinetic0: f64 = (0..p).map(|k| mom[k] * mom[k] * adapt.inv_mass[k]).sum::<f64>() * 0.5;
+    let ll0 = cache.log_likelihood(data, &omega0, rho_cur, state.sigma);
+    let lp0 = log_truncated_normal_prior(
+        q0.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+    let h0 = -ll0 - lp0 + kinetic0;
+
+    let mut q = q0.clone();
+    let eps = adapt.epsilon;
+    let n_leapfrog = adapt.sample_l(rng);
+
+    // --- Leapfrog integration with boundary reflection ---
+    for _step in 0..n_leapfrog {
+        // Half-step momentum
+        for k in 0..p {
+            mom[k] += 0.5 * eps * grad_logpost[k];
+        }
+
+        // Full-step position (with reflection at bounds)
+        for k in 0..p {
+            q[k] += eps * mom[k] * adapt.inv_mass[k];
+            // Reflect off bounds.  Loop handles the (rare) case where
+            // the step is large enough to cross a boundary more than once.
+            loop {
+                if q[k] < prior_lb[k] {
+                    q[k] = 2.0 * prior_lb[k] - q[k];
+                    mom[k] = -mom[k];
+                } else if q[k] > prior_ub[k] {
+                    q[k] = 2.0 * prior_ub[k] - q[k];
+                    mom[k] = -mom[k];
+                } else {
+                    break;
+                }
             }
         }
-    } else {
-        // Joint proposal.  In the Frozen and Adaptive phases we propose using
-        // the most recently learned Cholesky factor; if none exists yet (e.g.
-        // first joint iteration before refresh_chol has been called), we fall
-        // back to a diagonal proposal built from the componentwise steps.
-        let p = priors.p_om;
-        let normal = Normal::new(0.0, 1.0f64).unwrap();
-        let z = DVector::from_iterator(p, (0..p).map(|_| normal.sample(rng)));
 
-        let raw_step: DVector<f64> = if let Some(l) = adapt.proposal_chol.as_ref() {
-            l * &z
-        } else {
-            // No covariance estimate yet; fall back to a diagonal proposal
-            // using the per-coordinate componentwise SDs.  The joint Haario
-            // scaling kicks in once `refresh_chol` has been called.
-            DVector::from_iterator(p, (0..p).map(|k| z[k] * adapt.comp_steps[k]))
-        };
-
-        let beta_prop: DVector<f64> = &state.beta_om + &raw_step;
-        adapt.joint_attempts += 1;
-
-        // Bounds check
-        for (k, i) in r_idx.clone().enumerate() {
-            if beta_prop[k] < priors.lb[i] || beta_prop[k] > priors.ub[i] {
-                return;
-            }
-        }
-        let lp_prop = log_truncated_normal_prior(
-            beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+        // Recompute gradient at new position.
+        let omega_prop = &data.x_om * &q;
+        let gl = cache.grad_beta_om(data, &omega_prop, rho_cur, state.sigma, p);
+        let gp = grad_truncated_normal_prior(
+            q.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
         );
-        if lp_prop == f64::NEG_INFINITY { return; }
+        grad_logpost = &gl + &gp;
 
-        // Recompute omega from scratch (cheaper than tracking column-wise deltas
-        // because all coordinates moved).
-        let omega_prop = &data.x_om * &beta_prop;
-        let ll_prop = cache.log_likelihood(data, &omega_prop, rho_cur, state.sigma);
-
-        let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_om);
-        if rng.gen::<f64>().ln() < log_alpha {
-            state.beta_om = beta_prop;
-            *omega_cur = omega_prop;
-            *ll = ll_prop;
-            *lp_om = lp_prop;
-            adapt.joint_accepts += 1;
+        // Half-step momentum
+        for k in 0..p {
+            mom[k] += 0.5 * eps * grad_logpost[k];
         }
     }
+
+    // --- Accept/reject ---
+    let omega_prop = &data.x_om * &q;
+    let ll_prop = cache.log_likelihood(data, &omega_prop, rho_cur, state.sigma);
+    let lp_prop = log_truncated_normal_prior(
+        q.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+    let kinetic_prop: f64 = (0..p).map(|k| mom[k] * mom[k] * adapt.inv_mass[k]).sum::<f64>() * 0.5;
+    let h_prop = -ll_prop - lp_prop + kinetic_prop;
+
+    let log_alpha = h0 - h_prop;
+    // Clamp for numerical safety (very large ΔH from divergent trajectories).
+    let accept_prob = 1.0_f64.min(log_alpha.exp());
+
+    if rng.gen::<f64>() < accept_prob {
+        state.beta_om = q;
+        *omega_cur = omega_prop;
+    }
+
+    // Update dual averaging.
+    adapt.update_epsilon(accept_prob);
 }
 
 // ---------------------------------------------------------------------------
-// Block 2b: MH for beta_rho  (mirrors mh_step_om)
+// Block 2b: HMC-within-Gibbs for beta_rho  (p >= 2)
 // ---------------------------------------------------------------------------
 
-fn mh_step_rho(
+fn hmc_step_rho(
     data: &ModelData,
     priors: &Priors,
     state: &mut State,
-    ll: &mut f64,
-    lp_rho: &mut f64,
     cache: &LinearCache,
     omega_cur: &DVector<f64>,
     rho_cur:   &mut DVector<f64>,
-    adapt:     &mut AdaptProposal,
+    adapt:     &mut HmcAdapt,
     rng: &mut StdRng,
 ) {
-    if priors.p_rho == 0 { return; }
-
+    let p = priors.p_rho;
     let r_idx = priors.rho_range();
     let prior_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
     let prior_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
     let prior_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
     let prior_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
 
-    if adapt.is_componentwise() {
-        for k in 0..priors.p_rho {
-            let normal = Normal::new(0.0, adapt.comp_steps[k]).unwrap();
-            let delta = normal.sample(rng);
-            let proposed_val = state.beta_rho[k] + delta;
-            adapt.comp_attempts[k] += 1;
+    let q0 = state.beta_rho.clone();
+    let rho0 = rho_cur.clone();
 
-            if proposed_val < prior_lb[k] || proposed_val > prior_ub[k] {
-                continue;
-            }
+    let grad_ll = cache.grad_beta_rho(data, omega_cur, &rho0, state.sigma, p);
+    let grad_pr = grad_truncated_normal_prior(
+        q0.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+    let mut grad_logpost = &grad_ll + &grad_pr;
 
-            let mut beta_prop = state.beta_rho.clone();
-            beta_prop[k] = proposed_val;
-            let lp_prop = log_truncated_normal_prior(
-                beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
-            );
-            if lp_prop == f64::NEG_INFINITY { continue; }
+    let normal = Normal::new(0.0, 1.0f64).unwrap();
+    let mut mom = DVector::<f64>::from_iterator(
+        p, (0..p).map(|k| normal.sample(rng) / adapt.inv_mass[k].sqrt())
+    );
 
-            let mut rho_prop = rho_cur.clone();
-            for i in 0..data.n {
-                rho_prop[i] += delta * data.x_rho[(i, k)];
-            }
+    let kinetic0: f64 = (0..p).map(|k| mom[k] * mom[k] * adapt.inv_mass[k]).sum::<f64>() * 0.5;
+    let ll0 = cache.log_likelihood(data, omega_cur, &rho0, state.sigma);
+    let lp0 = log_truncated_normal_prior(
+        q0.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+    let h0 = -ll0 - lp0 + kinetic0;
 
-            let ll_prop = cache.log_likelihood(data, omega_cur, &rho_prop, state.sigma);
-            let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_rho);
-            if rng.gen::<f64>().ln() < log_alpha {
-                state.beta_rho[k] = proposed_val;
-                *rho_cur = rho_prop;
-                *ll = ll_prop;
-                *lp_rho = lp_prop;
-                adapt.comp_accepts[k] += 1;
+    let mut q = q0.clone();
+    let eps = adapt.epsilon;
+    let n_leapfrog = adapt.sample_l(rng);
+
+    for _step in 0..n_leapfrog {
+        for k in 0..p {
+            mom[k] += 0.5 * eps * grad_logpost[k];
+        }
+
+        for k in 0..p {
+            q[k] += eps * mom[k] * adapt.inv_mass[k];
+            loop {
+                if q[k] < prior_lb[k] {
+                    q[k] = 2.0 * prior_lb[k] - q[k];
+                    mom[k] = -mom[k];
+                } else if q[k] > prior_ub[k] {
+                    q[k] = 2.0 * prior_ub[k] - q[k];
+                    mom[k] = -mom[k];
+                } else {
+                    break;
+                }
             }
         }
-    } else {
-        let p = priors.p_rho;
-        let normal = Normal::new(0.0, 1.0f64).unwrap();
-        let z = DVector::from_iterator(p, (0..p).map(|_| normal.sample(rng)));
 
-        let raw_step: DVector<f64> = if let Some(l) = adapt.proposal_chol.as_ref() {
-            l * &z
-        } else {
-            // No covariance estimate yet; fall back to a diagonal proposal
-            // using the per-coordinate componentwise SDs.  The joint Haario
-            // scaling kicks in once `refresh_chol` has been called.
-            DVector::from_iterator(p, (0..p).map(|k| z[k] * adapt.comp_steps[k]))
-        };
-
-        let beta_prop: DVector<f64> = &state.beta_rho + &raw_step;
-        adapt.joint_attempts += 1;
-
-        for (k, i) in r_idx.clone().enumerate() {
-            if beta_prop[k] < priors.lb[i] || beta_prop[k] > priors.ub[i] {
-                return;
-            }
-        }
-        let lp_prop = log_truncated_normal_prior(
-            beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+        let rho_prop = &data.x_rho * &q;
+        let gl = cache.grad_beta_rho(data, omega_cur, &rho_prop, state.sigma, p);
+        let gp = grad_truncated_normal_prior(
+            q.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
         );
-        if lp_prop == f64::NEG_INFINITY { return; }
+        grad_logpost = &gl + &gp;
 
-        let rho_prop = &data.x_rho * &beta_prop;
-        let ll_prop = cache.log_likelihood(data, omega_cur, &rho_prop, state.sigma);
-
-        let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_rho);
-        if rng.gen::<f64>().ln() < log_alpha {
-            state.beta_rho = beta_prop;
-            *rho_cur = rho_prop;
-            *ll = ll_prop;
-            *lp_rho = lp_prop;
-            adapt.joint_accepts += 1;
+        for k in 0..p {
+            mom[k] += 0.5 * eps * grad_logpost[k];
         }
+    }
+
+    let rho_prop = &data.x_rho * &q;
+    let ll_prop = cache.log_likelihood(data, omega_cur, &rho_prop, state.sigma);
+    let lp_prop = log_truncated_normal_prior(
+        q.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+    let kinetic_prop: f64 = (0..p).map(|k| mom[k] * mom[k] * adapt.inv_mass[k]).sum::<f64>() * 0.5;
+    let h_prop = -ll_prop - lp_prop + kinetic_prop;
+
+    let log_alpha = h0 - h_prop;
+    let accept_prob = 1.0_f64.min(log_alpha.exp());
+
+    if rng.gen::<f64>() < accept_prob {
+        state.beta_rho = q;
+        *rho_cur = rho_prop;
+    }
+
+    adapt.update_epsilon(accept_prob);
+}
+
+// ---------------------------------------------------------------------------
+// Scalar adaptive random-walk MH for p == 1 parameters.
+// Retained because a 1-D HMC has no advantage over a well-tuned scalar RWM
+// and the overhead of leapfrog integration is unnecessary.
+// ---------------------------------------------------------------------------
+
+fn scalar_mh_step_om(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    cache: &LinearCache,
+    omega_cur: &mut DVector<f64>,
+    rho_cur:   &DVector<f64>,
+    adapt:     &mut ScalarAdapt,
+    rng: &mut StdRng,
+) {
+    let r_idx = priors.om_range();
+    let prior_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
+    let prior_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
+    let prior_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
+    let prior_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
+
+    let normal = Normal::new(0.0, adapt.step).unwrap();
+    let delta = normal.sample(rng);
+    let proposed_val = state.beta_om[0] + delta;
+    adapt.attempts += 1;
+
+    if proposed_val < prior_lb[0] || proposed_val > prior_ub[0] { return; }
+
+    let mut beta_prop = state.beta_om.clone();
+    beta_prop[0] = proposed_val;
+    let lp_prop = log_truncated_normal_prior(
+        beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+    if lp_prop == f64::NEG_INFINITY { return; }
+    let lp_cur = log_truncated_normal_prior(
+        state.beta_om.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+
+    let mut omega_prop = omega_cur.clone();
+    for i in 0..data.n {
+        omega_prop[i] += delta * data.x_om[(i, 0)];
+    }
+
+    let ll_cur  = cache.log_likelihood(data, omega_cur, rho_cur, state.sigma);
+    let ll_prop = cache.log_likelihood(data, &omega_prop, rho_cur, state.sigma);
+    let log_alpha = (ll_prop + lp_prop) - (ll_cur + lp_cur);
+    if rng.gen::<f64>().ln() < log_alpha {
+        state.beta_om[0] = proposed_val;
+        *omega_cur = omega_prop;
+        adapt.accepts += 1;
+    }
+}
+
+fn scalar_mh_step_rho(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    cache: &LinearCache,
+    omega_cur: &DVector<f64>,
+    rho_cur:   &mut DVector<f64>,
+    adapt:     &mut ScalarAdapt,
+    rng: &mut StdRng,
+) {
+    let r_idx = priors.rho_range();
+    let prior_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
+    let prior_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
+    let prior_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
+    let prior_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
+
+    let normal = Normal::new(0.0, adapt.step).unwrap();
+    let delta = normal.sample(rng);
+    let proposed_val = state.beta_rho[0] + delta;
+    adapt.attempts += 1;
+
+    if proposed_val < prior_lb[0] || proposed_val > prior_ub[0] { return; }
+
+    let mut beta_prop = state.beta_rho.clone();
+    beta_prop[0] = proposed_val;
+    let lp_prop = log_truncated_normal_prior(
+        beta_prop.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+    if lp_prop == f64::NEG_INFINITY { return; }
+    let lp_cur = log_truncated_normal_prior(
+        state.beta_rho.as_slice(), &prior_mean, &prior_sd, &prior_lb, &prior_ub,
+    );
+
+    let mut rho_prop = rho_cur.clone();
+    for i in 0..data.n {
+        rho_prop[i] += delta * data.x_rho[(i, 0)];
+    }
+
+    let ll_cur  = cache.log_likelihood(data, omega_cur, rho_cur, state.sigma);
+    let ll_prop = cache.log_likelihood(data, omega_cur, &rho_prop, state.sigma);
+    let log_alpha = (ll_prop + lp_prop) - (ll_cur + lp_cur);
+    if rng.gen::<f64>().ln() < log_alpha {
+        state.beta_rho[0] = proposed_val;
+        *rho_cur = rho_prop;
+        adapt.accepts += 1;
     }
 }
 
