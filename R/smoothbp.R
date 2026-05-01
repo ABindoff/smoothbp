@@ -15,11 +15,22 @@
 #' \itemize{
 #'   \item \strong{Gibbs} (exact conjugate) for \eqn{b0}, \eqn{b1}, \eqn{b2}
 #'         coefficients and the random intercepts.
-#'   \item \strong{Metropolis} (random-walk with adaptive step size) for
-#'         \eqn{\omega} and \eqn{\rho} coefficients.
+#'   \item \strong{Metropolis} (random-walk with adaptive proposal) for
+#'         \eqn{\omega} and \eqn{\rho} coefficients. For multi-coefficient
+#'         linear predictors the sampler runs a componentwise random walk
+#'         with per-coordinate step tuning during the first 30\% of warmup,
+#'         then switches to a joint Haario-style adaptive Metropolis with
+#'         covariance learned online and global scale tuned to ~23.4\%
+#'         acceptance, then freezes the proposal at end of warmup. For 1-D
+#'         linear predictors (e.g. \code{omega = ~ 1}) the sampler is the
+#'         classical scalar adaptive random walk targeting ~23.4\%.
 #'   \item \strong{Gibbs} (inverse-gamma conjugate) for \eqn{\sigma} and
 #'         \eqn{\sigma_u}.
 #' }
+#'
+#' To keep the per-iteration cost low, the MH steps for \eqn{\omega} and
+#' \eqn{\rho} reuse a precomputed linear-predictor cache so each proposal
+#' costs O(n) rather than recomputing the entire fitted-mean function.
 #'
 #' @param formula A two-sided formula identifying the response and time variable,
 #'   e.g. \code{value ~ tau}.
@@ -38,9 +49,11 @@
 #' @param warmup Number of warmup iterations (discarded). Default 1000.
 #' @param seed Integer random seed for reproducibility.
 #' @param step_om Initial Metropolis step size for \eqn{\omega} coefficients.
-#'   Tuned automatically during warmup. Default 0.3.
+#'   Used as the initial per-coordinate proposal SD during the componentwise
+#'   warmup phase and to seed the joint adaptive Metropolis scale. Tuned
+#'   automatically during warmup; see Details. Default 0.3.
 #' @param step_rho Initial Metropolis step size for \eqn{\rho} coefficients.
-#'   Default 0.3.
+#'   Same semantics as \code{step_om}. Default 0.3.
 #' @param cores Number of CPU cores used to run chains in parallel.  When
 #'   \code{cores > 1} all chains run concurrently via Rayon (the per-iteration
 #'   progress bar is suppressed in this mode — only a start and done message
@@ -159,34 +172,4 @@ smoothbp <- function(
   n_params <- ncol(raw$draws[[1]])
   chain_arr <- array(
     data     = unlist(lapply(raw$draws, function(m) t(m))),  # params × draws per chain
-    dim      = c(n_params, n_post, chains),
-    dimnames = list(variable = pnames, draw = NULL, chain = NULL)
-  )
-  # posterior::draws_array expects [draw, chain, variable]
-  da <- posterior::as_draws_array(aperm(chain_arr, c(2, 3, 1)))
-
-  # ---- Assemble fit object ------------------------------------------------
-  structure(
-    list(
-      draws         = da,
-      param_names   = pnames,
-      formula       = formula,
-      b0_formula    = b0,
-      b1_formula    = b1,
-      b2_formula    = b2,
-      omega_formula = omega,
-      rho_formula   = rho,
-      priors        = priors,
-      data          = data,
-      response      = response_name,
-      time          = time_name,
-      dm            = dm,
-      chains        = as.integer(chains),
-      iter          = as.integer(iter),
-      warmup        = as.integer(warmup),
-      seed          = seed,
-      cores         = as.integer(max(1L, cores))
-    ),
-    class = "smoothbp_fit"
-  )
-}
+    dim      = c(n_params, n

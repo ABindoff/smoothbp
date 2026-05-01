@@ -29,7 +29,8 @@ fn flat_to_dmatrix(data: &[f64], nrow: usize, ncol: usize) -> DMatrix<f64> {
 /// @param p_rho       Number of columns in x_rho.
 /// @param group_b0    0-based group indices for b0 random intercept (-1 = no RE).
 /// @param n_groups_b0 Number of RE groups (0 = no random effect).
-/// @param prior_mean  Prior means concatenated [b0 | b1 | b2 | omega | rho].
+/// @param prior_mean  Prior means concatenated in the order
+///                    `b0`, `b1`, `b2`, `omega`, `rho`.
 /// @param prior_sd    Prior SDs (same order).
 /// @param prior_lb    Lower bounds (-Inf for unconstrained).
 /// @param prior_ub    Upper bounds (+Inf for unconstrained).
@@ -237,7 +238,4 @@ fn run_mcmc(
 }
 
 // Macro to register exports with R
-extendr_module! {
-    mod smoothbp;
-    fn run_mcmc;
-}
+extendr_module! {

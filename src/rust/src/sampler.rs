@@ -9,11 +9,223 @@ use crate::model::{ModelData, Priors, State, log_truncated_normal_prior, sigmoid
 
 
 // ---------------------------------------------------------------------------
+// LinearCache: precomputed parts of the mean function that do NOT depend on
+// beta_om or beta_rho.  Refreshed once per outer iteration after the linear
+// coefficient block is sampled.  Used by the MH steps for omega and rho so
+// each proposal does O(n) work instead of O(n * (p_b0 + p_b1 + p_b2)).
+//
+// mu_i = b0_fixed_i + d_i * b1_vals_i + d_i * s_i * b2_vals_i + re_contrib_i
+//   where d_i = tau_i - omega_i and s_i = sigmoid(d_i * rho_i).
+// ---------------------------------------------------------------------------
+
+struct LinearCache {
+    b0_fixed:   DVector<f64>,   // X_b0 * beta_b0
+    b1_vals:    DVector<f64>,   // X_b1 * beta_b1   (constant inputs to per-i b1 contribution)
+    b2_vals:    DVector<f64>,   // X_b2 * beta_b2
+    re_contrib: DVector<f64>,   // per-observation random-intercept value (zero if none)
+}
+
+impl LinearCache {
+    fn build(state: &State, data: &ModelData) -> Self {
+        let b0_fixed = &data.x_b0 * &state.beta_b0;
+        let b1_vals  = &data.x_b1 * &state.beta_b1;
+        let b2_vals  = &data.x_b2 * &state.beta_b2;
+        let mut re_contrib = DVector::<f64>::zeros(data.n);
+        if data.n_groups_b0 > 0 {
+            for i in 0..data.n {
+                let g = data.group_b0[i];
+                if g >= 0 {
+                    re_contrib[i] = state.u_b0[g as usize];
+                }
+            }
+        }
+        LinearCache { b0_fixed, b1_vals, b2_vals, re_contrib }
+    }
+
+    /// Log-likelihood given cached linear parts and the current omega/rho vectors.
+    /// omega and rho are the n-length per-observation linear predictors
+    /// (X_om * beta_om and X_rho * beta_rho respectively).
+    fn log_likelihood(
+        &self,
+        data: &ModelData,
+        omega: &DVector<f64>,
+        rho:   &DVector<f64>,
+        sigma: f64,
+    ) -> f64 {
+        let n = data.n;
+        let sigma2 = sigma * sigma;
+        let log_norm = 0.5 * (std::f64::consts::TAU * sigma2).ln();
+        let mut ll = 0.0f64;
+        for i in 0..n {
+            let di = data.tau[i] - omega[i];
+            let si = sigmoid(di * rho[i]);
+            let mu = self.b0_fixed[i]
+                + di * self.b1_vals[i]
+                + di * si * self.b2_vals[i]
+                + self.re_contrib[i];
+            let r = data.y[i] - mu;
+            ll -= 0.5 * r * r / sigma2 + log_norm;
+        }
+        ll
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AdaptProposal: state for the adaptive Metropolis proposal on either beta_om
+// or beta_rho.
+//
+// Three phases inside warmup:
+//   Componentwise: random-walk MH one coordinate at a time, each coordinate
+//     tuned to ~44% acceptance (1D optimum).  Used for the first portion of
+//     warmup so each scale settles before we estimate covariance.  Skipped
+//     entirely when p == 1 (the joint and componentwise updates coincide).
+//   Adaptive: joint random-walk MH with proposal covariance Sigma_t = scale *
+//     (Cov_t + eps*I), where Cov_t is the running sample covariance of post-
+//     componentwise iterates (Welford-updated) and `scale` is tuned to ~23.4%
+//     joint acceptance.  Initialised at scale = 2.4^2 / d (Roberts & Rosenthal).
+//   Frozen: post-warmup, no further updates to step sizes, Cov, or scale.
+//     The proposal Cholesky from the end of warmup is used unchanged for the
+//     entire sampling phase, so the chain is a valid time-homogeneous Markov
+//     chain.
+//
+// For p == 1 the implementation degenerates to the original scalar adaptive
+// random-walk MH (target rate 0.234).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+enum ProposalPhase {
+    Componentwise,
+    Adaptive,
+    Frozen,
+}
+
+struct AdaptProposal {
+    p: usize,
+    phase: ProposalPhase,
+
+    // Componentwise (Phase A) and 1D scalar fall-back: per-coordinate step,
+    // accept and attempt counters reset every tune_window.
+    comp_steps:    Vec<f64>,
+    comp_accepts:  Vec<u32>,
+    comp_attempts: Vec<u32>,
+
+    // Adaptive joint (Phase B) and frozen (Phase C):
+    joint_scale:    f64,
+    joint_accepts:  u32,
+    joint_attempts: u32,
+
+    // Welford running mean and "M2" matrix (sum of (x - mean)(x - new_mean)^T)
+    // accumulated over post-componentwise iterates.  Cov = M2 / (n - 1).
+    n_seen: usize,
+    mean:   DVector<f64>,
+    m2:     DMatrix<f64>,
+
+    // Cholesky factor L such that L L^T = scale * (Cov + eps*I).
+    // Lazily refreshed during Phase B; held fixed in Phase C.
+    proposal_chol: Option<DMatrix<f64>>,
+}
+
+impl AdaptProposal {
+    fn new(p: usize, init_step: f64) -> Self {
+        // Initial joint scale follows Roberts & Rosenthal (2001): 2.4^2 / d.
+        let init_joint_scale = if p > 0 {
+            init_step * init_step * 2.4 * 2.4 / (p as f64)
+        } else {
+            init_step * init_step
+        };
+        AdaptProposal {
+            p,
+            phase: ProposalPhase::Componentwise,
+            comp_steps:    vec![init_step; p],
+            comp_accepts:  vec![0; p],
+            comp_attempts: vec![0; p],
+            joint_scale:    init_joint_scale,
+            joint_accepts:  0,
+            joint_attempts: 0,
+            n_seen: 0,
+            mean:   DVector::<f64>::zeros(p),
+            m2:     DMatrix::<f64>::zeros(p, p),
+            proposal_chol: None,
+        }
+    }
+
+    /// Welford-style update of running mean and M2 with one new sample x.
+    fn observe(&mut self, x: &DVector<f64>) {
+        if self.p == 0 { return; }
+        self.n_seen += 1;
+        let n = self.n_seen as f64;
+        let delta1 = x - &self.mean;
+        self.mean += &delta1 / n;
+        let delta2 = x - &self.mean;
+        // m2 += delta1 * delta2^T  (outer product)
+        for i in 0..self.p {
+            for j in 0..self.p {
+                self.m2[(i, j)] += delta1[i] * delta2[j];
+            }
+        }
+    }
+
+    /// Recompute the proposal Cholesky from the running covariance, scaled by
+    /// `joint_scale` and ridge-regularised by `eps` on the diagonal.  Returns
+    /// false if Cholesky failed (proposal_chol left unchanged).
+    fn refresh_chol(&mut self) -> bool {
+        if self.p == 0 || self.n_seen < 2 { return false; }
+        let n = self.n_seen as f64;
+        let mut sigma = (&self.m2) / (n - 1.0);
+        sigma *= self.joint_scale;
+        // Tikhonov ridge for numerical stability and to keep the proposal
+        // non-degenerate while the chain is still exploring.
+        let eps = 1e-6_f64.max(self.joint_scale * 1e-8);
+        for i in 0..self.p {
+            sigma[(i, i)] += eps;
+        }
+        if let Some(chol) = sigma.cholesky() {
+            self.proposal_chol = Some(chol.l());
+            true
+        } else {
+            // Fall back to a heavier ridge once before giving up.
+            let mut sigma2 = (&self.m2) / (n - 1.0);
+            sigma2 *= self.joint_scale;
+            for i in 0..self.p {
+                sigma2[(i, i)] += 1e-3;
+            }
+            if let Some(chol) = sigma2.cholesky() {
+                self.proposal_chol = Some(chol.l());
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    fn is_componentwise(&self) -> bool { self.phase == ProposalPhase::Componentwise }
+}
+
+// Multiplicative scaling used by the per-window adaptation.  Same shape as
+// the original `adapt_step` but parameterised by target rate.
+fn adapt_scalar(step: f64, accept_rate: f64, target: f64) -> f64 {
+    let factor = (accept_rate / target).clamp(0.5, 2.0);
+    (step * factor).max(1e-8)
+}
+
+// Same shape but for a multiplicative scale factor (joint Haario scale).
+fn adapt_log_scale(scale: f64, accept_rate: f64, target: f64) -> f64 {
+    let factor = (accept_rate / target).clamp(0.5, 2.0);
+    (scale * factor).max(1e-12)
+}
+
+// ---------------------------------------------------------------------------
 // Entry point: run one chain, return (n_post × n_params) matrix
 // ---------------------------------------------------------------------------
 
-// progress_fn(chain_id, n_chains, iter, n_iter, in_warmup) — called every report_every
-// iterations.  Passed as a closure from lib.rs where the extendr context is available.
+// progress_fn(chain_id, n_chains, iter, n_iter, in_warmup) -- called every
+// report_every iterations.  Passed as a closure from lib.rs where the extendr
+// context is available.
+//
+// `unused_assignments` is allowed because the cache placeholders below are
+// always overwritten on the first iteration of the loop; the placeholder
+// initialisation exists only to satisfy the borrow checker.
+#[allow(unused_assignments)]
 pub fn run_chain(
     data: &ModelData,
     priors: &Priors,
@@ -33,22 +245,50 @@ pub fn run_chain(
     let n_post = n_iter - n_warmup;
     let n_params = state.n_params();
 
-    // draws stored column-major: rows = posterior samples, cols = parameters
+    // draws stored row-major: rows = posterior samples, cols = parameters
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
-    // Adaptive MH tracking (omega and rho only; sigma_u uses conjugate Gibbs)
-    let tune_window = 100usize;
-    let mut step_om = step_om_init;
-    let mut step_rho = step_rho_init;
-    let mut n_accept_om = 0u32;
-    let mut n_accept_rho = 0u32;
+    // Adaptive proposal state for omega and rho.
+    let mut adapt_om  = AdaptProposal::new(priors.p_om,  step_om_init);
+    let mut adapt_rho = AdaptProposal::new(priors.p_rho, step_rho_init);
 
-    // ll cached and refreshed after each block that modifies the mean function
-    let mut ll = 0.0f64;
-    let mut lp_om = 0.0f64;
+    // Phase boundaries within warmup.
+    //
+    // For multivariate proposals we spend the first 30% of warmup doing
+    // componentwise tuning and accumulating samples for covariance estimation,
+    // then switch to adaptive joint MH for the remainder of warmup, then
+    // freeze at end of warmup.  For 1D proposals (p == 1) we skip the
+    // componentwise -> joint distinction (they are identical) and stay in
+    // Componentwise the whole warmup, freezing at end of warmup.
+    //
+    // If the warmup is too short to estimate a covariance reliably we also
+    // stay in Componentwise.
+    let use_adaptive_joint_om  = priors.p_om  >= 2 && n_warmup >= 200;
+    let use_adaptive_joint_rho = priors.p_rho >= 2 && n_warmup >= 200;
+    let phase_a_end_om  = if use_adaptive_joint_om  { (n_warmup as f64 * 0.30) as usize } else { n_warmup };
+    let phase_a_end_rho = if use_adaptive_joint_rho { (n_warmup as f64 * 0.30) as usize } else { n_warmup };
+
+    let tune_window = 100usize;
+
+    // Cached log-likelihood + log-priors that survive across MH steps.
+    let mut ll     = 0.0f64;
+    let mut lp_om  = 0.0f64;
     let mut lp_rho = 0.0f64;
 
-    // Report intervals: print at 0%, 10%, 20%, ..., 100%
+    // Cached current omega and rho linear predictors plus the LinearCache.
+    // These are unconditionally rebuilt at the top of every iteration after
+    // the linear coefficient block, so the initial values would be discarded
+    // on iter 0 -- start them as zero-length placeholders to keep the borrow
+    // checker happy without doing redundant initial work.
+    let mut omega_cur: DVector<f64> = DVector::<f64>::zeros(0);
+    let mut rho_cur:   DVector<f64> = DVector::<f64>::zeros(0);
+    let mut cache: LinearCache = LinearCache {
+        b0_fixed:   DVector::<f64>::zeros(0),
+        b1_vals:    DVector::<f64>::zeros(0),
+        b2_vals:    DVector::<f64>::zeros(0),
+        re_contrib: DVector::<f64>::zeros(0),
+    };
+
     let report_every = (n_iter / 10).max(1);
 
     for iter in 0..n_iter {
@@ -73,59 +313,89 @@ pub fn run_chain(
         // ---------------------------------------------------------------
         sample_linear_coefs(data, priors, &mut state, &mut rng);
 
-        // After linear update, refresh cached quantities
-        ll = state.log_likelihood(data);
-        lp_om = state.log_prior_om(priors);
+        // After both updates the linear cache, omega/rho vectors, ll and
+        // log-priors all need refreshing.
+        cache     = LinearCache::build(&state, data);
+        // omega/rho only depend on the betas we have not yet touched in this
+        // iteration, so they are still current; rebuild defensively in case
+        // beta_om/beta_rho have been overwritten elsewhere (cheap).
+        omega_cur = &data.x_om  * &state.beta_om;
+        rho_cur   = &data.x_rho * &state.beta_rho;
+        ll = cache.log_likelihood(data, &omega_cur, &rho_cur, state.sigma);
+        lp_om  = state.log_prior_om(priors);
         lp_rho = state.log_prior_rho(priors);
+
+        // Determine the phase for this iteration.
+        let phase_om = phase_for(iter, n_warmup, phase_a_end_om,  use_adaptive_joint_om);
+        let phase_rho = phase_for(iter, n_warmup, phase_a_end_rho, use_adaptive_joint_rho);
+        adapt_om.phase  = phase_om;
+        adapt_rho.phase = phase_rho;
 
         // ---------------------------------------------------------------
         // Block 2a: MH for beta_om
         // ---------------------------------------------------------------
-        let accepted = mh_step_om(data, priors, &mut state, &mut ll, &mut lp_om, step_om, &mut rng);
-        if accepted {
-            n_accept_om += 1;
-        }
+        mh_step_om(
+            data, priors, &mut state,
+            &mut ll, &mut lp_om,
+            &cache, &mut omega_cur, &rho_cur,
+            &mut adapt_om,
+            &mut rng,
+        );
 
         // ---------------------------------------------------------------
         // Block 2b: MH for beta_rho
         // ---------------------------------------------------------------
-        let accepted = mh_step_rho(data, priors, &mut state, &mut ll, &mut lp_rho, step_rho, &mut rng);
-        if accepted {
-            n_accept_rho += 1;
-        }
+        mh_step_rho(
+            data, priors, &mut state,
+            &mut ll, &mut lp_rho,
+            &cache, &omega_cur, &mut rho_cur,
+            &mut adapt_rho,
+            &mut rng,
+        );
 
         // ---------------------------------------------------------------
         // Block 3a: Sample sigma (Gibbs, InvGamma conjugate)
         // ---------------------------------------------------------------
         sample_sigma(data, priors, &mut state, &mut rng);
-        ll = state.log_likelihood(data);
+        // sigma changed but cache, omega_cur, rho_cur are still valid.
+        ll = cache.log_likelihood(data, &omega_cur, &rho_cur, state.sigma);
 
         // ---------------------------------------------------------------
         // Block 3b: Sample sigma_u (Gibbs, InvGamma conjugate).
-        //
-        // Key insight: after the NC step, we hold u_j = sigma_u * z_j in state.
-        // The full conditional for sigma_u^2 given u_j is simply:
-        //   p(sigma_u^2 | u) ∝ prod_j N(u_j; 0, sigma_u^2) * InvGamma(sigma_u^2; a, b)
-        //                     = InvGamma(a + m/2,  b + sum_j u_j^2 / 2)
-        //
-        // This IS the marginalised update: z_j has been "integrated out" by
-        // expressing the sufficient statistic as u_j = sigma_u * z_j, leaving
-        // sigma_u^2 in a standard conjugate form.  No MH needed.
         // ---------------------------------------------------------------
         if data.n_groups_b0 > 0 {
             sample_sigma_u(priors, &mut state, &mut rng);
         }
 
         // ---------------------------------------------------------------
-        // Adaptive step-size tuning during warmup (omega and rho only)
+        // Adaptation of step sizes / proposal covariance during warmup.
         // ---------------------------------------------------------------
-        if iter < n_warmup && (iter + 1) % tune_window == 0 {
-            let rate_om = n_accept_om as f64 / tune_window as f64;
-            let rate_rho = n_accept_rho as f64 / tune_window as f64;
-            step_om = adapt_step(step_om, rate_om);
-            step_rho = adapt_step(step_rho, rate_rho);
-            n_accept_om = 0;
-            n_accept_rho = 0;
+        if iter < n_warmup {
+            // Per-window adaptation of componentwise scales.
+            if (iter + 1) % tune_window == 0 {
+                tune_componentwise(&mut adapt_om);
+                tune_componentwise(&mut adapt_rho);
+                tune_joint(&mut adapt_om);
+                tune_joint(&mut adapt_rho);
+            }
+
+            // Welford accumulation: feed the current draw into the running
+            // mean/cov estimator once we have entered the joint-adaptation
+            // window for that parameter (we want covariance from samples
+            // collected after the componentwise scales settled).
+            if use_adaptive_joint_om && iter >= phase_a_end_om {
+                adapt_om.observe(&state.beta_om);
+                // Refresh proposal occasionally during Phase B.
+                if (iter + 1) % tune_window == 0 {
+                    adapt_om.refresh_chol();
+                }
+            }
+            if use_adaptive_joint_rho && iter >= phase_a_end_rho {
+                adapt_rho.observe(&state.beta_rho);
+                if (iter + 1) % tune_window == 0 {
+                    adapt_rho.refresh_chol();
+                }
+            }
         }
 
         // ---------------------------------------------------------------
@@ -144,7 +414,44 @@ pub fn run_chain(
         progress_fn(chain_id, n_chains, n_iter, n_iter, false);
     }
 
+    // Suppress unused-variable warnings for the per-iteration `ll` cache; it
+    // is intentionally maintained but not read after the final iteration.
+    let _ = (ll, lp_om, lp_rho);
+
     draws
+}
+
+fn phase_for(iter: usize, n_warmup: usize, phase_a_end: usize, use_joint: bool) -> ProposalPhase {
+    if iter >= n_warmup {
+        ProposalPhase::Frozen
+    } else if !use_joint || iter < phase_a_end {
+        ProposalPhase::Componentwise
+    } else {
+        ProposalPhase::Adaptive
+    }
+}
+
+fn tune_componentwise(adapt: &mut AdaptProposal) {
+    // Only tune when in or just leaving componentwise phase; harmless if
+    // counters are zero.
+    let target = if adapt.p > 1 { 0.44 } else { 0.234 };
+    for k in 0..adapt.p {
+        if adapt.comp_attempts[k] > 0 {
+            let rate = adapt.comp_accepts[k] as f64 / adapt.comp_attempts[k] as f64;
+            adapt.comp_steps[k] = adapt_scalar(adapt.comp_steps[k], rate, target);
+        }
+        adapt.comp_accepts[k]  = 0;
+        adapt.comp_attempts[k] = 0;
+    }
+}
+
+fn tune_joint(adapt: &mut AdaptProposal) {
+    if adapt.joint_attempts > 0 {
+        let rate = adapt.joint_accepts as f64 / adapt.joint_attempts as f64;
+        adapt.joint_scale = adapt_log_scale(adapt.joint_scale, rate, 0.234);
+    }
+    adapt.joint_accepts  = 0;
+    adapt.joint_attempts = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,348 +501,7 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
 // The full conditional for z_j:
 //   precision: tau_j = n_j * sigma_u^2 / sigma^2 + 1
 //   mean:      mu_j  = (sigma_u / sigma^2) * sum_k r_{j,k} / tau_j
-//
-// This breaks the strong posterior correlation between the overall intercept
-// (beta_b0) and the group deviations (u_j) that causes slow mixing in the
-// centred parameterisation.  Concretely, when sigma_u is small (strong
-// shrinkage), the centred sampler's variance of u_j is ~sigma^2 (large) while
-// here var(z_j) = 1/tau_j → 1 regardless of sigma_u.
 // ---------------------------------------------------------------------------
 
 fn sample_random_effects_nc(
-    data: &ModelData,
-    state: &mut State,
-    rng: &mut StdRng,
-) {
-    let sigma2    = state.sigma   * state.sigma;
-    let sigma_u2  = state.sigma_u * state.sigma_u;
-    let n_groups  = data.n_groups_b0;
-
-    // Fixed-part fitted values (no random effects)
-    let omega = state.omega_vec(&data.x_om);
-    let rho   = state.rho_vec(&data.x_rho);
-    let d: DVector<f64> = data.tau.zip_map(&omega, |t, w| t - w);
-    let s: DVector<f64> = d.zip_map(&rho, |di, ri| sigmoid(di * ri));
-
-    let b0_fixed   = &data.x_b0 * &state.beta_b0;
-    let b1_vals    = &data.x_b1 * &state.beta_b1;
-    let b2_vals    = &data.x_b2 * &state.beta_b2;
-    let b1_contrib: DVector<f64> = d.zip_map(&b1_vals, |di, b| di * b);
-    let b2_contrib: DVector<f64> = d.zip_map(&s, |di, si| di * si).zip_map(&b2_vals, |ds, b| ds * b);
-    let fixed_fit  = b0_fixed + b1_contrib + b2_contrib;
-
-    // Sufficient statistics per group: sum of residuals and count
-    let mut sum_r = vec![0.0f64; n_groups];
-    let mut n_j   = vec![0u32;   n_groups];
-    for i in 0..data.n {
-        let g = data.group_b0[i] as usize;
-        sum_r[g] += data.y[i] - fixed_fit[i];
-        n_j[g]   += 1;
-    }
-
-    // Sample z_j from its non-centred full conditional, then set u_j = sigma_u * z_j
-    let normal = Normal::new(0.0, 1.0f64).unwrap();
-    for j in 0..n_groups {
-        let nj     = n_j[j] as f64;
-        let tau_j  = nj * sigma_u2 / sigma2 + 1.0;   // posterior precision for z_j
-        let v_j    = 1.0 / tau_j;                      // posterior variance
-        let mu_j   = v_j * state.sigma_u / sigma2 * sum_r[j];
-        let z_j    = mu_j + v_j.sqrt() * normal.sample(rng);
-        state.u_b0[j] = state.sigma_u * z_j;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Block 1b: Sample (beta_b0, beta_b1, beta_b2) jointly | u, omega, rho, sigma
-//
-// After subtracting random effects: y_tilde_i = y_i - u_{group_i}
-// Model: y_tilde_i = [X_b0_i | d_i * X_b1_i | d_i*s_i * X_b2_i] * [beta_b0; beta_b1; beta_b2]
-//
-// Normal-normal conjugate update:
-//   Prec_post = X'X / sigma^2 + Prec_prior
-//   mu_post   = Prec_post^{-1} * (X'y_tilde / sigma^2 + Prec_prior * mu_prior)
-// ---------------------------------------------------------------------------
-
-fn sample_linear_coefs(
-    data: &ModelData,
-    priors: &Priors,
-    state: &mut State,
-    rng: &mut StdRng,
-) {
-    let n = data.n;
-    let p_b0 = priors.p_b0;
-    let p_b1 = priors.p_b1;
-    let p_b2 = priors.p_b2;
-    let p_lin = p_b0 + p_b1 + p_b2;
-    let sigma2 = state.sigma * state.sigma;
-
-    // Precompute d_i and s_i
-    let omega = state.omega_vec(&data.x_om);
-    let rho = state.rho_vec(&data.x_rho);
-    let d: Vec<f64> = (0..n).map(|i| data.tau[i] - omega[i]).collect();
-    let s: Vec<f64> = (0..n).map(|i| sigmoid(d[i] * rho[i])).collect();
-
-    // Build effective design matrix X_full (n × p_lin), column-major
-    let mut x_full = DMatrix::<f64>::zeros(n, p_lin);
-    for i in 0..n {
-        // b0 columns
-        for k in 0..p_b0 {
-            x_full[(i, k)] = data.x_b0[(i, k)];
-        }
-        // b1 columns: d_i * X_b1_i
-        for k in 0..p_b1 {
-            x_full[(i, p_b0 + k)] = d[i] * data.x_b1[(i, k)];
-        }
-        // b2 columns: d_i * s_i * X_b2_i
-        for k in 0..p_b2 {
-            x_full[(i, p_b0 + p_b1 + k)] = d[i] * s[i] * data.x_b2[(i, k)];
-        }
-    }
-
-    // y_tilde = y - u_{group_i}
-    let mut y_tilde = data.y.clone();
-    if data.n_groups_b0 > 0 {
-        for i in 0..n {
-            let g = data.group_b0[i];
-            if g >= 0 {
-                y_tilde[i] -= state.u_b0[g as usize];
-            }
-        }
-    }
-
-    // Prior precision (diagonal) and prior mean
-    let b0_r = priors.b0_range();
-    let b1_r = priors.b1_range();
-    let b2_r = priors.b2_range();
-    let mut prec_prior = DVector::<f64>::zeros(p_lin);
-    let mut mu_prior = DVector::<f64>::zeros(p_lin);
-    for (k, i) in b0_r.enumerate() {
-        prec_prior[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[k] = priors.mean[i];
-    }
-    for (k, i) in b1_r.enumerate() {
-        prec_prior[p_b0 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[p_b0 + k] = priors.mean[i];
-    }
-    for (k, i) in b2_r.enumerate() {
-        prec_prior[p_b0 + p_b1 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[p_b0 + p_b1 + k] = priors.mean[i];
-    }
-
-    // Prec_post = X'X / sigma^2 + diag(prec_prior)
-    let xt = x_full.transpose();
-    let xtx = &xt * &x_full;
-    let mut prec_post = xtx / sigma2;
-    for k in 0..p_lin {
-        prec_post[(k, k)] += prec_prior[k];
-    }
-
-    // rhs = X'y_tilde / sigma^2 + diag(prec_prior) * mu_prior
-    let xty: DVector<f64> = &xt * &y_tilde / sigma2;
-    let rhs: DVector<f64> = xty + prec_prior.zip_map(&mu_prior, |p, m| p * m);
-
-    // Solve via Cholesky: Prec_post * theta = rhs  =>  theta_mean = Prec_post^{-1} * rhs
-    let chol = prec_post.clone().cholesky().expect("Precision matrix not positive definite");
-    let mu_post = chol.solve(&rhs);
-
-    // Sample: theta ~ N(mu_post, Prec_post^{-1})
-    // Use: z ~ N(0,I), solve L' * x = z, then theta = mu_post + x
-    let normal = Normal::new(0.0, 1.0f64).unwrap();
-    let z = DVector::from_iterator(p_lin, (0..p_lin).map(|_| normal.sample(rng)));
-    // L is lower-triangular Cholesky factor of Prec_post
-    let l = chol.l();
-    // Solve L' * x = z  (back-substitution through upper triangular L')
-    let x = l.transpose().solve_upper_triangular(&z)
-        .expect("Triangular solve failed");
-    let theta = mu_post + x;
-
-    // Unpack
-    for k in 0..p_b0 {
-        state.beta_b0[k] = theta[k];
-    }
-    for k in 0..p_b1 {
-        state.beta_b1[k] = theta[p_b0 + k];
-    }
-    for k in 0..p_b2 {
-        state.beta_b2[k] = theta[p_b0 + p_b1 + k];
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Block 2a: Random-walk Metropolis for beta_om
-// ---------------------------------------------------------------------------
-
-fn mh_step_om(
-    data: &ModelData,
-    priors: &Priors,
-    state: &mut State,
-    ll: &mut f64,
-    lp_om: &mut f64,
-    step: f64,
-    rng: &mut StdRng,
-) -> bool {
-    let p_om = priors.p_om;
-    let r = priors.om_range();
-
-    // Propose
-    let normal = Normal::new(0.0, step).unwrap();
-    let mut beta_prop = state.beta_om.clone();
-    for k in 0..p_om {
-        beta_prop[k] += normal.sample(rng);
-    }
-
-    // Check bounds on proposed values
-    for (k, i) in r.clone().enumerate() {
-        if beta_prop[k] < priors.lb[i] || beta_prop[k] > priors.ub[i] {
-            return false;
-        }
-    }
-
-    // Proposed log-prior
-    let lp_prop = log_truncated_normal_prior(
-        beta_prop.as_slice(),
-        &priors.mean[r.clone()],
-        &priors.sd[r.clone()],
-        &priors.lb[r.clone()],
-        &priors.ub[r],
-    );
-    if lp_prop == f64::NEG_INFINITY {
-        return false;
-    }
-
-    // Proposed log-likelihood
-    let mut state_prop = state.clone();
-    state_prop.beta_om = beta_prop;
-    let ll_prop = state_prop.log_likelihood(data);
-
-    // Metropolis acceptance
-    let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_om);
-    if rng.gen::<f64>().ln() < log_alpha {
-        *state = state_prop;
-        *ll = ll_prop;
-        *lp_om = lp_prop;
-        true
-    } else {
-        false
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Block 2b: Random-walk Metropolis for beta_rho
-// ---------------------------------------------------------------------------
-
-fn mh_step_rho(
-    data: &ModelData,
-    priors: &Priors,
-    state: &mut State,
-    ll: &mut f64,
-    lp_rho: &mut f64,
-    step: f64,
-    rng: &mut StdRng,
-) -> bool {
-    let p_rho = priors.p_rho;
-    let r = priors.rho_range();
-
-    let normal = Normal::new(0.0, step).unwrap();
-    let mut beta_prop = state.beta_rho.clone();
-    for k in 0..p_rho {
-        beta_prop[k] += normal.sample(rng);
-    }
-
-    // Check bounds
-    for (k, i) in r.clone().enumerate() {
-        if beta_prop[k] < priors.lb[i] || beta_prop[k] > priors.ub[i] {
-            return false;
-        }
-    }
-
-    let lp_prop = log_truncated_normal_prior(
-        beta_prop.as_slice(),
-        &priors.mean[r.clone()],
-        &priors.sd[r.clone()],
-        &priors.lb[r.clone()],
-        &priors.ub[r],
-    );
-    if lp_prop == f64::NEG_INFINITY {
-        return false;
-    }
-
-    let mut state_prop = state.clone();
-    state_prop.beta_rho = beta_prop;
-    let ll_prop = state_prop.log_likelihood(data);
-
-    let log_alpha = (ll_prop + lp_prop) - (*ll + *lp_rho);
-    if rng.gen::<f64>().ln() < log_alpha {
-        *state = state_prop;
-        *ll = ll_prop;
-        *lp_rho = lp_prop;
-        true
-    } else {
-        false
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Block 3a: Sample sigma^2 | everything  (InvGamma conjugate)
-//
-// Prior:  sigma^2 ~ InvGamma(shape_0, scale_0)
-// Update: sigma^2 ~ InvGamma(shape_0 + n/2, scale_0 + SSR/2)
-// Sample: X ~ Gamma(shape_post, rate_post), sigma^2 = 1/X
-// ---------------------------------------------------------------------------
-
-fn sample_sigma(
-    data: &ModelData,
-    priors: &Priors,
-    state: &mut State,
-    rng: &mut StdRng,
-) {
-    let mu = state.means(data);
-    let ssr: f64 = (0..data.n).map(|i| (data.y[i] - mu[i]).powi(2)).sum();
-
-    let shape_post = priors.sigma_shape + 0.5 * data.n as f64;
-    let rate_post = priors.sigma_scale + 0.5 * ssr;
-
-    // Gamma(shape, rate) sample: use rand_distr's Gamma(shape, scale=1/rate)
-    let g = Gamma::new(shape_post, 1.0 / rate_post).unwrap();
-    let x = g.sample(rng);
-    state.sigma = (1.0 / x).sqrt();
-}
-
-// ---------------------------------------------------------------------------
-// Block 3b: Sample sigma_u^2 | u  (InvGamma conjugate Gibbs)
-//
-// Prior:   sigma_u^2 ~ InvGamma(a, b)
-// Likelihood: u_j | sigma_u^2 ~ N(0, sigma_u^2)  iid  (j = 1..m)
-//
-// Full conditional (by normal-inverse-gamma conjugacy):
-//   sigma_u^2 | u ~ InvGamma(a + m/2,  b + sum_j u_j^2 / 2)
-//
-// After the NC Gibbs step, state.u_b0[j] = sigma_u * z_j, so sum_j u_j^2 is
-// well-defined as the scaled sum of squares of z_j.  Sampling sigma_u^2 from
-// this distribution then implicitly updates the scale of z_j for the next
-// iteration without needing any MH step.
-//
-// Sampling X ~ Gamma(shape, rate=1/scale) then sigma_u^2 = 1/X.
-// ---------------------------------------------------------------------------
-
-fn sample_sigma_u(priors: &Priors, state: &mut State, rng: &mut StdRng) {
-    let m       = state.u_b0.len() as f64;
-    let ss_u: f64 = state.u_b0.iter().map(|u| u * u).sum();
-
-    let shape_post = priors.sigma_u_shape + 0.5 * m;
-    let rate_post  = priors.sigma_u_scale  + 0.5 * ss_u;  // rate = 1/scale for Gamma
-
-    let g = Gamma::new(shape_post, 1.0 / rate_post).unwrap();
-    state.sigma_u = (1.0 / g.sample(rng)).sqrt();
-}
-
-// ---------------------------------------------------------------------------
-// Adaptive step-size tuning targeting 23.4% acceptance
-// ---------------------------------------------------------------------------
-
-fn adapt_step(step: f64, accept_rate: f64) -> f64 {
-    // Multiplicative adjustment: scale up if accepting too much, down if too little
-    let target = 0.234;
-    let factor = (accept_rate / target).clamp(0.5, 2.0);
-    (step * factor).max(1e-6)
-}
+    dat
