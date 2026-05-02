@@ -181,15 +181,27 @@ fn grad_truncated_normal_prior(
 //
 // During warmup the step size epsilon is tuned via Nesterov dual averaging
 // (Algorithm 5 from Hoffman & Gelman 2014, i.e. the NUTS paper) targeting
-// a user-specified acceptance probability.
+// a user-specified acceptance probability.  Epsilon is initialised via the
+// "find reasonable epsilon" heuristic (Algorithm 4) and floored at
+// EPSILON_FLOOR to prevent collapse.
 //
 // A diagonal mass matrix (inverse variances) is estimated from warmup draws
 // via Welford online accumulation and refreshed at a mid-warmup window
 // boundary.
 //
 // Post-warmup, epsilon and the mass matrix are frozen so the chain is a
-// valid time-homogeneous Markov chain.
+// valid time-homogeneous Markov chain.  Divergent transitions (|delta_H| >
+// DIVERGENCE_THRESHOLD) are counted post-warmup and reported to R.
 // ---------------------------------------------------------------------------
+
+/// Minimum epsilon to prevent dual-averaging from collapsing to zero.
+const EPSILON_FLOOR: f64 = 1e-6;
+
+/// |delta_H| threshold above which a transition is flagged as divergent.
+const DIVERGENCE_THRESHOLD: f64 = 1000.0;
+
+/// Maximum boundary reflections per coordinate per leapfrog step.
+const MAX_REFLECTIONS: usize = 20;
 
 struct HmcAdapt {
     p: usize,
@@ -202,7 +214,7 @@ struct HmcAdapt {
     // Current step size.
     epsilon: f64,
 
-    // Dual-averaging state (Hoffman & Gelman 2014, §3.2).
+    // Dual-averaging state (Hoffman & Gelman 2014, section 3.2).
     target_accept: f64,
     mu:         f64,       // log(10 * epsilon_0) -- shrinkage target
     log_eps_bar: f64,
@@ -224,6 +236,9 @@ struct HmcAdapt {
 
     // Whether adaptation is still active.
     adapting: bool,
+
+    // Divergence counter: post-warmup transitions with |delta_H| > threshold.
+    n_divergent: usize,
 }
 
 impl HmcAdapt {
@@ -246,20 +261,73 @@ impl HmcAdapt {
             welford_mean: DVector::<f64>::zeros(p),
             welford_m2:   DVector::<f64>::zeros(p),
             adapting: true,
+            n_divergent: 0,
         }
+    }
+
+    /// Initialise epsilon via the "find reasonable epsilon" heuristic
+    /// (Hoffman & Gelman 2014, Algorithm 4).  Takes a single leapfrog step
+    /// and doubles or halves epsilon until the log acceptance probability
+    /// crosses ln(0.5).  `one_step_log_alpha(eps)` should perform one
+    /// leapfrog step at step size eps from the current state and return
+    /// the log Metropolis acceptance ratio (h0 - h1).
+    fn find_reasonable_epsilon<F>(&mut self, mut one_step_log_alpha: F)
+    where
+        F: FnMut(f64) -> f64,
+    {
+        let mut eps = self.epsilon;
+        let log_half = (0.5f64).ln();
+        let log_alpha = one_step_log_alpha(eps);
+
+        // If the initial step gives NaN/Inf, shrink aggressively.
+        if !log_alpha.is_finite() {
+            for _ in 0..20 {
+                eps *= 0.1;
+                if eps < EPSILON_FLOOR { eps = EPSILON_FLOOR; break; }
+                let la = one_step_log_alpha(eps);
+                if la.is_finite() { break; }
+            }
+            self.epsilon = eps.max(EPSILON_FLOOR);
+            self.mu = (10.0 * self.epsilon).ln();
+            return;
+        }
+
+        // Determine direction: if log_alpha > ln(0.5), accept_prob > 0.5, increase eps.
+        let a: f64 = if log_alpha > log_half { 1.0 } else { -1.0 };
+
+        for _ in 0..50 {
+            let la = one_step_log_alpha(eps);
+            if !la.is_finite() || (a * la) < (a * log_half) {
+                break;
+            }
+            eps *= 2.0f64.powf(a);
+            if eps < EPSILON_FLOOR { eps = EPSILON_FLOOR; break; }
+        }
+
+        self.epsilon = eps.max(EPSILON_FLOOR);
+        self.mu = (10.0 * self.epsilon).ln();
     }
 
     /// Update dual averaging with the acceptance probability from one HMC step.
     fn update_epsilon(&mut self, accept_prob: f64) {
         if !self.adapting { return; }
+        // Guard against NaN (divergent trajectories).
+        let ap = if accept_prob.is_nan() { 0.0 } else { accept_prob.clamp(0.0, 1.0) };
         self.da_count += 1;
         let m = self.da_count as f64;
         let w = 1.0 / (m + self.t0);
-        self.h_bar = (1.0 - w) * self.h_bar + w * (self.target_accept - accept_prob);
+        self.h_bar = (1.0 - w) * self.h_bar + w * (self.target_accept - ap);
         let log_eps = self.mu - (m.sqrt() / self.gamma) * self.h_bar;
-        self.epsilon = log_eps.exp();
+        self.epsilon = log_eps.exp().max(EPSILON_FLOOR);
         let mk = m.powf(-self.kappa);
         self.log_eps_bar = mk * log_eps + (1.0 - mk) * self.log_eps_bar;
+    }
+
+    /// Record a transition energy error; count as divergent if |delta_H| > threshold.
+    fn record_energy_error(&mut self, delta_h: f64) {
+        if !self.adapting && (delta_h.abs() > DIVERGENCE_THRESHOLD || delta_h.is_nan()) {
+            self.n_divergent += 1;
+        }
     }
 
     /// Accumulate a position sample for mass matrix estimation.
@@ -276,23 +344,18 @@ impl HmcAdapt {
     }
 
     /// Refresh the diagonal mass matrix from Welford variance estimates.
-    /// Called at a mid-warmup window boundary.
     fn refresh_mass_matrix(&mut self) {
         if self.welford_n < 20 { return; }
         let n = self.welford_n as f64;
         for k in 0..self.p {
             let var_k = self.welford_m2[k] / (n - 1.0);
-            // inv_mass = 1/M_kk = variance (so momentum sampling uses
-            // p_k ~ N(0, M_kk) i.e. N(0, 1/inv_mass_k)).
-            // Clamp to avoid degeneracy.
             self.inv_mass[k] = var_k.max(1e-8);
         }
     }
 
-    /// Freeze adaptation: set epsilon to the smoothed dual-averaging estimate
-    /// and stop updating.
+    /// Freeze adaptation: set epsilon to the smoothed dual-averaging estimate.
     fn freeze(&mut self) {
-        self.epsilon = self.log_eps_bar.exp().max(1e-10);
+        self.epsilon = self.log_eps_bar.exp().max(EPSILON_FLOOR);
         self.adapting = false;
     }
 
@@ -305,7 +368,6 @@ impl HmcAdapt {
         }
     }
 }
-
 // ---------------------------------------------------------------------------
 // Scalar adaptive random-walk MH state: retained for p == 1 parameters
 // where HMC overhead is unnecessary (single-dimensional targets are
@@ -359,7 +421,7 @@ pub fn run_chain(
     chain_id: usize,
     n_chains: usize,
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
-) -> DMatrix<f64> {
+) -> (DMatrix<f64>, usize) {
     let mut rng = StdRng::seed_from_u64(seed);
 
     let mut state = init_state(data, priors, &mut rng);
@@ -412,6 +474,108 @@ pub fn run_chain(
     };
 
     let report_every = (n_iter / 10).max(1);
+
+    // -----------------------------------------------------------------------
+    // Find reasonable initial epsilon for HMC blocks (Algorithm 4, H&G 2014).
+    // Requires one Gibbs sweep first to get a sensible starting state.
+    // -----------------------------------------------------------------------
+    {
+        // Quick initial Gibbs sweep to populate state.
+        if data.n_groups_b0 > 0 { sample_random_effects_nc(data, &mut state, &mut rng); }
+        sample_linear_coefs(data, priors, &mut state, &mut rng);
+        let init_cache = LinearCache::build(&state, data);
+        let init_omega = &data.x_om  * &state.beta_om;
+        let init_rho   = &data.x_rho * &state.beta_rho;
+
+        if let Some(ref mut h) = hmc_om {
+            let p = priors.p_om;
+            let r_idx = priors.om_range();
+            let pr_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
+            let pr_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
+            let pr_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
+            let pr_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
+            let q0 = state.beta_om.clone();
+            let sigma = state.sigma;
+            let inv_mass = h.inv_mass.clone();
+            h.find_reasonable_epsilon(|eps| {
+                let normal_dist = Normal::new(0.0, 1.0f64).unwrap();
+                let mut mom = DVector::<f64>::from_iterator(
+                    p, (0..p).map(|k| normal_dist.sample(&mut rng) / inv_mass[k].sqrt()));
+                let kinetic0: f64 = (0..p).map(|k| mom[k]*mom[k]*inv_mass[k]).sum::<f64>() * 0.5;
+                let ll0 = init_cache.log_likelihood(data, &init_omega, &init_rho, sigma);
+                let lp0 = log_truncated_normal_prior(q0.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let h0_val = -ll0 - lp0 + kinetic0;
+                // Single leapfrog step
+                let grad_ll = init_cache.grad_beta_om(data, &init_omega, &init_rho, sigma, p);
+                let grad_pr = grad_truncated_normal_prior(q0.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let grad_lp: DVector<f64> = &grad_ll + &grad_pr;
+                let mut q = q0.clone();
+                for k in 0..p { mom[k] += 0.5 * eps * grad_lp[k]; }
+                for k in 0..p {
+                    q[k] += eps * mom[k] * inv_mass[k];
+                    for _b in 0..MAX_REFLECTIONS {
+                        if q[k] < pr_lb[k] { q[k] = 2.0*pr_lb[k]-q[k]; mom[k]=-mom[k]; }
+                        else if q[k] > pr_ub[k] { q[k] = 2.0*pr_ub[k]-q[k]; mom[k]=-mom[k]; }
+                        else { break; }
+                    }
+                }
+                let omega_p = &data.x_om * &q;
+                let gl2 = init_cache.grad_beta_om(data, &omega_p, &init_rho, sigma, p);
+                let gp2 = grad_truncated_normal_prior(q.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let grad2: DVector<f64> = &gl2 + &gp2;
+                for k in 0..p { mom[k] += 0.5 * eps * grad2[k]; }
+                let ll1 = init_cache.log_likelihood(data, &omega_p, &init_rho, sigma);
+                let lp1 = log_truncated_normal_prior(q.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let kin1: f64 = (0..p).map(|k| mom[k]*mom[k]*inv_mass[k]).sum::<f64>() * 0.5;
+                let h1_val = -ll1 - lp1 + kin1;
+                h0_val - h1_val  // log acceptance ratio
+            });
+        }
+
+        if let Some(ref mut h) = hmc_rho {
+            let p = priors.p_rho;
+            let r_idx = priors.rho_range();
+            let pr_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
+            let pr_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
+            let pr_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
+            let pr_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
+            let q0 = state.beta_rho.clone();
+            let sigma = state.sigma;
+            let inv_mass_rho = h.inv_mass.clone();
+            h.find_reasonable_epsilon(|eps| {
+                let normal_dist = Normal::new(0.0, 1.0f64).unwrap();
+                let mut mom = DVector::<f64>::from_iterator(
+                    p, (0..p).map(|k| normal_dist.sample(&mut rng) / inv_mass_rho[k].sqrt()));
+                let kinetic0: f64 = (0..p).map(|k| mom[k]*mom[k]*inv_mass_rho[k]).sum::<f64>() * 0.5;
+                let ll0 = init_cache.log_likelihood(data, &init_omega, &init_rho, sigma);
+                let lp0 = log_truncated_normal_prior(q0.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let h0_val = -ll0 - lp0 + kinetic0;
+                let grad_ll = init_cache.grad_beta_rho(data, &init_omega, &init_rho, sigma, p);
+                let grad_pr = grad_truncated_normal_prior(q0.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let grad_lp: DVector<f64> = &grad_ll + &grad_pr;
+                let mut q = q0.clone();
+                for k in 0..p { mom[k] += 0.5 * eps * grad_lp[k]; }
+                for k in 0..p {
+                    q[k] += eps * mom[k] * inv_mass_rho[k];
+                    for _b in 0..MAX_REFLECTIONS {
+                        if q[k] < pr_lb[k] { q[k] = 2.0*pr_lb[k]-q[k]; mom[k]=-mom[k]; }
+                        else if q[k] > pr_ub[k] { q[k] = 2.0*pr_ub[k]-q[k]; mom[k]=-mom[k]; }
+                        else { break; }
+                    }
+                }
+                let rho_p = &data.x_rho * &q;
+                let gl2 = init_cache.grad_beta_rho(data, &init_omega, &rho_p, sigma, p);
+                let gp2 = grad_truncated_normal_prior(q.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let grad2: DVector<f64> = &gl2 + &gp2;
+                for k in 0..p { mom[k] += 0.5 * eps * grad2[k]; }
+                let ll1 = init_cache.log_likelihood(data, &init_omega, &rho_p, sigma);
+                let lp1 = log_truncated_normal_prior(q.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let kin1: f64 = (0..p).map(|k| mom[k]*mom[k]*inv_mass_rho[k]).sum::<f64>() * 0.5;
+                let h1_val = -ll1 - lp1 + kin1;
+                h0_val - h1_val
+            });
+        }
+    }
 
     for iter in 0..n_iter {
         // ---------------------------------------------------------------
@@ -545,7 +709,9 @@ pub fn run_chain(
         progress_fn(chain_id, n_chains, n_iter, n_iter, false);
     }
 
-    draws
+    let n_div = hmc_om.as_ref().map_or(0, |h| h.n_divergent)
+        + hmc_rho.as_ref().map_or(0, |h| h.n_divergent);
+    (draws, n_div)
 }
 
 // ---------------------------------------------------------------------------
@@ -805,7 +971,7 @@ fn hmc_step_om(
             q[k] += eps * mom[k] * adapt.inv_mass[k];
             // Reflect off bounds.  Loop handles the (rare) case where
             // the step is large enough to cross a boundary more than once.
-            loop {
+            for _bounce in 0..MAX_REFLECTIONS {
                 if q[k] < prior_lb[k] {
                     q[k] = 2.0 * prior_lb[k] - q[k];
                     mom[k] = -mom[k];
@@ -841,9 +1007,15 @@ fn hmc_step_om(
     let kinetic_prop: f64 = (0..p).map(|k| mom[k] * mom[k] * adapt.inv_mass[k]).sum::<f64>() * 0.5;
     let h_prop = -ll_prop - lp_prop + kinetic_prop;
 
-    let log_alpha = h0 - h_prop;
-    // Clamp for numerical safety (very large ΔH from divergent trajectories).
-    let accept_prob = 1.0_f64.min(log_alpha.exp());
+    let delta_h = h_prop - h0;
+    let log_alpha = -delta_h;
+    // NaN-safe: treat NaN/Inf energy errors as rejection.
+    let accept_prob = if log_alpha.is_finite() {
+        1.0_f64.min(log_alpha.exp())
+    } else {
+        0.0
+    };
+    adapt.record_energy_error(delta_h);
 
     if rng.gen::<f64>() < accept_prob {
         state.beta_om = q;
@@ -907,7 +1079,7 @@ fn hmc_step_rho(
 
         for k in 0..p {
             q[k] += eps * mom[k] * adapt.inv_mass[k];
-            loop {
+            for _bounce in 0..MAX_REFLECTIONS {
                 if q[k] < prior_lb[k] {
                     q[k] = 2.0 * prior_lb[k] - q[k];
                     mom[k] = -mom[k];
@@ -940,8 +1112,14 @@ fn hmc_step_rho(
     let kinetic_prop: f64 = (0..p).map(|k| mom[k] * mom[k] * adapt.inv_mass[k]).sum::<f64>() * 0.5;
     let h_prop = -ll_prop - lp_prop + kinetic_prop;
 
-    let log_alpha = h0 - h_prop;
-    let accept_prob = 1.0_f64.min(log_alpha.exp());
+    let delta_h = h_prop - h0;
+    let log_alpha = -delta_h;
+    let accept_prob = if log_alpha.is_finite() {
+        1.0_f64.min(log_alpha.exp())
+    } else {
+        0.0
+    };
+    adapt.record_energy_error(delta_h);
 
     if rng.gen::<f64>() < accept_prob {
         state.beta_rho = q;

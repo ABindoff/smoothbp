@@ -136,7 +136,7 @@ fn run_mcmc(
     // called from the main R thread — see Step 2.
     // -----------------------------------------------------------------------
 
-    let matrices: Vec<DMatrix<f64>> = if parallel {
+    let results: Vec<(DMatrix<f64>, usize)> = if parallel {
         // Announce parallel run from the main thread before handing off.
         if verbose {
             rprintln!(
@@ -226,9 +226,11 @@ fn run_mcmc(
     // -----------------------------------------------------------------------
     // Step 2: convert DMatrix results to R matrices on the main thread.
     // -----------------------------------------------------------------------
-    let chain_results: Vec<Robj> = matrices
+    let mut total_divergent: usize = 0;
+    let chain_results: Vec<Robj> = results
         .into_iter()
-        .map(|draws| {
+        .map(|(draws, n_div)| {
+            total_divergent += n_div;
             let n_post   = draws.nrows();
             let n_params = draws.ncols();
             let flat: Vec<f64> = draws.iter().cloned().collect();
@@ -236,13 +238,21 @@ fn run_mcmc(
         })
         .collect();
 
+    if total_divergent > 0 && verbose {
+        rprintln!(
+            "WARNING: {} divergent transitions after warmup.              Posterior may be unreliable. Try increasing target_accept or              tightening priors.",
+            total_divergent
+        );
+    }
+
     let n_params_total = p_b0 + (n_groups_b0 as usize) + p_b1 + p_b2 + p_om + p_rho + 2;
     list!(
-        draws    = chain_results,
-        iter     = iter,
-        warmup   = warmup,
-        chains   = chains,
-        n_params = n_params_total as i32
+        draws       = chain_results,
+        iter        = iter,
+        warmup      = warmup,
+        chains      = chains,
+        n_params    = n_params_total as i32,
+        n_divergent = total_divergent as i32
     )
 }
 

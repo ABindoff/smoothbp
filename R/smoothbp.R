@@ -187,10 +187,24 @@ smoothbp <- function(
   # posterior::draws_array expects [draw, chain, variable]
   da <- posterior::as_draws_array(aperm(chain_arr, c(2, 3, 1)))
 
+  # ---- Check for divergent transitions -----------------------------------
+  n_divergent <- raw$n_divergent %||% 0L
+  if (n_divergent > 0L) {
+    warning(
+      sprintf(
+        "%d divergent transition(s) after warmup. Posterior may be unreliable. ",
+        n_divergent
+      ),
+      "Try increasing target_accept or tightening priors.",
+      call. = FALSE
+    )
+  }
+
   # ---- Assemble fit object ------------------------------------------------
   structure(
     list(
       draws         = da,
+      n_divergent   = n_divergent,
       param_names   = pnames,
       formula       = formula,
       b0_formula    = b0,
