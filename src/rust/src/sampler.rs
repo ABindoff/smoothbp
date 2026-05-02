@@ -585,16 +585,15 @@ pub fn run_chain(
             progress_fn(chain_id, n_chains, iter, n_iter, iter < n_warmup);
         }
         // ---------------------------------------------------------------
-        // Block 1a: Sample random intercepts via non-centred reparameterisation.
+        // Block 1: Sample linear coefficients (+ random intercepts if present)
+        // When RE are present, sample (beta_b0, u, beta_b1, beta_b2) jointly
+        // to break the b0-u coupling that slows mixing in component-wise Gibbs.
         // ---------------------------------------------------------------
         if data.n_groups_b0 > 0 {
-            sample_random_effects_nc(data, &mut state, &mut rng);
+            sample_linear_coefs_joint(data, priors, &mut state, &mut rng);
+        } else {
+            sample_linear_coefs(data, priors, &mut state, &mut rng);
         }
-
-        // ---------------------------------------------------------------
-        // Block 1b: Sample linear coefficients (Gibbs, exact conjugate)
-        // ---------------------------------------------------------------
-        sample_linear_coefs(data, priors, &mut state, &mut rng);
 
         // Rebuild cache and linear predictors after the Gibbs blocks.
         cache     = LinearCache::build(&state, data);
@@ -898,6 +897,126 @@ fn sample_linear_coefs(
     }
     for k in 0..p_b2 {
         state.beta_b2[k] = theta[p_b0 + p_b1 + k];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Block 1: Joint sample of (beta_b0, u_1..u_J, beta_b1, beta_b2) | rest
+//
+// When random intercepts are present, b0 and u are tightly coupled because the
+// likelihood depends on (b0 + u_j).  Sampling them in separate Gibbs blocks
+// creates a slow-mixing ridge.  This function samples them jointly via the
+// exact Normal-Normal conjugate full conditional, using an augmented design
+// matrix [X_b0 | Z | d*X_b1 | d*s*X_b2] where Z is the group indicator matrix.
+// ---------------------------------------------------------------------------
+
+fn sample_linear_coefs_joint(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    rng: &mut StdRng,
+) {
+    let n = data.n;
+    let p_b0 = priors.p_b0;
+    let p_b1 = priors.p_b1;
+    let p_b2 = priors.p_b2;
+    let j_groups = data.n_groups_b0;
+    let p_joint = p_b0 + j_groups + p_b1 + p_b2;
+    let sigma2 = state.sigma * state.sigma;
+    let sigma_u2 = state.sigma_u * state.sigma_u;
+
+    let omega = state.omega_vec(&data.x_om);
+    let rho   = state.rho_vec(&data.x_rho);
+    let d: Vec<f64> = (0..n).map(|i| data.tau[i] - omega[i]).collect();
+    let s: Vec<f64> = (0..n).map(|i| sigmoid(d[i] * rho[i])).collect();
+
+    // Build augmented design matrix: [X_b0 | Z | d*X_b1 | d*s*X_b2]
+    let mut x_joint = DMatrix::<f64>::zeros(n, p_joint);
+    let off_z  = p_b0;
+    let off_b1 = p_b0 + j_groups;
+    let off_b2 = off_b1 + p_b1;
+
+    for i in 0..n {
+        // X_b0 columns
+        for k in 0..p_b0 {
+            x_joint[(i, k)] = data.x_b0[(i, k)];
+        }
+        // Z indicator column for this observation's group
+        let g = data.group_b0[i];
+        if g >= 0 {
+            x_joint[(i, off_z + g as usize)] = 1.0;
+        }
+        // d * X_b1 columns
+        for k in 0..p_b1 {
+            x_joint[(i, off_b1 + k)] = d[i] * data.x_b1[(i, k)];
+        }
+        // d * s * X_b2 columns
+        for k in 0..p_b2 {
+            x_joint[(i, off_b2 + k)] = d[i] * s[i] * data.x_b2[(i, k)];
+        }
+    }
+
+    // Prior precision and mean vectors
+    let mut prec_prior = DVector::<f64>::zeros(p_joint);
+    let mut mu_prior   = DVector::<f64>::zeros(p_joint);
+
+    // beta_b0 priors
+    for (k, i) in priors.b0_range().enumerate() {
+        prec_prior[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[k]   = priors.mean[i];
+    }
+    // u_j priors: N(0, sigma_u^2)
+    let u_prec = 1.0 / sigma_u2;
+    for j in 0..j_groups {
+        prec_prior[off_z + j] = u_prec;
+        mu_prior[off_z + j]   = 0.0;
+    }
+    // beta_b1 priors
+    for (k, i) in priors.b1_range().enumerate() {
+        prec_prior[off_b1 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[off_b1 + k]   = priors.mean[i];
+    }
+    // beta_b2 priors
+    for (k, i) in priors.b2_range().enumerate() {
+        prec_prior[off_b2 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[off_b2 + k]   = priors.mean[i];
+    }
+
+    // Posterior precision: (1/sigma^2) * X'X + diag(prior_prec)
+    let xt = x_joint.transpose();
+    let xtx = &xt * &x_joint;
+    let mut prec_post = xtx / sigma2;
+    for k in 0..p_joint {
+        prec_post[(k, k)] += prec_prior[k];
+    }
+
+    // Posterior mean: P^{-1} * ((1/sigma^2) * X'y + prior_prec * prior_mean)
+    let xty: DVector<f64> = &xt * &data.y / sigma2;
+    let rhs: DVector<f64> = xty + prec_prior.zip_map(&mu_prior, |p, m| p * m);
+
+    let chol = prec_post.cholesky().expect("Joint precision matrix not positive definite");
+    let mu_post = chol.solve(&rhs);
+
+    // Sample: theta ~ N(mu_post, P^{-1})
+    let normal = Normal::new(0.0, 1.0f64).unwrap();
+    let z = DVector::from_iterator(p_joint, (0..p_joint).map(|_| normal.sample(rng)));
+    let l = chol.l();
+    let w = l.transpose().solve_upper_triangular(&z)
+        .expect("Triangular solve failed");
+    let theta = mu_post + w;
+
+    // Unpack into state
+    for k in 0..p_b0 {
+        state.beta_b0[k] = theta[k];
+    }
+    for j in 0..j_groups {
+        state.u_b0[j] = theta[off_z + j];
+    }
+    for k in 0..p_b1 {
+        state.beta_b1[k] = theta[off_b1 + k];
+    }
+    for k in 0..p_b2 {
+        state.beta_b2[k] = theta[off_b2 + k];
     }
 }
 

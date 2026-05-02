@@ -29,6 +29,13 @@ wants to see that it agrees with an independent implementation. `brms`
 (via Stan) is the natural reference, fitting the same generative model
 via NUTS on a custom non-linear formula.
 
+Two scenarios are compared below:
+
+1. **Intercept-only** — all parameters are scalar (the baseline case).
+2. **Covariate on omega** — `omega ~ 1 + treatment`, which exercises the
+   HMC-within-Gibbs sampler path for the non-linear change-point
+   parameter.
+
 ### One important practical note before we start
 
 When the change-point parameter `omega` drifts outside the range of the
@@ -52,6 +59,10 @@ if (!have_brms) {
   message("brms not installed -- install.packages('brms') to render the comparison.")
 }
 ```
+
+---
+
+# Scenario 1: Intercept-only model
 
 ## Simulate one dataset
 
@@ -251,14 +262,250 @@ dplyr::full_join(ess_sbp, ess_brms, by = "parameter") %>%
                caption = "Bulk ESS / second by package and parameter.")
 ```
 
+---
+
+# Scenario 2: Covariate on omega
+
+This scenario exercises the **HMC-within-Gibbs** sampler path that is
+activated when a non-linear parameter (`omega` or `rho`) has two or more
+coefficients. Here `omega ~ 1 + treatment` gives a group-specific
+change-point location.
+
+## Simulate data with treatment effect on omega
+
+```{r simulate-cov}
+set.seed(8147)
+
+n_subj   <- 30
+n_obs    <- 10
+tau_range <- c(0, 6)
+
+b0_true      <- 5.0
+b1_true      <- -0.4
+b2_true      <- 1.4
+omega_int    <- 3.2
+omega_trt    <- -0.8
+rho_true     <- 4.0
+sigma_true   <- 0.4
+sigma_u_true <- 0.7
+
+treatment <- rep(c(0, 1), each = n_subj / 2)
+u_j <- rnorm(n_subj, 0, sigma_u_true)
+.sigmoid <- function(x) 1 / (1 + exp(-x))
+
+rows <- vector("list", n_subj)
+for (j in seq_len(n_subj)) {
+  tau_j   <- seq(tau_range[1], tau_range[2], length.out = n_obs)
+  omega_j <- omega_int + omega_trt * treatment[j]
+  d_j     <- tau_j - omega_j
+  s_j     <- .sigmoid(d_j * rho_true)
+  mu_j    <- (b0_true + u_j[j]) + b1_true * d_j + b2_true * d_j * s_j
+  rows[[j]] <- data.frame(
+    subject   = factor(j),
+    tau       = tau_j,
+    treatment = treatment[j],
+    y         = mu_j + rnorm(n_obs, 0, sigma_true)
+  )
+}
+dat_cov <- do.call(rbind, rows)
+
+cat(sprintf("True omega: intercept = %.1f, treatment effect = %.1f\n",
+            omega_int, omega_trt))
+cat(sprintf("  Control  (treatment = 0): omega = %.1f\n", omega_int))
+cat(sprintf("  Treated  (treatment = 1): omega = %.1f\n", omega_int + omega_trt))
+```
+
+## Fit with smoothbp
+
+```{r fit-smoothbp-cov}
+t0 <- Sys.time()
+fit_sbp_cov <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),
+  b1      = ~ 1,
+  b2      = ~ 1,
+  omega   = ~ 1 + treatment,
+  rho     = ~ 1,
+  data    = dat_cov,
+  priors  = smoothbp_priors(
+    b0    = prior_normal(0, 10),
+    b1    = prior_normal(0, 2),
+    b2    = prior_normal(0, 2),
+    omega = list(
+      "(Intercept)" = prior_normal(3, 2, lb = 0, ub = max(dat_cov$tau)),
+      "treatment"   = prior_normal(0, 2)
+    ),
+    rho   = prior_normal(3, 2, lb = 0)
+  ),
+  chains  = 4L, iter = 2000L, warmup = 1000L,
+  seed    = 8147L, .verbose = FALSE
+)
+time_sbp_cov <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+```
+
+## Fit with brms
+
+```{r fit-brms-cov, eval = have_brms, message = FALSE, warning = FALSE, results = "hide"}
+bf_cov <- brms::bf(
+  y ~ b0 + b1 * (tau - omega) +
+        b2 * (tau - omega) / (1 + exp(-(tau - omega) * rho)),
+  b0    ~ 1 + (1 | subject),
+  b1    ~ 1,
+  b2    ~ 1,
+  omega ~ 1 + treatment,
+  rho   ~ 1,
+  nl = TRUE
+)
+
+priors_brms_cov <- c(
+  brms::prior(normal(0, 10), nlpar = "b0"),
+  brms::prior(normal(0, 2),  nlpar = "b1"),
+  brms::prior(normal(0, 2),  nlpar = "b2"),
+  brms::prior_string("normal(3, 2)", nlpar = "omega", coef = "Intercept"),
+  brms::prior(normal(0, 2),  nlpar = "omega", coef = "treatment"),
+  brms::prior(normal(3, 2),  nlpar = "rho", lb = 0)
+)
+
+init_fun_cov <- function() list(
+  b_b0    = array(rnorm(1, 5, 1)),
+  b_b1    = array(rnorm(1, 0, 0.3)),
+  b_b2    = array(rnorm(1, 0, 0.3)),
+  b_omega = array(c(rnorm(1, 3, 0.3), rnorm(1, -0.5, 0.3))),
+  b_rho   = array(rnorm(1, 3, 0.5))
+)
+
+t0 <- Sys.time()
+fit_brms_cov <- brms::brm(
+  bf_cov,
+  data    = dat_cov,
+  prior   = priors_brms_cov,
+  chains  = 4, iter = 2000, warmup = 1000,
+  seed    = 8147, refresh = 0,
+  init    = init_fun_cov,
+  control = list(adapt_delta = 0.95)
+)
+time_brms_cov <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+```
+
+## Compare posteriors
+
+```{r compare-cov, eval = have_brms}
+sbp_names_cov <- c(
+  "b0_(Intercept)", "b1_(Intercept)", "b2_(Intercept)",
+  "omega_(Intercept)", "omega_treatment",
+  "rho_(Intercept)", "sigma", "sigma_u"
+)
+brms_names_cov <- c(
+  "b_b0_Intercept", "b_b1_Intercept", "b_b2_Intercept",
+  "b_omega_Intercept", "b_omega_treatment",
+  "b_rho_Intercept", "sigma", "sd_subject__b0_Intercept"
+)
+
+sbp_draws_cov  <- posterior::as_draws_df(fit_sbp_cov$draws)[, sbp_names_cov]
+brms_draws_cov <- as.data.frame(
+  posterior::as_draws_df(fit_brms_cov)
+)[, brms_names_cov]
+colnames(brms_draws_cov) <- sbp_names_cov
+
+draws_long_cov <- dplyr::bind_rows(
+  tidyr::pivot_longer(sbp_draws_cov, cols = dplyr::everything(),
+                      names_to = "parameter", values_to = "value") %>%
+    dplyr::mutate(package = "smoothbp"),
+  tidyr::pivot_longer(brms_draws_cov, cols = dplyr::everything(),
+                      names_to = "parameter", values_to = "value") %>%
+    dplyr::mutate(package = "brms")
+)
+
+draws_long_cov %>%
+  dplyr::group_by(parameter, package) %>%
+  dplyr::summarise(
+    mean = mean(value),
+    sd   = sd(value),
+    q025 = quantile(value, 0.025),
+    q975 = quantile(value, 0.975),
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_wider(
+    names_from  = package,
+    values_from = c(mean, sd, q025, q975),
+    names_glue  = "{package}_{.value}"
+  ) %>%
+  dplyr::mutate(
+    delta_mean_pct = 100 * abs(smoothbp_mean - brms_mean) /
+                       (abs(brms_mean) + 1e-8)
+  ) %>%
+  knitr::kable(digits = 3,
+               caption = "Posterior summaries: omega ~ 1 + treatment.")
+```
+
+## Overlaid marginal posteriors (covariate model)
+
+```{r overlay-cov, eval = have_brms, fig.height = 5}
+true_vals_cov <- data.frame(
+  parameter = c("b0_(Intercept)", "b1_(Intercept)", "b2_(Intercept)",
+                 "omega_(Intercept)", "omega_treatment",
+                 "rho_(Intercept)", "sigma", "sigma_u"),
+  true_value = c(b0_true, b1_true, b2_true,
+                  omega_int, omega_trt, rho_true, sigma_true, sigma_u_true)
+)
+
+ggplot(draws_long_cov, aes(x = value, fill = package, colour = package)) +
+  geom_density(alpha = 0.35) +
+  geom_vline(data = true_vals_cov, aes(xintercept = true_value),
+             linetype = "dashed", linewidth = 0.5) +
+  facet_wrap(~ parameter, scales = "free", ncol = 3) +
+  scale_fill_manual(values  = c(smoothbp = "#1f77b4", brms = "#d62728")) +
+  scale_colour_manual(values = c(smoothbp = "#1f77b4", brms = "#d62728")) +
+  labs(
+    title    = "Marginal posteriors: smoothbp vs brms (omega ~ 1 + treatment)",
+    subtitle = sprintf(
+      "smoothbp: %.1fs   brms: %.1fs.  Dashed lines = true values.",
+      time_sbp_cov, time_brms_cov
+    ),
+    x = NULL, y = "density"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+```
+
+## Effective sample size per second (covariate model)
+
+```{r ess-cov, eval = have_brms}
+ess_sbp_cov  <- posterior::summarise_draws(fit_sbp_cov$draws, ess_bulk) %>%
+  dplyr::filter(variable %in% sbp_names_cov) %>%
+  dplyr::transmute(parameter = variable,
+                   smoothbp_ess_per_sec = ess_bulk / time_sbp_cov)
+
+ess_brms_cov <- posterior::summarise_draws(
+  posterior::as_draws_df(fit_brms_cov), ess_bulk
+) %>%
+  dplyr::filter(variable %in% brms_names_cov) %>%
+  dplyr::mutate(parameter = sbp_names_cov[match(variable, brms_names_cov)]) %>%
+  dplyr::transmute(parameter, brms_ess_per_sec = ess_bulk / time_brms_cov)
+
+dplyr::full_join(ess_sbp_cov, ess_brms_cov, by = "parameter") %>%
+  knitr::kable(digits = 1,
+               caption = "Bulk ESS / second by package and parameter (covariate model).")
+```
+
+---
+
 ## What to look for
 
 If both samplers have converged, the marginal posteriors overlay almost
 exactly, the means agree to within Monte Carlo error (`delta_mean_pct`
-should be a fraction of a per cent), and the credible intervals are within
-sampling variability of each other. ESS per second is substantially higher
-for `smoothbp` because each iteration is cheaper, even though NUTS gets
-more out of each iteration.
+should be a fraction of a per cent for well-mixed parameters), and the
+credible intervals are within sampling variability of each other.
+
+`smoothbp` jointly samples the intercept `b0` and random effects `u` in a
+single conjugate Gibbs block.  This avoids the slow-mixing ridge that
+arises when `b0` and `u` are updated in separate blocks (since the
+likelihood depends on `b0 + u_j`).  As a result, `b0` and `sigma_u` mix
+well, with ESS comparable to or exceeding brms on these parameters.
+
+For the non-linear parameters (`omega`, `rho`), NUTS typically achieves
+higher ESS per iteration, but smoothbp's cheaper per-iteration cost keeps
+ESS per second competitive.
 
 If you remove the `ub = max(dat$tau)` bound or the `init_fun`, you will
 likely see the brms posterior on `omega` and `b2` go bimodal: one cluster
