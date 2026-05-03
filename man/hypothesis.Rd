@@ -4,17 +4,16 @@
 \alias{hypothesis}
 \title{Test hypotheses and compute evidence ratios from posterior draws}
 \usage{
-hypothesis(object, ...)
+hypothesis(object, hypotheses, ci = 0.95, ...)
 }
 \arguments{
 \item{object}{A \code{smoothbp_fit} object.}
 
-\item{...}{Unused.}
-
 \item{hypotheses}{A character vector of hypothesis strings.}
 
-\item{ci}{Width of the credible interval for the underlying contrast.
-Default \code{0.95}.}
+\item{ci}{Width of the credible interval (0 < ci < 1). Default 0.95.}
+
+\item{...}{Unused.}
 }
 \value{
 An object of class \code{c("smoothbp_hypothesis", "data.frame")}

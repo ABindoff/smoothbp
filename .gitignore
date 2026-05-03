@@ -19,3 +19,6 @@ src/rust/vendor/
 vignettes/*.html
 vignettes/*.R
 .positai
+
+# Paper draft (work in progress, not part of the R package)
+paper/

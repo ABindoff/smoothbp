@@ -60,6 +60,13 @@ impl Priors {
         let s = self.p_b0 + self.p_b1 + self.p_b2 + self.p_om;
         s..(s + self.p_rho)
     }
+
+    /// True if any b0 coefficient has a finite lower or upper bound.
+    pub fn b0_has_finite_bounds(&self) -> bool {
+        let r = self.b0_range();
+        self.lb[r.clone()].iter().any(|v| v.is_finite())
+            || self.ub[r].iter().any(|v| v.is_finite())
+    }
 }
 
 // ---------------------------------------------------------------------------

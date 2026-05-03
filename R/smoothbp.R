@@ -226,3 +226,68 @@ smoothbp <- function(
     class = "smoothbp_fit"
   )
 }
+
+#' Update a fitted smoothbp model
+#'
+#' Re-fits the model, replacing any arguments supplied here with the
+#' corresponding values stored in the original fit for anything left
+#' unspecified.
+#'
+#' @param object A \code{smoothbp_fit} object.
+#' @param formula,b0,b1,b2,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
+#'   Replacements for the corresponding arguments of \code{\link{smoothbp}}.
+#'   Any argument not supplied is taken from \code{object}.
+#' @param ... Ignored.
+#'
+#' @return A new \code{smoothbp_fit} object.
+#' @export
+update.smoothbp_fit <- function(
+    object,
+    formula,
+    b0, b1, b2, omega, rho,
+    data,
+    priors,
+    chains, iter, warmup, seed,
+    step_om, step_rho, target_accept,
+    cores,
+    .verbose = TRUE,
+    ...
+) {
+  if (missing(formula))      formula      <- object$formula
+  if (missing(b0))           b0           <- object$b0_formula
+  if (missing(b1))           b1           <- object$b1_formula
+  if (missing(b2))           b2           <- object$b2_formula
+  if (missing(omega))        omega        <- object$omega_formula
+  if (missing(rho))          rho          <- object$rho_formula
+  if (missing(data))         data         <- object$data
+  if (missing(priors))       priors       <- object$priors
+  if (missing(chains))       chains       <- object$chains
+  if (missing(iter))         iter         <- object$iter
+  if (missing(warmup))       warmup       <- object$warmup
+  if (missing(seed))         seed         <- object$seed
+  if (missing(cores))        cores        <- object$cores
+  # step_om, step_rho, target_accept are not stored; fall back to smoothbp() defaults
+  if (missing(step_om))        step_om        <- 0.3
+  if (missing(step_rho))       step_rho       <- 0.3
+  if (missing(target_accept))  target_accept  <- 0.65
+
+  smoothbp(
+    formula       = formula,
+    b0            = b0,
+    b1            = b1,
+    b2            = b2,
+    omega         = omega,
+    rho           = rho,
+    data          = data,
+    priors        = priors,
+    chains        = chains,
+    iter          = iter,
+    warmup        = warmup,
+    seed          = seed,
+    step_om       = step_om,
+    step_rho      = step_rho,
+    target_accept = target_accept,
+    cores         = cores,
+    .verbose      = .verbose
+  )
+}

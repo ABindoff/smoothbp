@@ -4,12 +4,12 @@
 \alias{bayes_factor.smoothbp_fit}
 \title{Bayes factor comparison for smoothbp_fit objects}
 \usage{
-\method{bayes_factor}{smoothbp_fit}(x, y, log = FALSE, ...)
+\method{bayes_factor}{smoothbp_fit}(x1, x2, log = FALSE, ...)
 }
 \arguments{
-\item{x}{A \code{smoothbp_fit} object (the numerator model).}
+\item{x1}{A \code{smoothbp_fit} object (the numerator model).}
 
-\item{y}{A second model object: another \code{smoothbp_fit}, a \code{brmsfit}, or any
+\item{x2}{A second model object: another \code{smoothbp_fit}, a \code{brmsfit}, or any
 object with a \code{bridge_sampler} method.}
 
 \item{log}{Logical; if \code{TRUE} return the log Bayes factor. Default \code{FALSE}.}
@@ -69,6 +69,6 @@ bayes_factor(fit_piece, fit_linear)
 
 # Two smoothbp models
 fit_grouped <- smoothbp(y ~ tau, b0 = ~group + (1|subject), data = d)
-bayes_factor(fit_piece, fit_grouped)
+bayes_factor(fit_piece, fit_grouped)  # x1 vs x2
 }
 }

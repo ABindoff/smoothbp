@@ -83,7 +83,9 @@
 #' }
 #'
 #' @export
-hypothesis <- function(object, ...) UseMethod("hypothesis")
+#' @param hypotheses A character vector of hypothesis strings.
+#' @param ci Width of the credible interval (0 < ci < 1). Default 0.95.
+hypothesis <- function(object, hypotheses, ci = 0.95, ...) UseMethod("hypothesis")
 
 #' @export
 hypothesis.smoothbp_fit <- function(object, hypotheses, ci = 0.95, ...) {

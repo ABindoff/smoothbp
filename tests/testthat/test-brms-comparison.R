@@ -124,7 +124,7 @@ test_that("smoothbp matches brms on intercept-only model", {
 
   # Check brms converged before comparing
   brms_rhat <- posterior::summarise_draws(
-    posterior::as_draws_df(fit_brms), rhat
+    posterior::as_draws_df(fit_brms), rhat = posterior::rhat
   )
   max_rhat <- max(brms_rhat$rhat, na.rm = TRUE)
   expect_lt(max_rhat, 1.05, label = "brms Rhat check")
@@ -253,7 +253,7 @@ test_that("smoothbp matches brms with covariate on omega", {
 
   # Check brms converged
   brms_rhat <- posterior::summarise_draws(
-    posterior::as_draws_df(fit_brms), rhat
+    posterior::as_draws_df(fit_brms), rhat = posterior::rhat
   )
   max_rhat <- max(brms_rhat$rhat, na.rm = TRUE)
   expect_lt(max_rhat, 1.05, label = "brms Rhat check")

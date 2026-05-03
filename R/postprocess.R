@@ -426,12 +426,12 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
 #' cross-validation and model comparison. Each row is a posterior draw;
 #' each column is an observation.
 #'
-#' @param x A \code{smoothbp_fit} object.
+#' @param object A \code{smoothbp_fit} object.
 #' @param ... Unused.
 #' @return A matrix of dimensions (n_draws × n_obs) with log-likelihood values.
 #'   Rows are posterior draws, columns are observations.
 #' @details
-#' The model likelihood is normal: \eqn{y_i ~ N(\mu_i, \sigma^2)}.
+#' The model likelihood is normal: \eqn{y_i \sim N(\mu_i, \sigma^2)}.
 #' This function returns \eqn{\log p(y_i | \mu_i, \sigma)} for each
 #' observation and posterior draw.
 #' @examples
@@ -443,16 +443,16 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
 #' loo::loo(ll)
 #' }
 #' @export
-log_lik.smoothbp_fit <- function(x, ...) {
-  y_obs <- as.double(x$data[[x$response]])
+log_lik.smoothbp_fit <- function(object, ...) {
+  y_obs <- as.double(object$data[[object$response]])
   n_obs <- length(y_obs)
 
   # Fitted draws: n_draws × n_obs matrix of μᵢ
-  fit_draws <- fitted(x, summary = FALSE)
+  fit_draws <- fitted(object, summary = FALSE)
   n_draws <- nrow(fit_draws)
 
   # Sigma draws: vector of length n_draws
-  draw_mat <- posterior::as_draws_matrix(x$draws)
+  draw_mat <- posterior::as_draws_matrix(object$draws)
   sigma_draws <- as.numeric(draw_mat[, "sigma"])
 
   # Log-likelihood matrix: dnorm(y, μ, σ, log = TRUE)

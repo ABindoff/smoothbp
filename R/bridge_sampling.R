@@ -351,8 +351,8 @@ bridge_sampler.smoothbp_fit <- function(
 #' Bayesian model. The second model (`y`) may be another `smoothbp_fit` or a
 #' `brmsfit` object (or any object with a `bridge_sampler` method).
 #'
-#' @param x A `smoothbp_fit` object (the numerator model).
-#' @param y A second model object: another `smoothbp_fit`, a `brmsfit`, or any
+#' @param x1 A `smoothbp_fit` object (the numerator model).
+#' @param x2 A second model object: another `smoothbp_fit`, a `brmsfit`, or any
 #'   object with a `bridge_sampler` method.
 #' @param log Logical; if `TRUE` return the log Bayes factor. Default `FALSE`.
 #' @param ... Additional arguments passed to `bridge_sampler()`.
@@ -405,10 +405,10 @@ bridge_sampler.smoothbp_fit <- function(
 #'
 #' # Two smoothbp models
 #' fit_grouped <- smoothbp(y ~ tau, b0 = ~group + (1|subject), data = d)
-#' bayes_factor(fit_piece, fit_grouped)
+#' bayes_factor(fit_piece, fit_grouped)  # x1 vs x2
 #' }
 #' @export
-bayes_factor.smoothbp_fit <- function(x, y, log = FALSE, ...) {
+bayes_factor.smoothbp_fit <- function(x1, x2, log = FALSE, ...) {
 
   if (!requireNamespace("bridgesampling", quietly = TRUE)) {
     stop(
@@ -419,13 +419,13 @@ bayes_factor.smoothbp_fit <- function(x, y, log = FALSE, ...) {
 
   # Compute bridge samples for the smoothbp numerator model
   message("Computing bridge samples for model 1 (smoothbp_fit)...")
-  bs_x <- bridge_sampler(x, ...)
+  bs_x <- bridge_sampler(x1, ...)
 
   # Compute bridge samples for the denominator model
-  if (inherits(y, "smoothbp_fit")) {
+  if (inherits(x2, "smoothbp_fit")) {
     message("Computing bridge samples for model 2 (smoothbp_fit)...")
-    bs_y <- bridge_sampler(y, ...)
-  } else if (inherits(y, "brmsfit")) {
+    bs_y <- bridge_sampler(x2, ...)
+  } else if (inherits(x2, "brmsfit")) {
     if (!requireNamespace("brms", quietly = TRUE)) {
       stop(
         "The 'brms' package is required to compare against a brmsfit. ",
@@ -434,7 +434,7 @@ bayes_factor.smoothbp_fit <- function(x, y, log = FALSE, ...) {
     }
     message("Computing bridge samples for model 2 (brmsfit)...")
     bs_y <- tryCatch(
-      brms::bridge_sampler(y, ...),
+      brms::bridge_sampler(x2, ...),
       error = function(e) {
         stop(
           "Bridge sampling failed for the brmsfit object. ",
@@ -446,20 +446,20 @@ bayes_factor.smoothbp_fit <- function(x, y, log = FALSE, ...) {
   } else {
     # Try a generic bridge_sampler call for other model types
     has_bs <- tryCatch({
-      utils::getS3method("bridge_sampler", class(y)[1])
+      utils::getS3method("bridge_sampler", class(x2)[1])
       TRUE
     }, error = function(e) FALSE)
 
     if (!has_bs) {
       stop(
         "No 'bridge_sampler' method found for an object of class '",
-        class(y)[1], "'. ",
+        class(x2)[1], "'. ",
         "Supported types: smoothbp_fit, brmsfit, or any class with a ",
         "bridge_sampler method from the bridgesampling package."
       )
     }
-    message("Computing bridge samples for model 2 (", class(y)[1], ")...")
-    bs_y <- bridge_sampler(y, ...)
+    message("Computing bridge samples for model 2 (", class(x2)[1], ")...")
+    bs_y <- bridge_sampler(x2, ...)
   }
 
   bridgesampling::bayes_factor(bs_x, bs_y, log = log)

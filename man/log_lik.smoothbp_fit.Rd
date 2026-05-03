@@ -4,10 +4,10 @@
 \alias{log_lik.smoothbp_fit}
 \title{Log-likelihood for smoothbp_fit objects}
 \usage{
-\method{log_lik}{smoothbp_fit}(x, ...)
+\method{log_lik}{smoothbp_fit}(object, ...)
 }
 \arguments{
-\item{x}{A \code{smoothbp_fit} object.}
+\item{object}{A \code{smoothbp_fit} object.}
 
 \item{...}{Unused.}
 }
@@ -21,7 +21,7 @@ cross-validation and model comparison. Each row is a posterior draw;
 each column is an observation.
 }
 \details{
-The model likelihood is normal: \eqn{y_i ~ N(\mu_i, \sigma^2)}.
+The model likelihood is normal: \eqn{y_i \sim N(\mu_i, \sigma^2)}.
 This function returns \eqn{\log p(y_i | \mu_i, \sigma)} for each
 observation and posterior draw.
 }
