@@ -96,7 +96,12 @@ Posterior inference is performed via a Metropolis-within-Gibbs sampler
 compiled in Rust:
 \itemize{
 \item \strong{Gibbs} (exact conjugate) for \eqn{b0}, \eqn{b1}, \eqn{b2}
-coefficients and the random intercepts.
+coefficients and the random intercepts.  When any of these
+parameters has finite bounds specified in \code{priors}, the
+conjugate draw is used as an independence Metropolis-Hastings
+proposal and rejected if any coefficient falls outside its
+\code{[lb, ub]} interval.  This is equivalent to rejection
+sampling from the truncated full conditional.
 \item \strong{HMC-within-Gibbs} for \eqn{\omega} and \eqn{\rho}
 coefficients when their linear predictor has \eqn{p \ge 2}
 columns.  Uses a short leapfrog trajectory (L drawn uniformly

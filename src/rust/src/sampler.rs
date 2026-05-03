@@ -889,15 +889,27 @@ fn sample_linear_coefs(
         .expect("Triangular solve failed");
     let theta = mu_post + x;
 
-    // If b0 has finite bounds, treat the conjugate draw as an independence MH
-    // proposal and reject if any b0 coefficient violates its bounds.
-    if priors.b0_has_finite_bounds() {
+    // If any linear coefficient (b0, b1, b2) has finite bounds, treat the
+    // conjugate draw as an independence MH proposal and reject the entire draw
+    // if any coefficient violates its bounds.
+    if priors.lin_has_finite_bounds() {
         let b0_r = priors.b0_range();
-        let b0_ok = (0..p_b0).all(|k| {
-            let idx = b0_r.start + k;
-            theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
-        });
-        if !b0_ok {
+        let b1_r = priors.b1_range();
+        let b2_r = priors.b2_range();
+        let in_bounds = (0..p_b0).all(|k| {
+                let idx = b0_r.start + k;
+                theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
+            })
+            && (0..p_b1).all(|k| {
+                let idx = b1_r.start + k;
+                theta[p_b0 + k] >= priors.lb[idx] && theta[p_b0 + k] <= priors.ub[idx]
+            })
+            && (0..p_b2).all(|k| {
+                let idx = b2_r.start + k;
+                theta[p_b0 + p_b1 + k] >= priors.lb[idx]
+                    && theta[p_b0 + p_b1 + k] <= priors.ub[idx]
+            });
+        if !in_bounds {
             return;
         }
     }
@@ -1018,16 +1030,26 @@ fn sample_linear_coefs_joint(
         .expect("Triangular solve failed");
     let theta = mu_post + w;
 
-    // If b0 has finite bounds, treat the conjugate draw as an independence MH
-    // proposal and reject the entire joint draw if any b0 coefficient violates
-    // its bounds.
-    if priors.b0_has_finite_bounds() {
+    // If any linear coefficient (b0, b1, b2) has finite bounds, treat the
+    // conjugate draw as an independence MH proposal and reject the entire joint
+    // draw if any coefficient violates its bounds.
+    if priors.lin_has_finite_bounds() {
         let b0_r = priors.b0_range();
-        let b0_ok = (0..p_b0).all(|k| {
-            let idx = b0_r.start + k;
-            theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
-        });
-        if !b0_ok {
+        let b1_r = priors.b1_range();
+        let b2_r = priors.b2_range();
+        let in_bounds = (0..p_b0).all(|k| {
+                let idx = b0_r.start + k;
+                theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
+            })
+            && (0..p_b1).all(|k| {
+                let idx = b1_r.start + k;
+                theta[off_b1 + k] >= priors.lb[idx] && theta[off_b1 + k] <= priors.ub[idx]
+            })
+            && (0..p_b2).all(|k| {
+                let idx = b2_r.start + k;
+                theta[off_b2 + k] >= priors.lb[idx] && theta[off_b2 + k] <= priors.ub[idx]
+            });
+        if !in_bounds {
             return;
         }
     }

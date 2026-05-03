@@ -61,11 +61,17 @@ impl Priors {
         s..(s + self.p_rho)
     }
 
-    /// True if any b0 coefficient has a finite lower or upper bound.
-    pub fn b0_has_finite_bounds(&self) -> bool {
-        let r = self.b0_range();
-        self.lb[r.clone()].iter().any(|v| v.is_finite())
-            || self.ub[r].iter().any(|v| v.is_finite())
+    /// True if any coefficient in `range` has a finite lower or upper bound.
+    pub fn range_has_finite_bounds(&self, range: std::ops::Range<usize>) -> bool {
+        self.lb[range.clone()].iter().any(|v| v.is_finite())
+            || self.ub[range].iter().any(|v| v.is_finite())
+    }
+
+    /// True if any linear coefficient (b0, b1, or b2) has a finite bound.
+    pub fn lin_has_finite_bounds(&self) -> bool {
+        self.range_has_finite_bounds(self.b0_range())
+            || self.range_has_finite_bounds(self.b1_range())
+            || self.range_has_finite_bounds(self.b2_range())
     }
 }
 

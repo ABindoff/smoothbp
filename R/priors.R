@@ -51,6 +51,27 @@ print.smoothbp_prior <- function(x, ...) {
 #' - A named list mapping coefficient names (matching column names of the design
 #'   matrix) to individual `prior_normal()` objects.
 #'
+#' ## Bounds (`lb`, `ub`)
+#'
+#' All five regression-coefficient parameters (`b0`, `b1`, `b2`, `omega`,
+#' `rho`) support finite lower and upper bounds via the `lb` and `ub` arguments
+#' of [prior_normal()].  The bounds are enforced by the sampler:
+#'
+#' - **`b0`, `b1`, `b2`**: The conjugate Gibbs draw is used as an independence
+#'   Metropolis-Hastings proposal; the entire linear draw is rejected whenever
+#'   any coefficient falls outside its `[lb, ub]` interval.  This is exact
+#'   rejection sampling from the truncated full conditional and has no cost
+#'   when all bounds are infinite (the default).
+#' - **`omega`, `rho`**: Bounds are enforced by boundary reflection during HMC
+#'   leapfrog integration (for multi-coefficient predictors) or by immediate
+#'   rejection of out-of-bounds proposals (for intercept-only predictors).
+#'
+#' Typical usage: bound the `omega` intercept to the observed time range to
+#' prevent the change-point from drifting into an unidentifiable region
+#' (`prior_normal(3, 2, lb = 0, ub = max(data$tau))`).  Bounds on `b1` or
+#' `b2` can encode scientific constraints such as requiring a non-negative
+#' slope change (`b2 = prior_normal(0, 2, lb = 0)`).
+#'
 #' @param b0     Prior(s) for `b0` regression coefficients.
 #' @param b1     Prior(s) for `b1` regression coefficients.
 #' @param b2     Prior(s) for `b2` regression coefficients.

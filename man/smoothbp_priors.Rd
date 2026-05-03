@@ -40,3 +40,27 @@ Each argument accepts either:
 matrix) to individual \code{prior_normal()} objects.
 }
 }
+\details{
+\subsection{Bounds (\code{lb}, \code{ub})}{
+
+All five regression-coefficient parameters (\code{b0}, \code{b1}, \code{b2}, \code{omega},
+\code{rho}) support finite lower and upper bounds via the \code{lb} and \code{ub} arguments
+of \code{\link[=prior_normal]{prior_normal()}}.  The bounds are enforced by the sampler:
+\itemize{
+\item \strong{\code{b0}, \code{b1}, \code{b2}}: The conjugate Gibbs draw is used as an independence
+Metropolis-Hastings proposal; the entire linear draw is rejected whenever
+any coefficient falls outside its \verb{[lb, ub]} interval.  This is exact
+rejection sampling from the truncated full conditional and has no cost
+when all bounds are infinite (the default).
+\item \strong{\code{omega}, \code{rho}}: Bounds are enforced by boundary reflection during HMC
+leapfrog integration (for multi-coefficient predictors) or by immediate
+rejection of out-of-bounds proposals (for intercept-only predictors).
+}
+
+Typical usage: bound the \code{omega} intercept to the observed time range to
+prevent the change-point from drifting into an unidentifiable region
+(\code{prior_normal(3, 2, lb = 0, ub = max(data$tau))}).  Bounds on \code{b1} or
+\code{b2} can encode scientific constraints such as requiring a non-negative
+slope change (\code{b2 = prior_normal(0, 2, lb = 0)}).
+}
+}
