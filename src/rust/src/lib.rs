@@ -105,11 +105,26 @@ fn run_mcmc(
         n,
     };
 
+    // Precompute whether any linear coefficient has finite bounds.
+    // This is needed before constructing Priors.
+    let lb_vec = prior_lb.to_vec();
+    let ub_vec = prior_ub.to_vec();
+    let b0_range = 0..p_b0;
+    let b1_range = p_b0..(p_b0 + p_b1);
+    let b2_range = (p_b0 + p_b1)..(p_b0 + p_b1 + p_b2);
+    let has_lin_bounds =
+        lb_vec[b0_range.clone()].iter().any(|v| v.is_finite())
+            || ub_vec[b0_range].iter().any(|v| v.is_finite())
+            || lb_vec[b1_range.clone()].iter().any(|v| v.is_finite())
+            || ub_vec[b1_range].iter().any(|v| v.is_finite())
+            || lb_vec[b2_range.clone()].iter().any(|v| v.is_finite())
+            || ub_vec[b2_range].iter().any(|v| v.is_finite());
+
     let priors = Priors {
         mean: prior_mean.to_vec(),
         sd: prior_sd.to_vec(),
-        lb: prior_lb.to_vec(),
-        ub: prior_ub.to_vec(),
+        lb: lb_vec,
+        ub: ub_vec,
         sigma_shape,
         sigma_scale,
         sigma_u_shape,
@@ -119,6 +134,7 @@ fn run_mcmc(
         p_b2,
         p_om,
         p_rho,
+        has_lin_bounds,
     };
 
     let n_chains  = chains as usize;

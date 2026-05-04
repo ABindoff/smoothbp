@@ -892,6 +892,7 @@ fn sample_linear_coefs(
     // If any linear coefficient (b0, b1, b2) has finite bounds, treat the
     // conjugate draw as an independence MH proposal and reject the entire draw
     // if any coefficient violates its bounds.
+    // The check for whether bounds exist is O(1) after precomputation.
     if priors.lin_has_finite_bounds() {
         let b0_r = priors.b0_range();
         let b1_r = priors.b1_range();
