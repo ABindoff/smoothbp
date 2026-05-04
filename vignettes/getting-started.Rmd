@@ -281,6 +281,16 @@ The `lb` and `ub` arguments to `prior_normal()` impose hard bounds.
 `omega` should always have `lb = 0` (it is a location on the time axis).
 `rho` should have `lb = 0` (sharpness must be positive).
 
+### Spike-and-slab variable selection
+
+When you have multiple covariates in the `b2` formula and want to identify
+which ones genuinely contribute to the slope change, `smoothbp_ss()` extends
+the model with spike-and-slab priors on the `b2` coefficients.  Covariates
+excluded by the spike are structurally zeroed — both their `b2` effect and
+the corresponding `omega`/`rho` terms are set to exactly zero.
+
+See `vignette("spike-and-slab")` for a full tutorial with worked examples.
+
 ---
 
 ## Hypothesis tests and evidence ratios
