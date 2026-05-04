@@ -631,7 +631,7 @@ sbp_sum_mcp <- posterior::summarise_draws(fit_sbp_mcp$draws) |>
                                  "rho_(Intercept)", "sigma"))
 
 mcp_sum <- summary(fit_mcp) |>
-  dplyr::filter(name %in% c("cp_1", "int_1", "time_1", "time_2", "sigma_1"))
+  dplyr::filter(name %in% c("cp_1", "int_1", "tau_1", "tau_2", "sigma_1"))
 
 # Compute post-change slope from smoothbp draws for direct comparison
 dm_sbp_mcp <- posterior::as_draws_matrix(fit_sbp_mcp$draws)
@@ -662,11 +662,11 @@ comparison_mcp <- data.frame(
     quantile(post_slope, 0.975),
     sbp_sum_mcp$q97.5[sbp_sum_mcp$variable == "sigma"]
   ),
-  mcp_mean           = mcp_sum$mean[match(c("cp_1","time_1","time_2","sigma_1"),
+  mcp_mean           = mcp_sum$mean[match(c("cp_1","tau_1","tau_2","sigma_1"),
                                           mcp_sum$name)],
-  mcp_lo             = mcp_sum$lower[match(c("cp_1","time_1","time_2","sigma_1"),
+  mcp_lo             = mcp_sum$lower[match(c("cp_1","tau_1","tau_2","sigma_1"),
                                            mcp_sum$name)],
-  mcp_hi             = mcp_sum$upper[match(c("cp_1","time_1","time_2","sigma_1"),
+  mcp_hi             = mcp_sum$upper[match(c("cp_1","tau_1","tau_2","sigma_1"),
                                            mcp_sum$name)]
 )
 
@@ -700,8 +700,8 @@ mu_sbp   <- b0_m + b1_m * d_grid + b2_m * d_grid * sigmoid(d_grid * rho_m)
 # mcp posterior mean trajectory
 cp_m    <- mcp_sum$mean[mcp_sum$name == "cp_1"]
 int_m   <- mcp_sum$mean[mcp_sum$name == "int_1"]
-t1_m    <- mcp_sum$mean[mcp_sum$name == "time_1"]
-t2_m    <- mcp_sum$mean[mcp_sum$name == "time_2"]
+t1_m    <- mcp_sum$mean[mcp_sum$name == "tau_1"]
+t2_m    <- mcp_sum$mean[mcp_sum$name == "tau_2"]
 mu_mcp  <- ifelse(tau_grid < cp_m,
                   int_m + t1_m * tau_grid,
                   int_m + t1_m * cp_m + t2_m * (tau_grid - cp_m))
@@ -738,11 +738,11 @@ sbp_ess_mcp <- posterior::summarise_draws(
   dplyr::mutate(ess_per_sec = ess_bulk / time_sbp_mcp,
                 package = "smoothbp")
 
-# mcp ESS — convert to posterior draws array for ESS computation
-# Use posterior package for compatibility with mcp's output format
-mcp_draws <- posterior::as_draws_array(fit_mcp)
+# mcp ESS — extract draws from mcp object
+# mcp stores posterior draws as a coda::mcmc.list in $mcmc_post
+mcp_draws <- posterior::as_draws_array(fit_mcp$mcmc_post)
 mcp_ess_draws <- posterior::summarise_draws(
-  mcp_draws[, , c("cp_1", "time_1", "sigma_1")],
+  mcp_draws[, , c("cp_1", "tau_1", "sigma_1")],
   ess_bulk = posterior::ess_bulk
 )
 mcp_ess_raw <- setNames(mcp_ess_draws$ess_bulk, mcp_ess_draws$variable)
@@ -753,7 +753,7 @@ data.frame(
     match(c("omega_(Intercept)", "b1_(Intercept)", "sigma"),
           sbp_ess_mcp$variable)], 1),
   mcp_ess_s   = round(c(mcp_ess_raw["cp_1"],
-                         mcp_ess_raw["time_1"],
+                         mcp_ess_raw["tau_1"],
                          mcp_ess_raw["sigma_1"]) / time_mcp, 1)
 ) |>
   knitr::kable(caption = "ESS/second: smoothbp vs mcp.
