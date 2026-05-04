@@ -15,7 +15,12 @@
 
 # Log density of a (truncated) normal distribution.
 # When lb and ub are both infinite, this is just dnorm(..., log=TRUE).
+# Returns -Inf when x is outside [lb, ub], guarding against floating-point
+# samples that are nominally in-bounds but slip past the sampler's boundary
+# check (e.g. x = lb - 1e-16 due to rounding in the Rust back-end).
 .log_dtnorm <- function(x, mean, sd, lb = -Inf, ub = Inf) {
+  if (is.finite(lb) && x < lb) return(-Inf)
+  if (is.finite(ub) && x > ub) return(-Inf)
   log_p <- stats::dnorm(x, mean, sd, log = TRUE)
   if (is.finite(lb) || is.finite(ub)) {
     log_norm <- log(stats::pnorm(ub, mean, sd) - stats::pnorm(lb, mean, sd))
@@ -322,6 +327,24 @@ bridge_sampler.smoothbp_fit <- function(
     om_coefs  = colnames(dm$X_om),
     rho_coefs = colnames(dm$X_rho)
   )
+
+  # ---- Clamp samples to strictly within declared bounds --------------------
+  # bridgesampling transforms bounded parameters via log(theta - lb) or
+  # logit((theta - lb)/(ub - lb)).  A sample that is even 1 ULP below lb
+  # produces NaN and aborts the entire run.  This can happen because the Rust
+  # sampler's floating-point boundary check (proposed < lb) does not catch
+  # values at lb - epsilon.  Clamp to a safe interior point here rather than
+  # silently corrupting the bridge estimate.
+  eps_clamp <- .Machine$double.eps^0.5        # ~1.5e-8: negligible vs MCMC noise
+  for (nm in names(lb_vec)) {
+    if (!is.finite(lb_vec[[nm]]) && !is.finite(ub_vec[[nm]])) next
+    col <- samp_mat[, nm]
+    if (is.finite(lb_vec[[nm]]))
+      col <- pmax(col, lb_vec[[nm]] + eps_clamp)
+    if (is.finite(ub_vec[[nm]]))
+      col <- pmin(col, ub_vec[[nm]] - eps_clamp)
+    samp_mat[, nm] <- col
+  }
 
   # ---- Run bridge sampling -------------------------------------------------
   bridgesampling::bridge_sampler(
