@@ -34,6 +34,8 @@ run_mcmc_ss(
   spike_pi,
   om_map,
   rho_map,
+  pi_beta_a,
+  pi_beta_b,
   chains,
   iter,
   warmup,

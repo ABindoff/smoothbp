@@ -84,12 +84,16 @@ impl Priors {
 pub struct SpikeSlabConfig {
     /// Which b2 coefficients are eligible for spike-and-slab (length p_b2)
     pub spike_mask: Vec<bool>,
-    /// Prior inclusion probability for each b2 coefficient (length p_b2)
-    pub pi: Vec<f64>,
+    /// Initial/fixed inclusion probability for each b2 coefficient (length p_b2)
+    pub pi_init: Vec<f64>,
     /// Mapping from b2 coefficient index → omega coefficient index (-1 if no match)
     pub om_map: Vec<i32>,
     /// Mapping from b2 coefficient index → rho coefficient index (-1 if no match)
     pub rho_map: Vec<i32>,
+    /// Beta hyperprior shape parameter a (0 = fixed pi, >0 = learn pi)
+    pub beta_a: f64,
+    /// Beta hyperprior shape parameter b
+    pub beta_b: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +112,8 @@ pub struct State {
     pub sigma_u: f64,  // random-effect SD (unused when n_groups == 0)
     /// Spike-and-slab inclusion indicators (length p_b2; all true in base model)
     pub gamma: Vec<bool>,
+    /// Current inclusion probability (sampled when Beta hyperprior is active)
+    pub pi: f64,
 }
 
 impl State {
@@ -122,9 +128,9 @@ impl State {
             + 2 // sigma, sigma_u
     }
 
-    /// Number of parameters including gamma indicators
-    pub fn n_params_ss(&self) -> usize {
-        self.n_params() + self.gamma.len()
+    /// Number of parameters including gamma indicators and pi
+    pub fn n_params_ss(&self, learn_pi: bool) -> usize {
+        self.n_params() + self.gamma.len() + if learn_pi { 1 } else { 0 }
     }
 
     /// Flatten to a contiguous Vec for storage in the draw matrix.
@@ -142,12 +148,15 @@ impl State {
         v
     }
 
-    /// Flatten to Vec including gamma indicators (for spike-and-slab model).
-    /// Order: beta_b0 | u_b0 | beta_b1 | beta_b2 | beta_om | beta_rho | sigma | sigma_u | gamma
-    pub fn to_vec_ss(&self) -> Vec<f64> {
+    /// Flatten to Vec including gamma indicators and optionally pi.
+    /// Order: beta_b0 | u_b0 | beta_b1 | beta_b2 | beta_om | beta_rho | sigma | sigma_u | gamma [| pi]
+    pub fn to_vec_ss(&self, learn_pi: bool) -> Vec<f64> {
         let mut v = self.to_vec();
         for &g in &self.gamma {
             v.push(if g { 1.0 } else { 0.0 });
+        }
+        if learn_pi {
+            v.push(self.pi);
         }
         v
     }

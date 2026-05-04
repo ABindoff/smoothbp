@@ -164,35 +164,51 @@ print.smoothbp_priors <- function(x, ...) {
 #'
 #' @param pi Prior inclusion probability.  Scalar (applied to all eligible
 #'   coefficients) or a named numeric vector mapping coefficient names to
-#'   individual probabilities.  Default `0.5`.
+#'   individual probabilities.  Default `0.5`.  Ignored when `learn_pi = TRUE`.
 #' @param slab A [prior_normal()] object for the slab component.  Default
 #'   `prior_normal(0, 2)`.
 #' @param spike_intercept Logical; should the intercept of `b2` also receive
 #'   a spike-and-slab prior?  Default `FALSE` (intercept always included).
+#' @param learn_pi Logical; if `TRUE`, place a `Beta(a, b)` hyperprior on the
+#'   shared inclusion probability and sample it.  The `pi` argument is then
+#'   used only for initialisation.  Default `FALSE`.
+#' @param a Shape parameter for the Beta hyperprior on pi.  Default `1`
+#'   (uniform when `b = 1`).
+#' @param b Shape parameter for the Beta hyperprior on pi.  Default `1`.
 #'
 #' @return A `smoothbp_spike_slab` object.
 #' @export
 prior_spike_slab <- function(pi = 0.5, slab = prior_normal(0, 2),
-                             spike_intercept = FALSE) {
+                             spike_intercept = FALSE,
+                             learn_pi = FALSE, a = 1, b = 1) {
   stopifnot(
     inherits(slab, "smoothbp_prior"),
     slab$family == "normal",
     is.numeric(pi),
     all(pi > 0 & pi < 1),
-    is.logical(spike_intercept)
+    is.logical(spike_intercept),
+    is.logical(learn_pi)
   )
+  if (learn_pi) {
+    stopifnot(a > 0, b > 0)
+  }
   structure(
     list(family = "spike_slab", pi = pi, slab = slab,
-         spike_intercept = spike_intercept),
+         spike_intercept = spike_intercept,
+         learn_pi = learn_pi, a = a, b = b),
     class = "smoothbp_spike_slab"
   )
 }
 
 #' @export
 print.smoothbp_spike_slab <- function(x, ...) {
-  cat(sprintf("SpikeSlab(pi=%s, slab=Normal(%g, %g), spike_intercept=%s)\n",
-              paste(format(x$pi), collapse = ","),
-              x$slab$mean, x$slab$sd,
-              x$spike_intercept))
+  if (x$learn_pi) {
+    cat(sprintf("SpikeSlab(pi~Beta(%g,%g), slab=Normal(%g, %g), spike_intercept=%s)\n",
+                x$a, x$b, x$slab$mean, x$slab$sd, x$spike_intercept))
+  } else {
+    cat(sprintf("SpikeSlab(pi=%s, slab=Normal(%g, %g), spike_intercept=%s)\n",
+                paste(format(x$pi), collapse = ","),
+                x$slab$mean, x$slab$sd, x$spike_intercept))
+  }
   invisible(x)
 }

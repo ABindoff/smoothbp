@@ -308,6 +308,8 @@ fn run_mcmc_ss(
     spike_pi: &[f64],
     om_map: &[i32],
     rho_map: &[i32],
+    pi_beta_a: f64,
+    pi_beta_b: f64,
     chains: i32,
     iter: i32,
     warmup: i32,
@@ -367,9 +369,11 @@ fn run_mcmc_ss(
 
     let ss_config = SpikeSlabConfig {
         spike_mask: spike_mask.iter().map(|&v| v != 0).collect(),
-        pi: spike_pi.to_vec(),
+        pi_init: spike_pi.to_vec(),
         om_map: om_map.to_vec(),
         rho_map: rho_map.to_vec(),
+        beta_a: pi_beta_a,
+        beta_b: pi_beta_b,
     };
 
     let n_chains  = chains as usize;
@@ -476,14 +480,17 @@ fn run_mcmc_ss(
         );
     }
 
-    let n_params_total = p_b0 + (n_groups_b0 as usize) + p_b1 + p_b2 + p_om + p_rho + 2 + p_b2;
+    let learn_pi = pi_beta_a > 0.0;
+    let n_params_total = p_b0 + (n_groups_b0 as usize) + p_b1 + p_b2 + p_om + p_rho + 2
+        + p_b2 + if learn_pi { 1 } else { 0 };
     list!(
         draws       = chain_results,
         iter        = iter,
         warmup      = warmup,
         chains      = chains,
         n_params    = n_params_total as i32,
-        n_divergent = total_divergent as i32
+        n_divergent = total_divergent as i32,
+        learn_pi    = learn_pi
     )
 }
 

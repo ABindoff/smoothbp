@@ -751,6 +751,7 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
         sigma: 1.0,
         sigma_u: 1.0,
         gamma,
+        pi: 0.5,
     }
 }
 
@@ -1470,7 +1471,8 @@ fn sample_gamma(
             continue; // not eligible for spike-and-slab
         }
 
-        let pi_k = ss.pi[k];
+        // Use per-coefficient pi when fixed, or shared state.pi when learning
+        let pi_k = if ss.beta_a > 0.0 { state.pi } else { ss.pi_init[k] };
         let log_odds_prior = (pi_k / (1.0 - pi_k)).ln();
 
         // --- Compute log-likelihood with gamma_k = 1 ---
@@ -1531,6 +1533,41 @@ fn sample_gamma(
             // beta_b2[k] already 0, om/rho already 0
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sample pi | gamma  (Beta-Bernoulli conjugate Gibbs step)
+//
+// pi | gamma ~ Beta(a + sum(gamma_eligible), b + K - sum(gamma_eligible))
+// where K = number of spike-eligible coefficients.
+// Only called when beta_a > 0 (i.e., learning pi).
+// ---------------------------------------------------------------------------
+
+fn sample_pi(
+    ss: &SpikeSlabConfig,
+    state: &mut State,
+    rng: &mut StdRng,
+) {
+    let mut n_included = 0usize;
+    let mut n_eligible = 0usize;
+    for k in 0..state.gamma.len() {
+        if ss.spike_mask[k] {
+            n_eligible += 1;
+            if state.gamma[k] {
+                n_included += 1;
+            }
+        }
+    }
+    let a_post = ss.beta_a + n_included as f64;
+    let b_post = ss.beta_b + (n_eligible - n_included) as f64;
+
+    // Sample from Beta(a_post, b_post) using Gamma trick:
+    // X ~ Gamma(a), Y ~ Gamma(b) => X/(X+Y) ~ Beta(a,b)
+    let gx = Gamma::new(a_post, 1.0).unwrap();
+    let gy = Gamma::new(b_post, 1.0).unwrap();
+    let x = gx.sample(rng);
+    let y = gy.sample(rng);
+    state.pi = x / (x + y);
 }
 
 /// Compute log-likelihood from precomputed mean vector.
@@ -1901,9 +1938,13 @@ pub fn run_chain_ss(
     for k in 0..priors.p_b2 {
         state.gamma[k] = true;
     }
+    // Initialise pi from the first eligible coefficient's pi (or 0.5)
+    state.pi = ss.pi_init.iter().zip(ss.spike_mask.iter())
+        .find(|(_, &m)| m).map(|(&p, _)| p).unwrap_or(0.5);
 
+    let learn_pi = ss.beta_a > 0.0;
     let n_post = n_iter - n_warmup;
-    let n_params = state.n_params_ss(); // includes gamma columns
+    let n_params = state.n_params_ss(learn_pi);
 
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
@@ -2100,6 +2141,11 @@ pub fn run_chain_ss(
         // (Uses the Kuo-Mallick approach after all continuous parameters updated)
         sample_gamma(data, priors, ss, &mut state, &mut rng);
 
+        // Block 3b: Sample pi | gamma (Beta-Bernoulli conjugate)
+        if learn_pi {
+            sample_pi(ss, &mut state, &mut rng);
+        }
+
         // Block 4a: Sample sigma
         sample_sigma(data, priors, &mut state, &mut rng);
 
@@ -2147,7 +2193,7 @@ pub fn run_chain_ss(
         // Store post-warmup draws (including gamma)
         if iter >= n_warmup {
             let row = iter - n_warmup;
-            let draw = state.to_vec_ss();
+            let draw = state.to_vec_ss(learn_pi);
             for (col, &val) in draw.iter().enumerate() {
                 draws[(row, col)] = val;
             }

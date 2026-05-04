@@ -155,11 +155,18 @@ smoothbp_ss <- function(
 
   if (.verbose) {
     n_spike <- sum(spike_mask == 1L)
-    message(sprintf(
-      "Spike-and-slab on %d of %d b2 coefficients (pi = %s)",
-      n_spike, p_b2,
-      paste(format(pi_vec[spike_mask == 1L], digits = 2), collapse = ", ")
-    ))
+    if (isTRUE(spike$learn_pi)) {
+      message(sprintf(
+        "Spike-and-slab on %d of %d b2 coefficients (pi ~ Beta(%g, %g))",
+        n_spike, p_b2, spike$a, spike$b
+      ))
+    } else {
+      message(sprintf(
+        "Spike-and-slab on %d of %d b2 coefficients (pi = %s)",
+        n_spike, p_b2,
+        paste(format(pi_vec[spike_mask == 1L], digits = 2), collapse = ", ")
+      ))
+    }
   }
 
   # ---- Run sampler --------------------------------------------------------
@@ -188,6 +195,8 @@ smoothbp_ss <- function(
     spike_pi      = as.double(pi_vec),
     om_map        = as.integer(om_map),
     rho_map       = as.integer(rho_map),
+    pi_beta_a     = if (isTRUE(spike$learn_pi)) spike$a else 0.0,
+    pi_beta_b     = if (isTRUE(spike$learn_pi)) spike$b else 0.0,
     chains   = as.integer(chains),
     iter     = as.integer(iter),
     warmup   = as.integer(warmup),
@@ -200,6 +209,9 @@ smoothbp_ss <- function(
   base_pnames <- .param_names(dm, pv)
   gamma_names <- paste0("gamma_", b2_names)
   pnames <- c(base_pnames, gamma_names)
+  if (isTRUE(spike$learn_pi)) {
+    pnames <- c(pnames, "pi")
+  }
 
   n_post   <- nrow(raw$draws[[1]])
   n_params <- ncol(raw$draws[[1]])

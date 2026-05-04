@@ -4,18 +4,34 @@
 \alias{prior_spike_slab}
 \title{Specify a spike-and-slab prior for variable selection on b2 coefficients}
 \usage{
-prior_spike_slab(pi = 0.5, slab = prior_normal(0, 2), spike_intercept = FALSE)
+prior_spike_slab(
+  pi = 0.5,
+  slab = prior_normal(0, 2),
+  spike_intercept = FALSE,
+  learn_pi = FALSE,
+  a = 1,
+  b = 1
+)
 }
 \arguments{
 \item{pi}{Prior inclusion probability.  Scalar (applied to all eligible
 coefficients) or a named numeric vector mapping coefficient names to
-individual probabilities.  Default \code{0.5}.}
+individual probabilities.  Default \code{0.5}.  Ignored when \code{learn_pi = TRUE}.}
 
 \item{slab}{A \code{\link[=prior_normal]{prior_normal()}} object for the slab component.  Default
 \code{prior_normal(0, 2)}.}
 
 \item{spike_intercept}{Logical; should the intercept of \code{b2} also receive
 a spike-and-slab prior?  Default \code{FALSE} (intercept always included).}
+
+\item{learn_pi}{Logical; if \code{TRUE}, place a \code{Beta(a, b)} hyperprior on the
+shared inclusion probability and sample it.  The \code{pi} argument is then
+used only for initialisation.  Default \code{FALSE}.}
+
+\item{a}{Shape parameter for the Beta hyperprior on pi.  Default \code{1}
+(uniform when \code{b = 1}).}
+
+\item{b}{Shape parameter for the Beta hyperprior on pi.  Default \code{1}.}
 }
 \value{
 A \code{smoothbp_spike_slab} object.
