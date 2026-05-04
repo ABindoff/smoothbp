@@ -105,8 +105,8 @@ trace_plot <- function(
     bad_names <- diag_df$parameter[diag_df$flag]
     bad_rhats <- diag_df$rhat[diag_df$flag]
     message(sprintf(
-      "%d parameter(s) with Rhat > %.2f: %s",
-      n_bad, rhat_thresh,
+      "%d parameter(s) flagged (Rhat > %.2f or ESS < %d): %s",
+      n_bad, rhat_thresh, ess_thresh,
       paste(sprintf("%s (%.3f)", bad_names, bad_rhats), collapse = ", ")
     ))
   }

@@ -168,6 +168,23 @@ summary.smoothbp_fit <- function(object, effects = "all", digits = 3, ...) {
   if ("all" %in% effects) c("fixed", "ran_pars", "ran_vals") else effects
 }
 
+#' Extract posterior draws as a data frame
+#'
+#' Coerces a \code{smoothbp_fit} object to a data frame of posterior draws.
+#' Each row is a posterior draw; each column is a parameter. Suitable for use
+#' with functions that expect tidy data frames, including pairs plots.
+#'
+#' @param x A \code{smoothbp_fit} object.
+#' @param ... Unused.
+#' @return A data frame with one row per posterior draw and one column per
+#'   parameter.
+#' @export
+as.data.frame.smoothbp_fit <- function(x, ...) {
+  df <- posterior::as_draws_df(x$draws)
+  # Remove internal columns added by posterior package
+  df[, !grepl("^\\.\\w+$", names(df)), drop = FALSE]
+}
+
 #' Extract posterior draws as a draws_array
 #'
 #' @param x A \code{smoothbp_fit} object.
