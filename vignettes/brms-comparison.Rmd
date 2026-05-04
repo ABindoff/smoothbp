@@ -605,7 +605,7 @@ model_mcp <- list(
 
 # Restrict cp_1 to the observed time range, matching the smoothbp bound
 prior_mcp <- list(cp_1 = "dunif(0, 6)")
-
+set.seed(5501)
 t0 <- Sys.time()
 fit_mcp <- mcp::mcp(
   model_mcp,
@@ -613,7 +613,6 @@ fit_mcp <- mcp::mcp(
   prior = prior_mcp,
   par_x = "tau",
   chains = 4L, iter = 2000L, adapt = 1000L,
-  seed = 5501L
 )
 time_mcp <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 cat(sprintf("mcp: %.1f s\n", time_mcp))
@@ -739,9 +738,14 @@ sbp_ess_mcp <- posterior::summarise_draws(
   dplyr::mutate(ess_per_sec = ess_bulk / time_sbp_mcp,
                 package = "smoothbp")
 
-# mcp ESS — extract from coda mcmc.list
-mcp_samples <- coda::as.mcmc.list(fit_mcp$samples)
-mcp_ess_raw <- coda::effectiveSize(mcp_samples)
+# mcp ESS — convert to posterior draws array for ESS computation
+# Use posterior package for compatibility with mcp's output format
+mcp_draws <- posterior::as_draws_array(fit_mcp)
+mcp_ess_draws <- posterior::summarise_draws(
+  mcp_draws[, , c("cp_1", "time_1", "sigma_1")],
+  ess_bulk = posterior::ess_bulk
+)
+mcp_ess_raw <- setNames(mcp_ess_draws$ess_bulk, mcp_ess_draws$variable)
 
 data.frame(
   parameter   = c("omega / cp_1", "b1 / time_1", "sigma"),
