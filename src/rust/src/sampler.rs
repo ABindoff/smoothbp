@@ -809,6 +809,52 @@ fn sample_random_effects_nc(
 }
 
 // ---------------------------------------------------------------------------
+// Bounded-coefficient helper
+//
+// Sample a single linear coefficient from its 1-D truncated-normal full
+// conditional via rejection sampling.
+//
+// x_col   : effective design column for this coefficient (length n).
+//           e.g. for b1_k: d[i] * X_b1[i,k]
+// y_resid : residuals with THIS coefficient's contribution already removed,
+//           i.e. y_resid[i] = y[i] - (all other contributions)
+// Returns a draw from TN(post_mean, post_sd, lb, ub).
+// ---------------------------------------------------------------------------
+fn sample_bounded_coef(
+    x_col:      &[f64],
+    y_resid:    &[f64],
+    prior_mean: f64,
+    prior_sd:   f64,
+    lb:         f64,
+    ub:         f64,
+    sigma2:     f64,
+    rng:        &mut StdRng,
+) -> f64 {
+    let prior_prec  = 1.0 / (prior_sd * prior_sd);
+    let data_prec: f64 = x_col.iter().map(|&xi| xi * xi).sum::<f64>() / sigma2;
+    let post_prec  = prior_prec + data_prec;
+    let post_var   = 1.0 / post_prec;
+    let data_cross: f64 = x_col.iter().zip(y_resid.iter())
+        .map(|(&xi, &ri)| xi * ri)
+        .sum::<f64>() / sigma2;
+    let post_mean = post_var * (prior_prec * prior_mean + data_cross);
+    let post_sd   = post_var.sqrt();
+
+    let distr = Normal::new(post_mean, post_sd).unwrap();
+    for _ in 0..50_000 {
+        let v = distr.sample(rng);
+        if (!lb.is_finite() || v >= lb) && (!ub.is_finite() || v <= ub) {
+            return v;
+        }
+    }
+    // Extremely tight truncation (should not occur with sensible priors).
+    // Return the posterior mean clamped to the feasible region.
+    let safe_lb = if lb.is_finite() { lb } else { f64::NEG_INFINITY };
+    let safe_ub = if ub.is_finite() { ub } else { f64::INFINITY };
+    post_mean.max(safe_lb).min(safe_ub)
+}
+
+// ---------------------------------------------------------------------------
 // Block 1b: Sample (beta_b0, beta_b1, beta_b2) jointly | u, omega, rho, sigma
 // (Normal-normal conjugate via Cholesky.)
 // ---------------------------------------------------------------------------
@@ -858,6 +904,91 @@ fn sample_linear_coefs(
     let b0_r = priors.b0_range();
     let b1_r = priors.b1_range();
     let b2_r = priors.b2_range();
+
+    // ---- Bounded path: b0 conjugate Gibbs, then b1/b2 coordinate-wise ------
+    // Replaces the joint-rejection approach. Avoids wasting full Cholesky work
+    // when a bounded parameter is out-of-bounds.
+    if priors.lin_has_finite_bounds() {
+        // Step 1: sample b0 from its conjugate full conditional given b1, b2.
+        // y_b0[i] = y_tilde[i] - (b1 contributions) - (b2 contributions)
+        let y_b0: Vec<f64> = (0..n).map(|i| {
+            let mut r = y_tilde[i];
+            for k in 0..p_b1 { r -= state.beta_b1[k] * d[i] * data.x_b1[(i, k)]; }
+            for k in 0..p_b2 { r -= state.beta_b2[k] * d[i] * s[i] * data.x_b2[(i, k)]; }
+            r
+        }).collect();
+        let x_b0m = DMatrix::<f64>::from_fn(n, p_b0, |i, k| data.x_b0[(i, k)]);
+        let mut prec_b0 = DVector::<f64>::zeros(p_b0);
+        let mut mu_b0   = DVector::<f64>::zeros(p_b0);
+        for (k, i) in priors.b0_range().enumerate() {
+            prec_b0[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+            mu_b0[k]   = priors.mean[i];
+        }
+        let y_b0_dv = DVector::from_vec(y_b0);
+        let xt_b0 = x_b0m.transpose();
+        let xtx_b0 = &xt_b0 * &x_b0m;
+        let mut pp_b0 = xtx_b0 / sigma2;
+        for k in 0..p_b0 { pp_b0[(k, k)] += prec_b0[k]; }
+        let xty_b0: DVector<f64> = &xt_b0 * &y_b0_dv / sigma2;
+        let rhs_b0 = xty_b0 + prec_b0.zip_map(&mu_b0, |p, m| p * m);
+        let chol_b0 = pp_b0.cholesky().expect("b0 precision matrix not positive definite");
+        let mu_post_b0 = chol_b0.solve(&rhs_b0);
+        let normal = Normal::new(0.0, 1.0f64).unwrap();
+        let z_b0 = DVector::from_iterator(p_b0, (0..p_b0).map(|_| normal.sample(rng)));
+        let l_b0 = chol_b0.l();
+        let w_b0 = l_b0.transpose().solve_upper_triangular(&z_b0)
+            .expect("b0 triangular solve failed");
+        let theta_b0 = mu_post_b0 + w_b0;
+        // Accept b0 if in bounds (full rejection for b0 bounds, which are rare).
+        let b0_ok = priors.b0_range().enumerate().all(|(k, i)| {
+            theta_b0[k] >= priors.lb[i] && theta_b0[k] <= priors.ub[i]
+        });
+        if b0_ok {
+            for k in 0..p_b0 { state.beta_b0[k] = theta_b0[k]; }
+        }
+
+        // Step 2: coordinate-wise updates for b1 and b2.
+        // Running residuals = y_tilde - b0 - all b1 - all b2
+        let mut y_run: Vec<f64> = (0..n).map(|i| {
+            let mut r = y_tilde[i];
+            for k in 0..p_b0 { r -= state.beta_b0[k] * data.x_b0[(i, k)]; }
+            for k in 0..p_b1 { r -= state.beta_b1[k] * d[i] * data.x_b1[(i, k)]; }
+            for k in 0..p_b2 { r -= state.beta_b2[k] * d[i] * s[i] * data.x_b2[(i, k)]; }
+            r
+        }).collect();
+
+        for k in 0..p_b1 {
+            let idx = priors.b1_range().start + k;
+            let c_k: Vec<f64> = (0..n).map(|i| d[i] * data.x_b1[(i, k)]).collect();
+            let cur = state.beta_b1[k];
+            for i in 0..n { y_run[i] += cur * c_k[i]; }
+            let new_val = sample_bounded_coef(
+                &c_k, &y_run,
+                priors.mean[idx], priors.sd[idx],
+                priors.lb[idx], priors.ub[idx],
+                sigma2, rng,
+            );
+            state.beta_b1[k] = new_val;
+            for i in 0..n { y_run[i] -= new_val * c_k[i]; }
+        }
+        for k in 0..p_b2 {
+            let idx = priors.b2_range().start + k;
+            let c_k: Vec<f64> = (0..n).map(|i| d[i] * s[i] * data.x_b2[(i, k)]).collect();
+            let cur = state.beta_b2[k];
+            for i in 0..n { y_run[i] += cur * c_k[i]; }
+            let new_val = sample_bounded_coef(
+                &c_k, &y_run,
+                priors.mean[idx], priors.sd[idx],
+                priors.lb[idx], priors.ub[idx],
+                sigma2, rng,
+            );
+            state.beta_b2[k] = new_val;
+            for i in 0..n { y_run[i] -= new_val * c_k[i]; }
+        }
+        return; // bounded path done
+    }
+    // ---- Unbounded path: full joint conjugate Gibbs (unchanged) -------------
+
     let mut prec_prior = DVector::<f64>::zeros(p_lin);
     let mut mu_prior = DVector::<f64>::zeros(p_lin);
     for (k, i) in b0_r.enumerate() {
@@ -893,32 +1024,7 @@ fn sample_linear_coefs(
         .expect("Triangular solve failed");
     let theta = mu_post + x;
 
-    // If any linear coefficient (b0, b1, b2) has finite bounds, treat the
-    // conjugate draw as an independence MH proposal and reject the entire draw
-    // if any coefficient violates its bounds.
-    // The check for whether bounds exist is O(1) after precomputation.
-    if priors.lin_has_finite_bounds() {
-        let b0_r = priors.b0_range();
-        let b1_r = priors.b1_range();
-        let b2_r = priors.b2_range();
-        let in_bounds = (0..p_b0).all(|k| {
-                let idx = b0_r.start + k;
-                theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
-            })
-            && (0..p_b1).all(|k| {
-                let idx = b1_r.start + k;
-                theta[p_b0 + k] >= priors.lb[idx] && theta[p_b0 + k] <= priors.ub[idx]
-            })
-            && (0..p_b2).all(|k| {
-                let idx = b2_r.start + k;
-                theta[p_b0 + p_b1 + k] >= priors.lb[idx]
-                    && theta[p_b0 + p_b1 + k] <= priors.ub[idx]
-            });
-        if !in_bounds {
-            return;
-        }
-    }
-
+    // Unbounded path: always accept the joint draw.
     for k in 0..p_b0 {
         state.beta_b0[k] = theta[k];
     }
@@ -951,7 +1057,6 @@ fn sample_linear_coefs_joint(
     let p_b1 = priors.p_b1;
     let p_b2 = priors.p_b2;
     let j_groups = data.n_groups_b0;
-    let p_joint = p_b0 + j_groups + p_b1 + p_b2;
     let sigma2 = state.sigma * state.sigma;
     let sigma_u2 = state.sigma_u * state.sigma_u;
 
@@ -960,118 +1065,145 @@ fn sample_linear_coefs_joint(
     let d: Vec<f64> = (0..n).map(|i| data.tau[i] - omega[i]).collect();
     let s: Vec<f64> = (0..n).map(|i| sigmoid(d[i] * rho[i])).collect();
 
-    // Build augmented design matrix: [X_b0 | Z | d*X_b1 | d*s*X_b2]
-    let mut x_joint = DMatrix::<f64>::zeros(n, p_joint);
-    let off_z  = p_b0;
-    let off_b1 = p_b0 + j_groups;
-    let off_b2 = off_b1 + p_b1;
-
-    for i in 0..n {
-        // X_b0 columns
-        for k in 0..p_b0 {
-            x_joint[(i, k)] = data.x_b0[(i, k)];
-        }
-        // Z indicator column for this observation's group
-        let g = data.group_b0[i];
-        if g >= 0 {
-            x_joint[(i, off_z + g as usize)] = 1.0;
-        }
-        // d * X_b1 columns
-        for k in 0..p_b1 {
-            x_joint[(i, off_b1 + k)] = d[i] * data.x_b1[(i, k)];
-        }
-        // d * s * X_b2 columns
-        for k in 0..p_b2 {
-            x_joint[(i, off_b2 + k)] = d[i] * s[i] * data.x_b2[(i, k)];
-        }
-    }
-
-    // Prior precision and mean vectors
-    let mut prec_prior = DVector::<f64>::zeros(p_joint);
-    let mut mu_prior   = DVector::<f64>::zeros(p_joint);
-
-    // beta_b0 priors
-    for (k, i) in priors.b0_range().enumerate() {
-        prec_prior[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[k]   = priors.mean[i];
-    }
-    // u_j priors: N(0, sigma_u^2)
-    let u_prec = 1.0 / sigma_u2;
-    for j in 0..j_groups {
-        prec_prior[off_z + j] = u_prec;
-        mu_prior[off_z + j]   = 0.0;
-    }
-    // beta_b1 priors
-    for (k, i) in priors.b1_range().enumerate() {
-        prec_prior[off_b1 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[off_b1 + k]   = priors.mean[i];
-    }
-    // beta_b2 priors
-    for (k, i) in priors.b2_range().enumerate() {
-        prec_prior[off_b2 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[off_b2 + k]   = priors.mean[i];
-    }
-
-    // Posterior precision: (1/sigma^2) * X'X + diag(prior_prec)
-    let xt = x_joint.transpose();
-    let xtx = &xt * &x_joint;
-    let mut prec_post = xtx / sigma2;
-    for k in 0..p_joint {
-        prec_post[(k, k)] += prec_prior[k];
-    }
-
-    // Posterior mean: P^{-1} * ((1/sigma^2) * X'y + prior_prec * prior_mean)
-    let xty: DVector<f64> = &xt * &data.y / sigma2;
-    let rhs: DVector<f64> = xty + prec_prior.zip_map(&mu_prior, |p, m| p * m);
-
-    let chol = prec_post.cholesky().expect("Joint precision matrix not positive definite");
-    let mu_post = chol.solve(&rhs);
-
-    // Sample: theta ~ N(mu_post, P^{-1})
-    let normal = Normal::new(0.0, 1.0f64).unwrap();
-    let z = DVector::from_iterator(p_joint, (0..p_joint).map(|_| normal.sample(rng)));
-    let l = chol.l();
-    let w = l.transpose().solve_upper_triangular(&z)
-        .expect("Triangular solve failed");
-    let theta = mu_post + w;
-
-    // If any linear coefficient (b0, b1, b2) has finite bounds, treat the
-    // conjugate draw as an independence MH proposal and reject the entire joint
-    // draw if any coefficient violates its bounds.
+    // ---- Bounded path: (b0, u_j) conjugate Gibbs, then b1/b2 coordinate-wise
+    // Separating the bounded b1/b2 parameters from the large (p_b0 + J) joint
+    // prevents the rejection of the entire J-dimensional Cholesky draw every
+    // time a single bounded parameter falls outside its constraint.
     if priors.lin_has_finite_bounds() {
-        let b0_r = priors.b0_range();
-        let b1_r = priors.b1_range();
-        let b2_r = priors.b2_range();
-        let in_bounds = (0..p_b0).all(|k| {
-                let idx = b0_r.start + k;
-                theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
-            })
-            && (0..p_b1).all(|k| {
-                let idx = b1_r.start + k;
-                theta[off_b1 + k] >= priors.lb[idx] && theta[off_b1 + k] <= priors.ub[idx]
-            })
-            && (0..p_b2).all(|k| {
-                let idx = b2_r.start + k;
-                theta[off_b2 + k] >= priors.lb[idx] && theta[off_b2 + k] <= priors.ub[idx]
-            });
-        if !in_bounds {
-            return;
+        // Step 1: sample (b0, u_j) jointly given current b1 and b2.
+        // Residuals with b1 and b2 subtracted.
+        let y_b0u: Vec<f64> = (0..n).map(|i| {
+            let mut r = data.y[i];
+            for k in 0..p_b1 { r -= state.beta_b1[k] * d[i] * data.x_b1[(i, k)]; }
+            for k in 0..p_b2 { r -= state.beta_b2[k] * d[i] * s[i] * data.x_b2[(i, k)]; }
+            r
+        }).collect();
+        let p_b0_u = p_b0 + j_groups;
+        let mut x_b0u = DMatrix::<f64>::zeros(n, p_b0_u);
+        for i in 0..n {
+            for k in 0..p_b0 { x_b0u[(i, k)] = data.x_b0[(i, k)]; }
+            let g = data.group_b0[i];
+            if g >= 0 { x_b0u[(i, p_b0 + g as usize)] = 1.0; }
         }
-    }
+        let mut prec_b0u = DVector::<f64>::zeros(p_b0_u);
+        let mut mu_b0u   = DVector::<f64>::zeros(p_b0_u);
+        for (k, i) in priors.b0_range().enumerate() {
+            prec_b0u[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+            mu_b0u[k]   = priors.mean[i];
+        }
+        let u_prec = 1.0 / sigma_u2;
+        for j in 0..j_groups {
+            prec_b0u[p_b0 + j] = u_prec;
+            mu_b0u[p_b0 + j]   = 0.0;
+        }
+        let y_b0u_dv = DVector::from_vec(y_b0u);
+        let xt_b0u = x_b0u.transpose();
+        let xtx_b0u = &xt_b0u * &x_b0u;
+        let mut pp_b0u = xtx_b0u / sigma2;
+        for k in 0..p_b0_u { pp_b0u[(k, k)] += prec_b0u[k]; }
+        let xty_b0u: DVector<f64> = &xt_b0u * &y_b0u_dv / sigma2;
+        let rhs_b0u = xty_b0u + prec_b0u.zip_map(&mu_b0u, |p, m| p * m);
+        let chol_b0u = pp_b0u.cholesky()
+            .expect("(b0, u) precision matrix not positive definite");
+        let mu_post_b0u = chol_b0u.solve(&rhs_b0u);
+        let normal = Normal::new(0.0, 1.0f64).unwrap();
+        let z_b0u = DVector::from_iterator(
+            p_b0_u, (0..p_b0_u).map(|_| normal.sample(rng))
+        );
+        let l_b0u = chol_b0u.l();
+        let w_b0u = l_b0u.transpose().solve_upper_triangular(&z_b0u)
+            .expect("(b0, u) triangular solve failed");
+        let theta_b0u = mu_post_b0u + w_b0u;
+        // Accept b0 if in bounds; u_j have no bounds so always store.
+        let b0_ok = priors.b0_range().enumerate().all(|(k, i)| {
+            theta_b0u[k] >= priors.lb[i] && theta_b0u[k] <= priors.ub[i]
+        });
+        if b0_ok {
+            for k in 0..p_b0 { state.beta_b0[k] = theta_b0u[k]; }
+        }
+        for j in 0..j_groups { state.u_b0[j] = theta_b0u[p_b0 + j]; }
 
-    // Unpack into state
-    for k in 0..p_b0 {
-        state.beta_b0[k] = theta[k];
+        // Step 2: coordinate-wise updates for b1 and b2.
+        // Running residuals = y - b0 - u_j - all b1 - all b2
+        let mut y_run: Vec<f64> = (0..n).map(|i| {
+            let mut r = data.y[i];
+            for k in 0..p_b0 { r -= state.beta_b0[k] * data.x_b0[(i, k)]; }
+            let g = data.group_b0[i];
+            if g >= 0 { r -= state.u_b0[g as usize]; }
+            for k in 0..p_b1 { r -= state.beta_b1[k] * d[i] * data.x_b1[(i, k)]; }
+            for k in 0..p_b2 { r -= state.beta_b2[k] * d[i] * s[i] * data.x_b2[(i, k)]; }
+            r
+        }).collect();
+
+        for k in 0..p_b1 {
+            let idx = priors.b1_range().start + k;
+            let c_k: Vec<f64> = (0..n).map(|i| d[i] * data.x_b1[(i, k)]).collect();
+            let cur = state.beta_b1[k];
+            for i in 0..n { y_run[i] += cur * c_k[i]; }
+            let new_val = sample_bounded_coef(
+                &c_k, &y_run,
+                priors.mean[idx], priors.sd[idx],
+                priors.lb[idx], priors.ub[idx],
+                sigma2, rng,
+            );
+            state.beta_b1[k] = new_val;
+            for i in 0..n { y_run[i] -= new_val * c_k[i]; }
+        }
+        for k in 0..p_b2 {
+            let idx = priors.b2_range().start + k;
+            let c_k: Vec<f64> = (0..n).map(|i| d[i] * s[i] * data.x_b2[(i, k)]).collect();
+            let cur = state.beta_b2[k];
+            for i in 0..n { y_run[i] += cur * c_k[i]; }
+            let new_val = sample_bounded_coef(
+                &c_k, &y_run,
+                priors.mean[idx], priors.sd[idx],
+                priors.lb[idx], priors.ub[idx],
+                sigma2, rng,
+            );
+            state.beta_b2[k] = new_val;
+            for i in 0..n { y_run[i] -= new_val * c_k[i]; }
+        }
+        return; // bounded path done
     }
-    for j in 0..j_groups {
-        state.u_b0[j] = theta[off_z + j];
-    }
-    for k in 0..p_b1 {
-        state.beta_b1[k] = theta[off_b1 + k];
-    }
-    for k in 0..p_b2 {
-        state.beta_b2[k] = theta[off_b2 + k];
-    }
+    // ---- Unbounded path: two-block NC Gibbs (Option B) ----------------------
+    //
+    // Replaces the single (J + p_lin) x (J + p_lin) joint Cholesky introduced
+    // in commit 5bb616c with two smaller, exact conjugate Gibbs steps:
+    //
+    //   Block A  [O(J)]:       NC step for u_j.
+    //     Reparameterise u_j = sigma_u * z_j and sample each z_j independently
+    //     from its scalar N(mu_j, v_j) full conditional.  The NC prior
+    //     z_j ~ N(0,1) breaks the b0--u_j posterior ridge that the joint
+    //     sampler of 5bb616c was designed to cure, because the prior no longer
+    //     depends on sigma_u.
+    //
+    //   Block B  [O(p_lin^3)]: Small joint Cholesky for (b0, b1, b2).
+    //     With u fixed, the full conditional for (b0, b1, b2) is a
+    //     p_lin-dimensional normal (p_lin = p_b0 + p_b1 + p_b2, typically 3).
+    //     sample_linear_coefs() handles this block; it already subtracts the
+    //     current u_b0 contributions from y before forming the system.
+    //
+    // Cost comparison for J = 25, p_lin = 3, n = 250:
+    //   Old joint:  O((J+p_lin)^3/3) ~ 5500 + O(n*(J+p_lin)^2) ~ 160 000
+    //   NC + small: O(J)              ~   25 + O(n*p_lin^2)     ~   2 250
+    //   Approx. 70x fewer flops per iteration on representative data.
+    //
+    // Mixing trade-off:
+    //   Commit 5bb616c showed the joint sampler improved b0/sigma_u Rhat from
+    //   ~1.18 to 1.00 and ESS ~37x on one dataset, at ~87x cost per iteration
+    //   => net ~0.4x ESS/second.  The NC reparameterisation also breaks the
+    //   b0--u ridge; if mixing is still poor in practice, consider Option A:
+    //
+    //   Option A (two-block partial split):
+    //     Block A: sample (b0, u_1..u_J) jointly in a (p_b0 + J) matrix --
+    //              captures the full b0-u posterior geometry at O((p_b0+J)^3).
+    //     Block B: sample (b1, b2) jointly in a 2x2 (or similar) matrix.
+    //     Cost: O((p_b0+J)^3/3) ~ 4600, roughly 20% cheaper than the old full
+    //     joint but with the same mixing benefit for b0 and u.  Implement by
+    //     extracting the bounded-path (b0, u_j) Cholesky block above into a
+    //     shared helper and calling it unconditionally.
+    sample_random_effects_nc(data, state, rng);
+    sample_linear_coefs(data, priors, state, rng);
 }
 
 // ---------------------------------------------------------------------------
@@ -1646,6 +1778,100 @@ fn sample_linear_coefs_ss(
     let b0_r = priors.b0_range();
     let b1_r = priors.b1_range();
     let b2_r = priors.b2_range();
+
+    // ---- Bounded path: b0 conjugate Gibbs + b1/included-b2 coordinate-wise -
+    if priors.lin_has_finite_bounds() {
+        // Step 1: sample b0 from conjugate full conditional given b1, b2.
+        let y_b0: Vec<f64> = (0..n).map(|i| {
+            let mut r = y_tilde[i];
+            for k in 0..p_b1 { r -= state.beta_b1[k] * d[i] * data.x_b1[(i, k)]; }
+            for &orig_k in &b2_included {
+                r -= state.beta_b2[orig_k] * d[i] * s[i] * data.x_b2[(i, orig_k)];
+            }
+            r
+        }).collect();
+        let x_b0m = DMatrix::<f64>::from_fn(n, p_b0, |i, k| data.x_b0[(i, k)]);
+        let mut prec_b0 = DVector::<f64>::zeros(p_b0);
+        let mut mu_b0   = DVector::<f64>::zeros(p_b0);
+        for (k, i) in priors.b0_range().enumerate() {
+            prec_b0[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+            mu_b0[k]   = priors.mean[i];
+        }
+        let y_b0_dv = DVector::from_vec(y_b0);
+        let xt_b0 = x_b0m.transpose();
+        let xtx_b0 = &xt_b0 * &x_b0m;
+        let mut pp_b0 = xtx_b0 / sigma2;
+        for k in 0..p_b0 { pp_b0[(k, k)] += prec_b0[k]; }
+        let xty_b0: DVector<f64> = &xt_b0 * &y_b0_dv / sigma2;
+        let rhs_b0 = xty_b0 + prec_b0.zip_map(&mu_b0, |p, m| p * m);
+        let chol_b0 = pp_b0.cholesky().expect("b0 precision matrix not positive definite");
+        let mu_post_b0 = chol_b0.solve(&rhs_b0);
+        let normal = Normal::new(0.0, 1.0f64).unwrap();
+        let z_b0 = DVector::from_iterator(p_b0, (0..p_b0).map(|_| normal.sample(rng)));
+        let l_b0 = chol_b0.l();
+        let w_b0 = l_b0.transpose().solve_upper_triangular(&z_b0)
+            .expect("b0 triangular solve failed");
+        let theta_b0 = mu_post_b0 + w_b0;
+        let b0_ok = priors.b0_range().enumerate().all(|(k, i)| {
+            theta_b0[k] >= priors.lb[i] && theta_b0[k] <= priors.ub[i]
+        });
+        if b0_ok { for k in 0..p_b0 { state.beta_b0[k] = theta_b0[k]; } }
+
+        // Step 2: coordinate-wise b1 and included b2.
+        let mut y_run: Vec<f64> = (0..n).map(|i| {
+            let mut r = y_tilde[i];
+            for k in 0..p_b0 { r -= state.beta_b0[k] * data.x_b0[(i, k)]; }
+            for k in 0..p_b1 { r -= state.beta_b1[k] * d[i] * data.x_b1[(i, k)]; }
+            for &orig_k in &b2_included {
+                r -= state.beta_b2[orig_k] * d[i] * s[i] * data.x_b2[(i, orig_k)];
+            }
+            r
+        }).collect();
+        for k in 0..p_b1 {
+            let idx = priors.b1_range().start + k;
+            let c_k: Vec<f64> = (0..n).map(|i| d[i] * data.x_b1[(i, k)]).collect();
+            let cur = state.beta_b1[k];
+            for i in 0..n { y_run[i] += cur * c_k[i]; }
+            let new_val = sample_bounded_coef(
+                &c_k, &y_run,
+                priors.mean[idx], priors.sd[idx],
+                priors.lb[idx], priors.ub[idx], sigma2, rng,
+            );
+            state.beta_b1[k] = new_val;
+            for i in 0..n { y_run[i] -= new_val * c_k[i]; }
+        }
+        for &orig_k in &b2_included {
+            let idx = priors.b2_range().start + orig_k;
+            let c_k: Vec<f64> = (0..n).map(|i| d[i] * s[i] * data.x_b2[(i, orig_k)]).collect();
+            let cur = state.beta_b2[orig_k];
+            for i in 0..n { y_run[i] += cur * c_k[i]; }
+            let new_val = sample_bounded_coef(
+                &c_k, &y_run,
+                priors.mean[idx], priors.sd[idx],
+                priors.lb[idx], priors.ub[idx], sigma2, rng,
+            );
+            state.beta_b2[orig_k] = new_val;
+            for i in 0..n { y_run[i] -= new_val * c_k[i]; }
+        }
+        // Step 3: excluded b2 from prior (Kuo-Mallick latent draw).
+        for k in 0..p_b2 {
+            if !state.gamma[k] {
+                let idx = b2_r.start + k;
+                let distr = Normal::new(priors.mean[idx], priors.sd[idx]).unwrap();
+                let mut val = distr.sample(rng);
+                if priors.lb[idx].is_finite() || priors.ub[idx].is_finite() {
+                    for _ in 0..1000 {
+                        if val >= priors.lb[idx] && val <= priors.ub[idx] { break; }
+                        val = distr.sample(rng);
+                    }
+                }
+                state.beta_b2[k] = val;
+            }
+        }
+        return; // bounded path done
+    }
+    // ---- Unbounded path: full joint conjugate Gibbs (unchanged) -------------
+
     let mut prec_prior = DVector::<f64>::zeros(p_lin);
     let mut mu_prior = DVector::<f64>::zeros(p_lin);
     for (k, i) in b0_r.enumerate() {
@@ -1683,30 +1909,7 @@ fn sample_linear_coefs_ss(
         .expect("Triangular solve failed");
     let theta = mu_post + x;
 
-    // Bounds checking (same as base model)
-    if priors.lin_has_finite_bounds() {
-        let b0_r2 = priors.b0_range();
-        let b1_r2 = priors.b1_range();
-        let b2_r2 = priors.b2_range();
-        let in_bounds = (0..p_b0).all(|k| {
-                let idx = b0_r2.start + k;
-                theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
-            })
-            && (0..p_b1).all(|k| {
-                let idx = b1_r2.start + k;
-                theta[p_b0 + k] >= priors.lb[idx] && theta[p_b0 + k] <= priors.ub[idx]
-            })
-            && (0..n_b2_inc).all(|j| {
-                let idx = b2_r2.start + b2_included[j];
-                theta[p_b0 + p_b1 + j] >= priors.lb[idx]
-                    && theta[p_b0 + p_b1 + j] <= priors.ub[idx]
-            });
-        if !in_bounds {
-            return;
-        }
-    }
-
-    // Store included coefficients
+    // Unbounded path: always accept the joint draw.
     for k in 0..p_b0 {
         state.beta_b0[k] = theta[k];
     }
@@ -1760,130 +1963,123 @@ fn sample_linear_coefs_joint_ss(
     let s: Vec<f64> = (0..n).map(|i| sigmoid(d[i] * rho[i])).collect();
 
     let b2_included: Vec<usize> = (0..p_b2).filter(|&k| state.gamma[k]).collect();
-    let n_b2_inc = b2_included.len();
-    let p_joint = p_b0 + j_groups + p_b1 + n_b2_inc;
 
-    // Build augmented design matrix: [X_b0 | Z | d*X_b1 | d*s*X_b2_included]
-    let mut x_joint = DMatrix::<f64>::zeros(n, p_joint);
-    let off_z  = p_b0;
-    let off_b1 = p_b0 + j_groups;
-    let off_b2 = off_b1 + p_b1;
-
-    for i in 0..n {
-        for k in 0..p_b0 {
-            x_joint[(i, k)] = data.x_b0[(i, k)];
-        }
-        let g = data.group_b0[i];
-        if g >= 0 {
-            x_joint[(i, off_z + g as usize)] = 1.0;
-        }
-        for k in 0..p_b1 {
-            x_joint[(i, off_b1 + k)] = d[i] * data.x_b1[(i, k)];
-        }
-        for (j, &orig_k) in b2_included.iter().enumerate() {
-            x_joint[(i, off_b2 + j)] = d[i] * s[i] * data.x_b2[(i, orig_k)];
-        }
-    }
-
-    // Prior precision and mean
-    let b2_r = priors.b2_range();
-    let mut prec_prior = DVector::<f64>::zeros(p_joint);
-    let mut mu_prior   = DVector::<f64>::zeros(p_joint);
-
-    for (k, i) in priors.b0_range().enumerate() {
-        prec_prior[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[k]   = priors.mean[i];
-    }
-    let u_prec = 1.0 / sigma_u2;
-    for j in 0..j_groups {
-        prec_prior[off_z + j] = u_prec;
-        mu_prior[off_z + j]   = 0.0;
-    }
-    for (k, i) in priors.b1_range().enumerate() {
-        prec_prior[off_b1 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[off_b1 + k]   = priors.mean[i];
-    }
-    for (j, &orig_k) in b2_included.iter().enumerate() {
-        let i = b2_r.start + orig_k;
-        prec_prior[off_b2 + j] = 1.0 / (priors.sd[i] * priors.sd[i]);
-        mu_prior[off_b2 + j]   = priors.mean[i];
-    }
-
-    let xt = x_joint.transpose();
-    let xtx = &xt * &x_joint;
-    let mut prec_post = xtx / sigma2;
-    for k in 0..p_joint {
-        prec_post[(k, k)] += prec_prior[k];
-    }
-
-    let xty: DVector<f64> = &xt * &data.y / sigma2;
-    let rhs: DVector<f64> = xty + prec_prior.zip_map(&mu_prior, |p, m| p * m);
-
-    let chol = prec_post.cholesky().expect("Joint precision matrix not positive definite");
-    let mu_post = chol.solve(&rhs);
-
-    let normal = Normal::new(0.0, 1.0f64).unwrap();
-    let z = DVector::from_iterator(p_joint, (0..p_joint).map(|_| normal.sample(rng)));
-    let l = chol.l();
-    let w = l.transpose().solve_upper_triangular(&z)
-        .expect("Triangular solve failed");
-    let theta = mu_post + w;
-
-    // Bounds checking
+    // ---- Bounded path: (b0, u_j) conjugate Gibbs + b1/included-b2 coord-wise
     if priors.lin_has_finite_bounds() {
-        let b0_r = priors.b0_range();
-        let b1_r = priors.b1_range();
-        let b2_r2 = priors.b2_range();
-        let in_bounds = (0..p_b0).all(|k| {
-                let idx = b0_r.start + k;
-                theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
-            })
-            && (0..p_b1).all(|k| {
-                let idx = b1_r.start + k;
-                theta[off_b1 + k] >= priors.lb[idx] && theta[off_b1 + k] <= priors.ub[idx]
-            })
-            && (0..n_b2_inc).all(|j| {
-                let idx = b2_r2.start + b2_included[j];
-                theta[off_b2 + j] >= priors.lb[idx]
-                    && theta[off_b2 + j] <= priors.ub[idx]
-            });
-        if !in_bounds {
-            return;
-        }
-    }
-
-    // Store
-    for k in 0..p_b0 {
-        state.beta_b0[k] = theta[k];
-    }
-    for j in 0..j_groups {
-        state.u_b0[j] = theta[off_z + j];
-    }
-    for k in 0..p_b1 {
-        state.beta_b1[k] = theta[off_b1 + k];
-    }
-    for (j, &orig_k) in b2_included.iter().enumerate() {
-        state.beta_b2[orig_k] = theta[off_b2 + j];
-    }
-
-    // Draw excluded b2 from prior
-    let b2_r3 = priors.b2_range();
-    for k in 0..p_b2 {
-        if !state.gamma[k] {
-            let idx = b2_r3.start + k;
-            let d = Normal::new(priors.mean[idx], priors.sd[idx]).unwrap();
-            let mut val = d.sample(rng);
-            if priors.lb[idx].is_finite() || priors.ub[idx].is_finite() {
-                for _ in 0..1000 {
-                    if val >= priors.lb[idx] && val <= priors.ub[idx] {
-                        break;
-                    }
-                    val = d.sample(rng);
-                }
+        // Step 1: sample (b0, u_j) jointly given current b1 and included b2.
+        let y_b0u: Vec<f64> = (0..n).map(|i| {
+            let mut r = data.y[i];
+            for k in 0..p_b1 { r -= state.beta_b1[k] * d[i] * data.x_b1[(i, k)]; }
+            for &orig_k in &b2_included {
+                r -= state.beta_b2[orig_k] * d[i] * s[i] * data.x_b2[(i, orig_k)];
             }
-            state.beta_b2[k] = val;
+            r
+        }).collect();
+        let p_b0_u = p_b0 + j_groups;
+        let mut x_b0u = DMatrix::<f64>::zeros(n, p_b0_u);
+        for i in 0..n {
+            for k in 0..p_b0 { x_b0u[(i, k)] = data.x_b0[(i, k)]; }
+            let g = data.group_b0[i];
+            if g >= 0 { x_b0u[(i, p_b0 + g as usize)] = 1.0; }
         }
+        let mut prec_b0u = DVector::<f64>::zeros(p_b0_u);
+        let mut mu_b0u   = DVector::<f64>::zeros(p_b0_u);
+        for (k, i) in priors.b0_range().enumerate() {
+            prec_b0u[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+            mu_b0u[k]   = priors.mean[i];
+        }
+        let u_prec = 1.0 / sigma_u2;
+        for j in 0..j_groups { prec_b0u[p_b0 + j] = u_prec; }
+        let y_b0u_dv = DVector::from_vec(y_b0u);
+        let xt_b0u = x_b0u.transpose();
+        let xtx_b0u = &xt_b0u * &x_b0u;
+        let mut pp_b0u = xtx_b0u / sigma2;
+        for k in 0..p_b0_u { pp_b0u[(k, k)] += prec_b0u[k]; }
+        let xty_b0u: DVector<f64> = &xt_b0u * &y_b0u_dv / sigma2;
+        let rhs_b0u = xty_b0u + prec_b0u.zip_map(&mu_b0u, |p, m| p * m);
+        let chol_b0u = pp_b0u.cholesky()
+            .expect("(b0, u) precision matrix not positive definite");
+        let mu_post_b0u = chol_b0u.solve(&rhs_b0u);
+        let normal = Normal::new(0.0, 1.0f64).unwrap();
+        let z_b0u = DVector::from_iterator(
+            p_b0_u, (0..p_b0_u).map(|_| normal.sample(rng))
+        );
+        let l_b0u = chol_b0u.l();
+        let w_b0u = l_b0u.transpose().solve_upper_triangular(&z_b0u)
+            .expect("(b0, u) triangular solve failed");
+        let theta_b0u = mu_post_b0u + w_b0u;
+        let b0_ok = priors.b0_range().enumerate().all(|(k, i)| {
+            theta_b0u[k] >= priors.lb[i] && theta_b0u[k] <= priors.ub[i]
+        });
+        if b0_ok { for k in 0..p_b0 { state.beta_b0[k] = theta_b0u[k]; } }
+        for j in 0..j_groups { state.u_b0[j] = theta_b0u[p_b0 + j]; }
+
+        // Step 2: coordinate-wise b1 and included b2.
+        let mut y_run: Vec<f64> = (0..n).map(|i| {
+            let mut r = data.y[i];
+            for k in 0..p_b0 { r -= state.beta_b0[k] * data.x_b0[(i, k)]; }
+            let g = data.group_b0[i];
+            if g >= 0 { r -= state.u_b0[g as usize]; }
+            for k in 0..p_b1 { r -= state.beta_b1[k] * d[i] * data.x_b1[(i, k)]; }
+            for &orig_k in &b2_included {
+                r -= state.beta_b2[orig_k] * d[i] * s[i] * data.x_b2[(i, orig_k)];
+            }
+            r
+        }).collect();
+        for k in 0..p_b1 {
+            let idx = priors.b1_range().start + k;
+            let c_k: Vec<f64> = (0..n).map(|i| d[i] * data.x_b1[(i, k)]).collect();
+            let cur = state.beta_b1[k];
+            for i in 0..n { y_run[i] += cur * c_k[i]; }
+            let new_val = sample_bounded_coef(
+                &c_k, &y_run,
+                priors.mean[idx], priors.sd[idx],
+                priors.lb[idx], priors.ub[idx], sigma2, rng,
+            );
+            state.beta_b1[k] = new_val;
+            for i in 0..n { y_run[i] -= new_val * c_k[i]; }
+        }
+        for &orig_k in &b2_included {
+            let idx = priors.b2_range().start + orig_k;
+            let c_k: Vec<f64> = (0..n).map(|i| d[i] * s[i] * data.x_b2[(i, orig_k)]).collect();
+            let cur = state.beta_b2[orig_k];
+            for i in 0..n { y_run[i] += cur * c_k[i]; }
+            let new_val = sample_bounded_coef(
+                &c_k, &y_run,
+                priors.mean[idx], priors.sd[idx],
+                priors.lb[idx], priors.ub[idx], sigma2, rng,
+            );
+            state.beta_b2[orig_k] = new_val;
+            for i in 0..n { y_run[i] -= new_val * c_k[i]; }
+        }
+        // Step 3: excluded b2 from prior.
+        let b2_r_exc = priors.b2_range();
+        for k in 0..p_b2 {
+            if !state.gamma[k] {
+                let idx = b2_r_exc.start + k;
+                let distr = Normal::new(priors.mean[idx], priors.sd[idx]).unwrap();
+                let mut val = distr.sample(rng);
+                if priors.lb[idx].is_finite() || priors.ub[idx].is_finite() {
+                    for _ in 0..1000 {
+                        if val >= priors.lb[idx] && val <= priors.ub[idx] { break; }
+                        val = distr.sample(rng);
+                    }
+                }
+                state.beta_b2[k] = val;
+            }
+        }
+        return; // bounded path done
     }
+    // ---- Unbounded path: two-block NC Gibbs (Option B) ----------------------
+    //
+    // Same rationale as sample_linear_coefs_joint(); see that function for the
+    // full cost/mixing analysis and the Option A description.
+    //
+    // sample_linear_coefs_ss() handles the spike-and-slab specifics:
+    //   - included b2 (gamma_k = 1): sampled jointly with b0 and b1
+    //   - excluded b2 (gamma_k = 0): drawn from their prior (Kuo-Mallick)
+    sample_random_effects_nc(data, state, rng);
+    sample_linear_coefs_ss(data, priors, _ss, state, rng);
 }
 
 // ---------------------------------------------------------------------------
