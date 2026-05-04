@@ -1,8 +1,8 @@
 ---
-title: "Validating smoothbp against brms"
+title: "Validating smoothbp against brms and mcp"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{Validating smoothbp against brms}
+  %\VignetteIndexEntry{Validating smoothbp against brms and mcp}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -26,15 +26,24 @@ the sampler returns posterior intervals that contain the data-generating
 values, which is necessary, but it is a self-consistency check: simulator
 and likelihood share the same code path. To trust the package one also
 wants to see that it agrees with an independent implementation. `brms`
-(via Stan) is the natural reference, fitting the same generative model
-via NUTS on a custom non-linear formula.
+(via Stan) is the natural reference for fitting the same generative model
+via NUTS on a custom non-linear formula. `mcp` (via JAGS) is the closest
+specialist competitor and provides a complementary perspective: it fits
+**hard** (sharp) change-points rather than the logistic-smoothed
+transition that `smoothbp` uses, making it useful to understand where
+the two approaches agree, where they differ, and how the modelling
+choice affects inference.
 
-Two scenarios are compared below:
+Three scenarios are compared below:
 
 1. **Intercept-only** — all parameters are scalar (the baseline case).
+   Compared against **brms**.
 2. **Covariate on omega** — `omega ~ 1 + treatment`, which exercises the
    HMC-within-Gibbs sampler path for the non-linear change-point
-   parameter.
+   parameter. Compared against **brms**.
+3. **Hard vs smooth change-point** — single change-point, fixed effects
+   only. Compared against **mcp** to contrast modelling assumptions and
+   show that the two approaches converge when the transition is sharp.
 
 ### One important practical note before we start
 
@@ -57,6 +66,13 @@ library(tidyr)
 have_brms <- requireNamespace("brms", quietly = TRUE)
 if (!have_brms) {
   message("brms not installed -- install.packages('brms') to render the comparison.")
+}
+
+have_mcp <- requireNamespace("mcp",   quietly = TRUE) &&
+            requireNamespace("rjags", quietly = TRUE)
+if (!have_mcp) {
+  message("mcp or rjags not installed -- install JAGS then install.packages('mcp') ",
+          "to render the mcp comparison.")
 }
 ```
 
@@ -487,6 +503,286 @@ dplyr::full_join(ess_sbp_cov, ess_brms_cov, by = "parameter") %>%
   knitr::kable(digits = 1,
                caption = "Bulk ESS / second by package and parameter (covariate model).")
 ```
+
+---
+
+# Scenario 3: Hard vs smooth change-point — comparison with mcp
+
+`mcp` (Lindeløv, 2020) is the closest R package to `smoothbp` in terms
+of use case: Bayesian piecewise regression with flexible segment
+specification and a formula interface. The fundamental modelling
+difference is that `mcp` uses a **hard** (step-function) change-point
+— the trajectory makes an instantaneous kink at `cp_1` — while
+`smoothbp` uses a **logistic sigmoid** to smooth the transition, with
+the sharpness parameter `rho` controlling how abrupt it is. As
+`rho -> infinity` the smooth transition converges to the hard kink, so
+on data generated with large `rho` the two approaches should give
+consistent estimates of the change-point location and slopes.
+
+A second structural difference: `mcp` does not directly support
+random intercepts on the response level (its random effects are
+specifically for *varying change-points*). For a clean comparison
+we therefore use a **fixed-effects only** dataset here so that both
+models are equivalent in structure.
+
+## Parameterisation note
+
+`mcp`'s two-segment joined-slope model has parameters:
+
+| mcp parameter | smoothbp equivalent |
+|---------------|---------------------|
+| `cp_1`        | `omega_(Intercept)` (change-point location) |
+| `time_1`      | `b1_(Intercept)` (pre-change slope) |
+| `time_2`      | `b1_(Intercept) + b2_(Intercept)` (post-change slope) |
+| `int_1`       | `b0_(Intercept) - b1 * omega` (level at tau = 0, not at change-point) |
+| `sigma_1`     | `sigma` |
+
+The intercept-level parameters are not directly comparable because
+`smoothbp` anchors `b0` at the change-point while `mcp` anchors
+`int_1` at `tau = 0`. The slopes and change-point location are
+directly comparable.
+
+## Simulate fixed-effects data
+
+```{r mcp-simulate}
+set.seed(5501)
+
+dat_mcp <- simulate_smoothbp(
+  n_subj    = 1,
+  n_obs     = 150,
+  b0        = 5.0,
+  b1        = -0.4,
+  b2        =  1.4,
+  omega     =  3.2,
+  rho       =  5.0,   # moderately sharp — should agree well with mcp
+  sigma     =  0.4,
+  sigma_u   =  0.0,   # no random effects
+  tau_range = c(0, 6),
+  seed      = 5501L
+)
+
+# mcp expects a plain data.frame without the factor column
+dat_mcp_plain <- data.frame(tau = dat_mcp$tau, y = dat_mcp$y)
+
+cat(sprintf("n = %d  |  true omega = 3.2  |  true b1 = -0.4  |  true b2 = 1.4\n",
+            nrow(dat_mcp_plain)))
+```
+
+## Fit with smoothbp (fixed effects, rho free)
+
+```{r mcp-smoothbp}
+t0 <- Sys.time()
+fit_sbp_mcp <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1,
+  b1      = ~ 1,
+  b2      = ~ 1,
+  omega   = ~ 1,
+  rho     = ~ 1,
+  data    = dat_mcp,
+  priors  = smoothbp_priors(
+    b0    = prior_normal(0, 10),
+    b1    = prior_normal(0, 2),
+    b2    = prior_normal(0, 2),
+    omega = prior_normal(3, 2, lb = 0, ub = max(dat_mcp$tau)),
+    rho   = prior_normal(3, 2, lb = 0)
+  ),
+  chains = 4L, iter = 2000L, warmup = 1000L,
+  seed = 5501L, .verbose = FALSE
+)
+time_sbp_mcp <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+cat(sprintf("smoothbp: %.1f s\n", time_sbp_mcp))
+```
+
+## Fit with mcp (hard change-point)
+
+```{r mcp-fit, eval = have_mcp, message = FALSE, warning = FALSE, results = "hide"}
+# Two-segment joined-slope model: the natural mcp equivalent
+model_mcp <- list(
+  y ~ 1 + tau,   # segment 1: intercept + pre-change slope
+  ~ 0 + tau      # segment 2: joined at cp_1, post-change slope
+)
+
+# Restrict cp_1 to the observed time range, matching the smoothbp bound
+prior_mcp <- list(cp_1 = "dunif(0, 6)")
+
+t0 <- Sys.time()
+fit_mcp <- mcp::mcp(
+  model_mcp,
+  data  = dat_mcp_plain,
+  prior = prior_mcp,
+  par_x = "tau",
+  chains = 4L, iter = 2000L, adapt = 1000L,
+  seed = 5501L
+)
+time_mcp <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+cat(sprintf("mcp: %.1f s\n", time_mcp))
+```
+
+## Compare posteriors
+
+The critical comparison is on `omega` / `cp_1` (change-point location)
+and the two slopes. The post-change slope from mcp (`time_2`) is
+equivalent to `b1 + b2` in smoothbp.
+
+```{r mcp-compare, eval = have_mcp}
+sbp_sum_mcp <- posterior::summarise_draws(fit_sbp_mcp$draws) |>
+  dplyr::filter(variable %in% c("b0_(Intercept)", "b1_(Intercept)",
+                                 "b2_(Intercept)", "omega_(Intercept)",
+                                 "rho_(Intercept)", "sigma"))
+
+mcp_sum <- summary(fit_mcp) |>
+  dplyr::filter(name %in% c("cp_1", "int_1", "time_1", "time_2", "sigma_1"))
+
+# Compute post-change slope from smoothbp draws for direct comparison
+dm_sbp_mcp <- posterior::as_draws_matrix(fit_sbp_mcp$draws)
+post_slope <- as.numeric(dm_sbp_mcp[, "b1_(Intercept)"] +
+                           dm_sbp_mcp[, "b2_(Intercept)"])
+
+comparison_mcp <- data.frame(
+  parameter          = c("omega / cp_1",
+                          "b1 / time_1 (pre-change slope)",
+                          "b1+b2 / time_2 (post-change slope)",
+                          "sigma"),
+  truth              = c(3.2, -0.4, -0.4 + 1.4, 0.4),
+  sbp_mean           = c(
+    sbp_sum_mcp$mean[sbp_sum_mcp$variable == "omega_(Intercept)"],
+    sbp_sum_mcp$mean[sbp_sum_mcp$variable == "b1_(Intercept)"],
+    mean(post_slope),
+    sbp_sum_mcp$mean[sbp_sum_mcp$variable == "sigma"]
+  ),
+  sbp_lo             = c(
+    sbp_sum_mcp$q2.5[sbp_sum_mcp$variable == "omega_(Intercept)"],
+    sbp_sum_mcp$q2.5[sbp_sum_mcp$variable == "b1_(Intercept)"],
+    quantile(post_slope, 0.025),
+    sbp_sum_mcp$q2.5[sbp_sum_mcp$variable == "sigma"]
+  ),
+  sbp_hi             = c(
+    sbp_sum_mcp$q97.5[sbp_sum_mcp$variable == "omega_(Intercept)"],
+    sbp_sum_mcp$q97.5[sbp_sum_mcp$variable == "b1_(Intercept)"],
+    quantile(post_slope, 0.975),
+    sbp_sum_mcp$q97.5[sbp_sum_mcp$variable == "sigma"]
+  ),
+  mcp_mean           = mcp_sum$mean[match(c("cp_1","time_1","time_2","sigma_1"),
+                                          mcp_sum$name)],
+  mcp_lo             = mcp_sum$lower[match(c("cp_1","time_1","time_2","sigma_1"),
+                                           mcp_sum$name)],
+  mcp_hi             = mcp_sum$upper[match(c("cp_1","time_1","time_2","sigma_1"),
+                                           mcp_sum$name)]
+)
+
+knitr::kable(comparison_mcp, digits = 3,
+  caption = "Scenario 3: smoothbp vs mcp on comparable parameters.
+             smoothbp post-change slope is b1 + b2.")
+```
+
+## Fitted trajectories: hard vs smooth
+
+The plot below overlays the posterior mean fitted trajectories from both
+models. With `rho = 5` the smoothbp transition is fairly sharp and the
+two trajectories are visually similar near the change-point, but the
+logistic rounding is visible in the smoothbp curve.
+
+```{r mcp-trajectories, eval = have_mcp, fig.height = 4.5}
+tau_grid <- seq(0, 6, length.out = 200)
+
+# smoothbp posterior mean trajectory
+draws_sbp_mcp  <- posterior::as_draws_matrix(fit_sbp_mcp$draws)
+b0_m   <- mean(draws_sbp_mcp[, "b0_(Intercept)"])
+b1_m   <- mean(draws_sbp_mcp[, "b1_(Intercept)"])
+b2_m   <- mean(draws_sbp_mcp[, "b2_(Intercept)"])
+om_m   <- mean(draws_sbp_mcp[, "omega_(Intercept)"])
+rho_m  <- mean(draws_sbp_mcp[, "rho_(Intercept)"])
+
+sigmoid  <- function(x) 1 / (1 + exp(-x))
+d_grid   <- tau_grid - om_m
+mu_sbp   <- b0_m + b1_m * d_grid + b2_m * d_grid * sigmoid(d_grid * rho_m)
+
+# mcp posterior mean trajectory
+cp_m    <- mcp_sum$mean[mcp_sum$name == "cp_1"]
+int_m   <- mcp_sum$mean[mcp_sum$name == "int_1"]
+t1_m    <- mcp_sum$mean[mcp_sum$name == "time_1"]
+t2_m    <- mcp_sum$mean[mcp_sum$name == "time_2"]
+mu_mcp  <- ifelse(tau_grid < cp_m,
+                  int_m + t1_m * tau_grid,
+                  int_m + t1_m * cp_m + t2_m * (tau_grid - cp_m))
+
+traj_df <- data.frame(
+  tau    = rep(tau_grid, 2),
+  mu     = c(mu_sbp, mu_mcp),
+  model  = rep(c("smoothbp (logistic)", "mcp (hard kink)"), each = 200)
+)
+
+ggplot() +
+  geom_point(aes(tau, y), data = dat_mcp_plain, alpha = 0.25, size = 0.8) +
+  geom_line(aes(tau, mu, colour = model, linetype = model),
+            data = traj_df, linewidth = 0.9) +
+  geom_vline(xintercept = 3.2, linetype = "dotted", colour = "grey40") +
+  scale_colour_manual(values = c("smoothbp (logistic)" = "#2166ac",
+                                 "mcp (hard kink)"     = "#d6604d")) +
+  labs(title    = "Posterior mean fitted trajectories",
+       subtitle = "Dotted line = true change-point (omega = 3.2)",
+       x = "tau", y = "y", colour = NULL, linetype = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+## Timing and ESS comparison
+
+```{r mcp-ess, eval = have_mcp}
+# smoothbp ESS on omega
+sbp_ess_mcp <- posterior::summarise_draws(
+  fit_sbp_mcp$draws[,, c("omega_(Intercept)", "b1_(Intercept)",
+                          "b2_(Intercept)", "sigma")],
+  ess_bulk = posterior::ess_bulk
+) |>
+  dplyr::mutate(ess_per_sec = ess_bulk / time_sbp_mcp,
+                package = "smoothbp")
+
+# mcp ESS — extract from coda mcmc.list
+mcp_samples <- coda::as.mcmc.list(fit_mcp$samples)
+mcp_ess_raw <- coda::effectiveSize(mcp_samples)
+
+data.frame(
+  parameter   = c("omega / cp_1", "b1 / time_1", "sigma"),
+  sbp_ess_s   = round(sbp_ess_mcp$ess_per_sec[
+    match(c("omega_(Intercept)", "b1_(Intercept)", "sigma"),
+          sbp_ess_mcp$variable)], 1),
+  mcp_ess_s   = round(c(mcp_ess_raw["cp_1"],
+                         mcp_ess_raw["time_1"],
+                         mcp_ess_raw["sigma_1"]) / time_mcp, 1)
+) |>
+  knitr::kable(caption = "ESS/second: smoothbp vs mcp.
+                          Higher is better.")
+```
+
+## What this comparison shows
+
+- **Model equivalence at high rho**: when `rho` is large (sharp
+  transitions), the smoothbp and mcp posteriors for the change-point
+  location and slopes are broadly consistent, validating that both
+  packages locate the structural break correctly.
+
+- **Modelling the sharpness**: smoothbp estimates `rho` as a free
+  parameter, quantifying transition sharpness as part of the posterior.
+  mcp's hard-kink model implicitly assumes `rho = infinity`; this can
+  lead to a slightly overconfident change-point posterior when
+  transitions are genuinely gradual.
+
+- **Random effects**: mcp supports varying (random) *change-points* by
+  group; smoothbp supports random *intercepts* on the response level.
+  These address different scientific questions and the packages are
+  complementary rather than strict substitutes.
+
+- **Speed**: smoothbp's compiled Rust back-end is substantially faster
+  per iteration than mcp's JAGS back-end, and does not require JAGS to
+  be installed separately.
+
+- **Flexibility**: mcp supports multiple change-points, non-Gaussian
+  families, variance and autoregressive terms, and quadratic/trig
+  segments — features smoothbp does not offer. smoothbp supports
+  covariates on all five structural parameters (b0, b1, b2, omega, rho)
+  in a single model, which is not directly available in mcp.
 
 ---
 
