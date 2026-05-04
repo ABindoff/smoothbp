@@ -5,8 +5,8 @@ use rayon::prelude::*;
 mod model;
 mod sampler;
 
-use model::{ModelData, Priors};
-use sampler::run_chain;
+use model::{ModelData, Priors, SpikeSlabConfig};
+use sampler::{run_chain, run_chain_ss};
 
 // Helper: build DMatrix from a flat column-major slice + dimensions
 fn flat_to_dmatrix(data: &[f64], nrow: usize, ncol: usize) -> DMatrix<f64> {
@@ -272,8 +272,224 @@ fn run_mcmc(
     )
 }
 
+/// Run spike-and-slab variable selection sampler.
+///
+/// Same interface as run_mcmc plus spike-and-slab configuration:
+/// @param spike_mask  Integer vector (0/1) of length p_b2: which b2 coefficients
+///                    are eligible for spike-and-slab.
+/// @param spike_pi    Double vector of length p_b2: prior inclusion probability.
+/// @param om_map      Integer vector of length p_b2: for each b2 coef, the index
+///                    of the corresponding omega coefficient (-1 if no match).
+/// @param rho_map     Integer vector of length p_b2: same for rho.
+/// @export
+#[extendr]
+fn run_mcmc_ss(
+    y: &[f64],
+    tau: &[f64],
+    x_b0: &[f64], p_b0: i32,
+    x_b1: &[f64], p_b1: i32,
+    x_b2: &[f64], p_b2: i32,
+    x_om: &[f64],  p_om: i32,
+    x_rho: &[f64], p_rho: i32,
+    group_b0: &[i32],
+    n_groups_b0: i32,
+    prior_mean: &[f64],
+    prior_sd: &[f64],
+    prior_lb: &[f64],
+    prior_ub: &[f64],
+    sigma_shape: f64,
+    sigma_scale: f64,
+    sigma_u_shape: f64,
+    sigma_u_scale: f64,
+    step_om: f64,
+    step_rho: f64,
+    target_accept: f64,
+    spike_mask: &[i32],
+    spike_pi: &[f64],
+    om_map: &[i32],
+    rho_map: &[i32],
+    chains: i32,
+    iter: i32,
+    warmup: i32,
+    seed: i32,
+    verbose: bool,
+    n_cores: i32,
+) -> List {
+    let n = y.len();
+    let p_b0 = p_b0 as usize;
+    let p_b1 = p_b1 as usize;
+    let p_b2 = p_b2 as usize;
+    let p_om = p_om as usize;
+    let p_rho = p_rho as usize;
+
+    let data = ModelData {
+        y: DVector::from_column_slice(y),
+        tau: DVector::from_column_slice(tau),
+        x_b0:  flat_to_dmatrix(x_b0,  n, p_b0),
+        x_b1:  flat_to_dmatrix(x_b1,  n, p_b1),
+        x_b2:  flat_to_dmatrix(x_b2,  n, p_b2),
+        x_om:  flat_to_dmatrix(x_om,  n, p_om),
+        x_rho: flat_to_dmatrix(x_rho, n, p_rho),
+        group_b0: group_b0.to_vec(),
+        n_groups_b0: n_groups_b0 as usize,
+        n,
+    };
+
+    let lb_vec = prior_lb.to_vec();
+    let ub_vec = prior_ub.to_vec();
+    let b0_range = 0..p_b0;
+    let b1_range = p_b0..(p_b0 + p_b1);
+    let b2_range = (p_b0 + p_b1)..(p_b0 + p_b1 + p_b2);
+    let has_lin_bounds =
+        lb_vec[b0_range.clone()].iter().any(|v| v.is_finite())
+            || ub_vec[b0_range].iter().any(|v| v.is_finite())
+            || lb_vec[b1_range.clone()].iter().any(|v| v.is_finite())
+            || ub_vec[b1_range].iter().any(|v| v.is_finite())
+            || lb_vec[b2_range.clone()].iter().any(|v| v.is_finite())
+            || ub_vec[b2_range].iter().any(|v| v.is_finite());
+
+    let priors = Priors {
+        mean: prior_mean.to_vec(),
+        sd: prior_sd.to_vec(),
+        lb: lb_vec,
+        ub: ub_vec,
+        sigma_shape,
+        sigma_scale,
+        sigma_u_shape,
+        sigma_u_scale,
+        p_b0,
+        p_b1,
+        p_b2,
+        p_om,
+        p_rho,
+        has_lin_bounds,
+    };
+
+    let ss_config = SpikeSlabConfig {
+        spike_mask: spike_mask.iter().map(|&v| v != 0).collect(),
+        pi: spike_pi.to_vec(),
+        om_map: om_map.to_vec(),
+        rho_map: rho_map.to_vec(),
+    };
+
+    let n_chains  = chains as usize;
+    let n_iter    = iter as usize;
+    let n_warmup  = warmup as usize;
+    let base_seed = seed as u64;
+    let n_cores   = (n_cores as usize).max(1);
+    let parallel  = n_cores > 1 && n_chains > 1;
+
+    let results: Vec<(DMatrix<f64>, usize)> = if parallel {
+        if verbose {
+            rprintln!(
+                "Running {} chains in parallel on {} thread(s)...",
+                n_chains, n_cores
+            );
+        }
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n_cores)
+            .build()
+            .expect("Failed to build Rayon thread pool");
+
+        pool.install(|| {
+            (0..n_chains)
+                .into_par_iter()
+                .map(|c| {
+                    let chain_seed = base_seed.wrapping_add(c as u64 * 1_000_003);
+                    run_chain_ss(
+                        &data, &priors, &ss_config,
+                        n_iter, n_warmup,
+                        step_om, step_rho,
+                        target_accept,
+                        chain_seed,
+                        false, c, n_chains,
+                        &|_, _, _, _, _| {},
+                    )
+                })
+                .collect()
+        })
+
+    } else {
+        let progress_fn = move |chain_id: usize, n_chains: usize,
+                                 iter: usize, n_iter: usize, in_warmup: bool| {
+            let safe_n      = n_iter.max(1);
+            let pct         = (iter * 100) / safe_n;
+            let done        = iter * 20 / safe_n;
+            let warmup_end  = n_warmup * 20 / safe_n;
+            let warmup_fill = warmup_end.min(done);
+            let sample_fill = done.saturating_sub(warmup_fill);
+            let empty       = 20usize.saturating_sub(done);
+            let bar: String = "~".repeat(warmup_fill)
+                + &"=".repeat(sample_fill)
+                + &" ".repeat(empty);
+            let phase = if iter == n_iter { "done    " }
+                        else if in_warmup  { "warmup  " }
+                        else               { "sampling" };
+            rprintln!(
+                "  Chain {}/{} [{}] {:3}%  ({})  iter {}/{}",
+                chain_id + 1, n_chains, bar, pct, phase, iter, n_iter
+            );
+        };
+
+        (0..n_chains)
+            .map(|c| {
+                if verbose {
+                    rprintln!("Chain {}/{}", c + 1, n_chains);
+                }
+                let chain_seed = base_seed.wrapping_add(c as u64 * 1_000_003);
+                run_chain_ss(
+                    &data, &priors, &ss_config,
+                    n_iter, n_warmup,
+                    step_om, step_rho,
+                    target_accept,
+                    chain_seed,
+                    verbose, c, n_chains,
+                    &progress_fn,
+                )
+            })
+            .collect()
+    };
+
+    if verbose && parallel {
+        rprintln!("All {} chains complete.", n_chains);
+    }
+
+    let mut total_divergent: usize = 0;
+    let chain_results: Vec<Robj> = results
+        .into_iter()
+        .map(|(draws, n_div)| {
+            total_divergent += n_div;
+            let n_post   = draws.nrows();
+            let n_params = draws.ncols();
+            let flat: Vec<f64> = draws.iter().cloned().collect();
+            RMatrix::new_matrix(n_post, n_params, |r, c| flat[c * n_post + r]).into()
+        })
+        .collect();
+
+    if total_divergent > 0 && verbose {
+        rprintln!(
+            "WARNING: {} divergent transitions after warmup. \
+             Posterior may be unreliable. Try increasing target_accept or \
+             tightening priors.",
+            total_divergent
+        );
+    }
+
+    let n_params_total = p_b0 + (n_groups_b0 as usize) + p_b1 + p_b2 + p_om + p_rho + 2 + p_b2;
+    list!(
+        draws       = chain_results,
+        iter        = iter,
+        warmup      = warmup,
+        chains      = chains,
+        n_params    = n_params_total as i32,
+        n_divergent = total_divergent as i32
+    )
+}
+
 // Macro to register exports with R
 extendr_module! {
     mod smoothbp;
     fn run_mcmc;
+    fn run_mcmc_ss;
 }

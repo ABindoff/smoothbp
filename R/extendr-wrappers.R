@@ -59,4 +59,16 @@ NULL
 #' @export
 run_mcmc <- function(y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, chains, iter, warmup, seed, verbose, n_cores) .Call(wrap__run_mcmc, y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, chains, iter, warmup, seed, verbose, n_cores)
 
+#' Run spike-and-slab variable selection sampler.
+#'
+#' Same interface as run_mcmc plus spike-and-slab configuration:
+#' @param spike_mask  Integer vector (0/1) of length p_b2: which b2 coefficients
+#'                    are eligible for spike-and-slab.
+#' @param spike_pi    Double vector of length p_b2: prior inclusion probability.
+#' @param om_map      Integer vector of length p_b2: for each b2 coef, the index
+#'                    of the corresponding omega coefficient (-1 if no match).
+#' @param rho_map     Integer vector of length p_b2: same for rho.
+#' @export
+run_mcmc_ss <- function(y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, spike_mask, spike_pi, om_map, rho_map, chains, iter, warmup, seed, verbose, n_cores) .Call(wrap__run_mcmc_ss, y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, spike_mask, spike_pi, om_map, rho_map, chains, iter, warmup, seed, verbose, n_cores)
+
 # nolint end

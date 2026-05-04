@@ -71,6 +71,28 @@ impl Priors {
 }
 
 // ---------------------------------------------------------------------------
+// Spike-and-slab configuration (used by run_chain_ss)
+// ---------------------------------------------------------------------------
+
+/// Per-coefficient spike-and-slab configuration for b2 variable selection.
+///
+/// When `spike_mask[k]` is true, coefficient k of b2 has a spike-and-slab
+/// prior: with probability `pi[k]`, it follows the slab (normal prior); with
+/// probability `1 - pi[k]`, it is exactly zero.  When a b2 coefficient is
+/// spiked to zero, the same-named coefficients in omega and rho (if they
+/// exist) are also zeroed via `om_map` and `rho_map`.
+pub struct SpikeSlabConfig {
+    /// Which b2 coefficients are eligible for spike-and-slab (length p_b2)
+    pub spike_mask: Vec<bool>,
+    /// Prior inclusion probability for each b2 coefficient (length p_b2)
+    pub pi: Vec<f64>,
+    /// Mapping from b2 coefficient index → omega coefficient index (-1 if no match)
+    pub om_map: Vec<i32>,
+    /// Mapping from b2 coefficient index → rho coefficient index (-1 if no match)
+    pub rho_map: Vec<i32>,
+}
+
+// ---------------------------------------------------------------------------
 // Sampler state
 // ---------------------------------------------------------------------------
 
@@ -84,10 +106,12 @@ pub struct State {
     pub beta_rho: DVector<f64>,
     pub sigma: f64,    // residual SD
     pub sigma_u: f64,  // random-effect SD (unused when n_groups == 0)
+    /// Spike-and-slab inclusion indicators (length p_b2; all true in base model)
+    pub gamma: Vec<bool>,
 }
 
 impl State {
-    /// Number of scalar parameters stored per draw
+    /// Number of scalar parameters stored per draw (base model, no gamma)
     pub fn n_params(&self) -> usize {
         self.beta_b0.len()
             + self.u_b0.len()
@@ -96,6 +120,11 @@ impl State {
             + self.beta_om.len()
             + self.beta_rho.len()
             + 2 // sigma, sigma_u
+    }
+
+    /// Number of parameters including gamma indicators
+    pub fn n_params_ss(&self) -> usize {
+        self.n_params() + self.gamma.len()
     }
 
     /// Flatten to a contiguous Vec for storage in the draw matrix.
@@ -110,6 +139,16 @@ impl State {
         v.extend_from_slice(self.beta_rho.as_slice());
         v.push(self.sigma);
         v.push(self.sigma_u);
+        v
+    }
+
+    /// Flatten to Vec including gamma indicators (for spike-and-slab model).
+    /// Order: beta_b0 | u_b0 | beta_b1 | beta_b2 | beta_om | beta_rho | sigma | sigma_u | gamma
+    pub fn to_vec_ss(&self) -> Vec<f64> {
+        let mut v = self.to_vec();
+        for &g in &self.gamma {
+            v.push(if g { 1.0 } else { 0.0 });
+        }
         v
     }
 

@@ -739,6 +739,8 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
 
     let u_b0 = DVector::zeros(data.n_groups_b0);
 
+    let gamma = vec![true; priors.p_b2];
+
     State {
         beta_b0,
         u_b0,
@@ -748,6 +750,7 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
         beta_rho,
         sigma: 1.0,
         sigma_u: 1.0,
+        gamma,
     }
 }
 
@@ -1434,4 +1437,728 @@ fn sample_sigma_u(priors: &Priors, state: &mut State, rng: &mut StdRng) {
 
     let g = Gamma::new(shape_post, 1.0 / rate_post).unwrap();
     state.sigma_u = (1.0 / g.sample(rng)).sqrt();
+}
+
+// ===========================================================================
+// Spike-and-slab variable selection sampler
+// ===========================================================================
+
+use crate::model::SpikeSlabConfig;
+
+// ---------------------------------------------------------------------------
+// Sample gamma indicators (Kuo & Mallick 1998)
+//
+// For each eligible b2 coefficient k:
+//   1. Compute log-likelihood with gamma_k = 1 (current state)
+//   2. Temporarily zero beta_b2[k] (and mapped om/rho coefficients)
+//   3. Compute log-likelihood with gamma_k = 0
+//   4. Sample gamma_k from Bernoulli with posterior inclusion odds
+//   5. If gamma_k = 0: keep zeroed; if gamma_k = 1: restore
+// ---------------------------------------------------------------------------
+
+fn sample_gamma(
+    data: &ModelData,
+    priors: &Priors,
+    ss: &SpikeSlabConfig,
+    state: &mut State,
+    rng: &mut StdRng,
+) {
+    let p_b2 = priors.p_b2;
+
+    for k in 0..p_b2 {
+        if !ss.spike_mask[k] {
+            continue; // not eligible for spike-and-slab
+        }
+
+        let pi_k = ss.pi[k];
+        let log_odds_prior = (pi_k / (1.0 - pi_k)).ln();
+
+        // --- Compute log-likelihood with gamma_k = 1 ---
+        // Save current values
+        let saved_b2 = state.beta_b2[k];
+        let saved_om = if ss.om_map[k] >= 0 {
+            Some(state.beta_om[ss.om_map[k] as usize])
+        } else { None };
+        let saved_rho = if ss.rho_map[k] >= 0 {
+            Some(state.beta_rho[ss.rho_map[k] as usize])
+        } else { None };
+
+        // Ensure included state: restore values if gamma was 0
+        if !state.gamma[k] {
+            state.beta_b2[k] = saved_b2; // already saved
+            // om/rho were zeroed when gamma was 0, but we keep the
+            // "latent" values in the state -- they are sampled from
+            // the prior when gamma is off.  For the likelihood comparison
+            // we need to evaluate with and without, so restore the latent values.
+        }
+        // Actually: when gamma_k was 0 in the Kuo-Mallick scheme, the latent
+        // coefficients were drawn from their prior but the mean function
+        // uses gamma_k * beta.  So for ll_include we temporarily set the
+        // coefficients to their stored values.
+        let mu_include = state.means(data);
+        let ll_include = compute_ll_from_mu(data, &mu_include, state.sigma);
+
+        // --- Compute log-likelihood with gamma_k = 0 ---
+        state.beta_b2[k] = 0.0;
+        if ss.om_map[k] >= 0 {
+            state.beta_om[ss.om_map[k] as usize] = 0.0;
+        }
+        if ss.rho_map[k] >= 0 {
+            state.beta_rho[ss.rho_map[k] as usize] = 0.0;
+        }
+        let mu_exclude = state.means(data);
+        let ll_exclude = compute_ll_from_mu(data, &mu_exclude, state.sigma);
+
+        // --- Posterior inclusion probability ---
+        let log_odds_post = log_odds_prior + (ll_include - ll_exclude);
+        let p_include = sigmoid(log_odds_post);
+
+        // --- Sample gamma_k ---
+        let u: f64 = rng.gen();
+        if u < p_include {
+            // gamma_k = 1: restore coefficients
+            state.gamma[k] = true;
+            state.beta_b2[k] = saved_b2;
+            if let Some(v) = saved_om {
+                state.beta_om[ss.om_map[k] as usize] = v;
+            }
+            if let Some(v) = saved_rho {
+                state.beta_rho[ss.rho_map[k] as usize] = v;
+            }
+        } else {
+            // gamma_k = 0: keep zeroed
+            state.gamma[k] = false;
+            // beta_b2[k] already 0, om/rho already 0
+        }
+    }
+}
+
+/// Compute log-likelihood from precomputed mean vector.
+fn compute_ll_from_mu(data: &ModelData, mu: &DVector<f64>, sigma: f64) -> f64 {
+    let sigma2 = sigma * sigma;
+    let log_norm = 0.5 * (std::f64::consts::TAU * sigma2).ln();
+    let mut ll = 0.0f64;
+    for i in 0..data.n {
+        let r = data.y[i] - mu[i];
+        ll -= 0.5 * r * r / sigma2 + log_norm;
+    }
+    ll
+}
+
+// ---------------------------------------------------------------------------
+// Modified linear coefficient sampling for spike-and-slab.
+//
+// "Included" b2 coefficients (gamma_k = 1) are sampled jointly with b0, b1
+// via the standard conjugate Gibbs block.  "Excluded" b2 coefficients
+// (gamma_k = 0) are drawn from their prior independently (keeping them
+// as latent variables for the Kuo-Mallick scheme).
+// ---------------------------------------------------------------------------
+
+fn sample_linear_coefs_ss(
+    data: &ModelData,
+    priors: &Priors,
+    _ss: &SpikeSlabConfig,
+    state: &mut State,
+    rng: &mut StdRng,
+) {
+    let n = data.n;
+    let p_b0 = priors.p_b0;
+    let p_b1 = priors.p_b1;
+    let p_b2 = priors.p_b2;
+    let sigma2 = state.sigma * state.sigma;
+
+    let omega = state.omega_vec(&data.x_om);
+    let rho   = state.rho_vec(&data.x_rho);
+    let d: Vec<f64> = (0..n).map(|i| data.tau[i] - omega[i]).collect();
+    let s: Vec<f64> = (0..n).map(|i| sigmoid(d[i] * rho[i])).collect();
+
+    // Count included b2 coefficients
+    let b2_included: Vec<usize> = (0..p_b2).filter(|&k| state.gamma[k]).collect();
+    let n_b2_inc = b2_included.len();
+    let p_lin = p_b0 + p_b1 + n_b2_inc;
+
+    // Build effective design matrix X_full (n × p_lin)
+    // Columns: [X_b0 | d*X_b1 | d*s*X_b2_included]
+    let mut x_full = DMatrix::<f64>::zeros(n, p_lin);
+    for i in 0..n {
+        for k in 0..p_b0 {
+            x_full[(i, k)] = data.x_b0[(i, k)];
+        }
+        for k in 0..p_b1 {
+            x_full[(i, p_b0 + k)] = d[i] * data.x_b1[(i, k)];
+        }
+        for (j, &k) in b2_included.iter().enumerate() {
+            x_full[(i, p_b0 + p_b1 + j)] = d[i] * s[i] * data.x_b2[(i, k)];
+        }
+    }
+
+    // Subtract random intercepts from y
+    let mut y_tilde = data.y.clone();
+    if data.n_groups_b0 > 0 {
+        for i in 0..n {
+            let g = data.group_b0[i];
+            if g >= 0 {
+                y_tilde[i] -= state.u_b0[g as usize];
+            }
+        }
+    }
+    // Subtract contribution of excluded b2 coefficients (which are zero,
+    // so nothing to subtract)
+
+    // Prior precision and mean for included coefficients
+    let b0_r = priors.b0_range();
+    let b1_r = priors.b1_range();
+    let b2_r = priors.b2_range();
+    let mut prec_prior = DVector::<f64>::zeros(p_lin);
+    let mut mu_prior = DVector::<f64>::zeros(p_lin);
+    for (k, i) in b0_r.enumerate() {
+        prec_prior[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[k] = priors.mean[i];
+    }
+    for (k, i) in b1_r.enumerate() {
+        prec_prior[p_b0 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[p_b0 + k] = priors.mean[i];
+    }
+    for (j, &orig_k) in b2_included.iter().enumerate() {
+        let i = b2_r.start + orig_k;
+        prec_prior[p_b0 + p_b1 + j] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[p_b0 + p_b1 + j] = priors.mean[i];
+    }
+
+    // Posterior precision and mean
+    let xt = x_full.transpose();
+    let xtx = &xt * &x_full;
+    let mut prec_post = xtx / sigma2;
+    for k in 0..p_lin {
+        prec_post[(k, k)] += prec_prior[k];
+    }
+
+    let xty: DVector<f64> = &xt * &y_tilde / sigma2;
+    let rhs: DVector<f64> = xty + prec_prior.zip_map(&mu_prior, |p, m| p * m);
+
+    let chol = prec_post.clone().cholesky().expect("Precision matrix not positive definite");
+    let mu_post = chol.solve(&rhs);
+
+    let normal = Normal::new(0.0, 1.0f64).unwrap();
+    let z = DVector::from_iterator(p_lin, (0..p_lin).map(|_| normal.sample(rng)));
+    let l = chol.l();
+    let x = l.transpose().solve_upper_triangular(&z)
+        .expect("Triangular solve failed");
+    let theta = mu_post + x;
+
+    // Bounds checking (same as base model)
+    if priors.lin_has_finite_bounds() {
+        let b0_r2 = priors.b0_range();
+        let b1_r2 = priors.b1_range();
+        let b2_r2 = priors.b2_range();
+        let in_bounds = (0..p_b0).all(|k| {
+                let idx = b0_r2.start + k;
+                theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
+            })
+            && (0..p_b1).all(|k| {
+                let idx = b1_r2.start + k;
+                theta[p_b0 + k] >= priors.lb[idx] && theta[p_b0 + k] <= priors.ub[idx]
+            })
+            && (0..n_b2_inc).all(|j| {
+                let idx = b2_r2.start + b2_included[j];
+                theta[p_b0 + p_b1 + j] >= priors.lb[idx]
+                    && theta[p_b0 + p_b1 + j] <= priors.ub[idx]
+            });
+        if !in_bounds {
+            return;
+        }
+    }
+
+    // Store included coefficients
+    for k in 0..p_b0 {
+        state.beta_b0[k] = theta[k];
+    }
+    for k in 0..p_b1 {
+        state.beta_b1[k] = theta[p_b0 + k];
+    }
+    for (j, &orig_k) in b2_included.iter().enumerate() {
+        state.beta_b2[orig_k] = theta[p_b0 + p_b1 + j];
+    }
+
+    // Draw excluded b2 coefficients from their prior (Kuo-Mallick latent draw)
+    for k in 0..p_b2 {
+        if !state.gamma[k] {
+            let idx = b2_r.start + k;
+            let d = Normal::new(priors.mean[idx], priors.sd[idx]).unwrap();
+            let mut val = d.sample(rng);
+            // Respect bounds on the slab
+            if priors.lb[idx].is_finite() || priors.ub[idx].is_finite() {
+                // Simple rejection sampling from truncated prior
+                for _ in 0..1000 {
+                    if val >= priors.lb[idx] && val <= priors.ub[idx] {
+                        break;
+                    }
+                    val = d.sample(rng);
+                }
+            }
+            state.beta_b2[k] = val;
+        }
+    }
+}
+
+// Similar for joint sampling with random effects
+fn sample_linear_coefs_joint_ss(
+    data: &ModelData,
+    priors: &Priors,
+    _ss: &SpikeSlabConfig,
+    state: &mut State,
+    rng: &mut StdRng,
+) {
+    let n = data.n;
+    let p_b0 = priors.p_b0;
+    let p_b1 = priors.p_b1;
+    let p_b2 = priors.p_b2;
+    let j_groups = data.n_groups_b0;
+    let sigma2 = state.sigma * state.sigma;
+    let sigma_u2 = state.sigma_u * state.sigma_u;
+
+    let omega = state.omega_vec(&data.x_om);
+    let rho   = state.rho_vec(&data.x_rho);
+    let d: Vec<f64> = (0..n).map(|i| data.tau[i] - omega[i]).collect();
+    let s: Vec<f64> = (0..n).map(|i| sigmoid(d[i] * rho[i])).collect();
+
+    let b2_included: Vec<usize> = (0..p_b2).filter(|&k| state.gamma[k]).collect();
+    let n_b2_inc = b2_included.len();
+    let p_joint = p_b0 + j_groups + p_b1 + n_b2_inc;
+
+    // Build augmented design matrix: [X_b0 | Z | d*X_b1 | d*s*X_b2_included]
+    let mut x_joint = DMatrix::<f64>::zeros(n, p_joint);
+    let off_z  = p_b0;
+    let off_b1 = p_b0 + j_groups;
+    let off_b2 = off_b1 + p_b1;
+
+    for i in 0..n {
+        for k in 0..p_b0 {
+            x_joint[(i, k)] = data.x_b0[(i, k)];
+        }
+        let g = data.group_b0[i];
+        if g >= 0 {
+            x_joint[(i, off_z + g as usize)] = 1.0;
+        }
+        for k in 0..p_b1 {
+            x_joint[(i, off_b1 + k)] = d[i] * data.x_b1[(i, k)];
+        }
+        for (j, &orig_k) in b2_included.iter().enumerate() {
+            x_joint[(i, off_b2 + j)] = d[i] * s[i] * data.x_b2[(i, orig_k)];
+        }
+    }
+
+    // Prior precision and mean
+    let b2_r = priors.b2_range();
+    let mut prec_prior = DVector::<f64>::zeros(p_joint);
+    let mut mu_prior   = DVector::<f64>::zeros(p_joint);
+
+    for (k, i) in priors.b0_range().enumerate() {
+        prec_prior[k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[k]   = priors.mean[i];
+    }
+    let u_prec = 1.0 / sigma_u2;
+    for j in 0..j_groups {
+        prec_prior[off_z + j] = u_prec;
+        mu_prior[off_z + j]   = 0.0;
+    }
+    for (k, i) in priors.b1_range().enumerate() {
+        prec_prior[off_b1 + k] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[off_b1 + k]   = priors.mean[i];
+    }
+    for (j, &orig_k) in b2_included.iter().enumerate() {
+        let i = b2_r.start + orig_k;
+        prec_prior[off_b2 + j] = 1.0 / (priors.sd[i] * priors.sd[i]);
+        mu_prior[off_b2 + j]   = priors.mean[i];
+    }
+
+    let xt = x_joint.transpose();
+    let xtx = &xt * &x_joint;
+    let mut prec_post = xtx / sigma2;
+    for k in 0..p_joint {
+        prec_post[(k, k)] += prec_prior[k];
+    }
+
+    let xty: DVector<f64> = &xt * &data.y / sigma2;
+    let rhs: DVector<f64> = xty + prec_prior.zip_map(&mu_prior, |p, m| p * m);
+
+    let chol = prec_post.cholesky().expect("Joint precision matrix not positive definite");
+    let mu_post = chol.solve(&rhs);
+
+    let normal = Normal::new(0.0, 1.0f64).unwrap();
+    let z = DVector::from_iterator(p_joint, (0..p_joint).map(|_| normal.sample(rng)));
+    let l = chol.l();
+    let w = l.transpose().solve_upper_triangular(&z)
+        .expect("Triangular solve failed");
+    let theta = mu_post + w;
+
+    // Bounds checking
+    if priors.lin_has_finite_bounds() {
+        let b0_r = priors.b0_range();
+        let b1_r = priors.b1_range();
+        let b2_r2 = priors.b2_range();
+        let in_bounds = (0..p_b0).all(|k| {
+                let idx = b0_r.start + k;
+                theta[k] >= priors.lb[idx] && theta[k] <= priors.ub[idx]
+            })
+            && (0..p_b1).all(|k| {
+                let idx = b1_r.start + k;
+                theta[off_b1 + k] >= priors.lb[idx] && theta[off_b1 + k] <= priors.ub[idx]
+            })
+            && (0..n_b2_inc).all(|j| {
+                let idx = b2_r2.start + b2_included[j];
+                theta[off_b2 + j] >= priors.lb[idx]
+                    && theta[off_b2 + j] <= priors.ub[idx]
+            });
+        if !in_bounds {
+            return;
+        }
+    }
+
+    // Store
+    for k in 0..p_b0 {
+        state.beta_b0[k] = theta[k];
+    }
+    for j in 0..j_groups {
+        state.u_b0[j] = theta[off_z + j];
+    }
+    for k in 0..p_b1 {
+        state.beta_b1[k] = theta[off_b1 + k];
+    }
+    for (j, &orig_k) in b2_included.iter().enumerate() {
+        state.beta_b2[orig_k] = theta[off_b2 + j];
+    }
+
+    // Draw excluded b2 from prior
+    let b2_r3 = priors.b2_range();
+    for k in 0..p_b2 {
+        if !state.gamma[k] {
+            let idx = b2_r3.start + k;
+            let d = Normal::new(priors.mean[idx], priors.sd[idx]).unwrap();
+            let mut val = d.sample(rng);
+            if priors.lb[idx].is_finite() || priors.ub[idx].is_finite() {
+                for _ in 0..1000 {
+                    if val >= priors.lb[idx] && val <= priors.ub[idx] {
+                        break;
+                    }
+                    val = d.sample(rng);
+                }
+            }
+            state.beta_b2[k] = val;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Enforce gamma on omega/rho: zero out excluded coefficients.
+// Called after sampling omega/rho so that coefficients whose b2 partner
+// has gamma=0 remain at zero.
+// ---------------------------------------------------------------------------
+
+fn enforce_gamma_on_om_rho(state: &mut State, ss: &SpikeSlabConfig) {
+    for k in 0..state.gamma.len() {
+        if !state.gamma[k] {
+            if ss.om_map[k] >= 0 {
+                state.beta_om[ss.om_map[k] as usize] = 0.0;
+            }
+            if ss.rho_map[k] >= 0 {
+                state.beta_rho[ss.rho_map[k] as usize] = 0.0;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main chain loop for spike-and-slab model.
+//
+// Same structure as run_chain but adds:
+// - gamma sampling block (Kuo & Mallick indicators)
+// - modified linear coefficient sampling that respects gamma
+// - gamma enforcement on omega/rho after their update
+// - gamma draws in the output
+// ---------------------------------------------------------------------------
+
+#[allow(unused_assignments)]
+pub fn run_chain_ss(
+    data: &ModelData,
+    priors: &Priors,
+    ss: &SpikeSlabConfig,
+    n_iter: usize,
+    n_warmup: usize,
+    step_om_init: f64,
+    step_rho_init: f64,
+    target_accept: f64,
+    seed: u64,
+    verbose: bool,
+    chain_id: usize,
+    n_chains: usize,
+    progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
+) -> (DMatrix<f64>, usize) {
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    let mut state = init_state(data, priors, &mut rng);
+    // Initialise gamma: start all eligible coefficients as included
+    for k in 0..priors.p_b2 {
+        state.gamma[k] = true;
+    }
+
+    let n_post = n_iter - n_warmup;
+    let n_params = state.n_params_ss(); // includes gamma columns
+
+    let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
+
+    // --- Adaptation state (same as base model) ---
+    let use_hmc_om  = priors.p_om  >= 2;
+    let use_hmc_rho = priors.p_rho >= 2;
+
+    let mut hmc_om  = if use_hmc_om  {
+        Some(HmcAdapt::new(priors.p_om,  step_om_init,  target_accept, 5, 15))
+    } else { None };
+    let mut hmc_rho = if use_hmc_rho {
+        Some(HmcAdapt::new(priors.p_rho, step_rho_init, target_accept, 5, 15))
+    } else { None };
+
+    let mut scalar_om  = if priors.p_om  == 1 { Some(ScalarAdapt::new(step_om_init))  } else { None };
+    let mut scalar_rho = if priors.p_rho == 1 { Some(ScalarAdapt::new(step_rho_init)) } else { None };
+
+    let tune_window = 100usize;
+    let mass_refresh_iter_om  = (n_warmup as f64 * 0.60) as usize;
+    let mass_refresh_iter_rho = (n_warmup as f64 * 0.60) as usize;
+
+    let mut omega_cur: DVector<f64> = DVector::<f64>::zeros(0);
+    let mut rho_cur:   DVector<f64> = DVector::<f64>::zeros(0);
+    let mut cache: LinearCache = LinearCache {
+        b0_fixed:   DVector::<f64>::zeros(0),
+        b1_vals:    DVector::<f64>::zeros(0),
+        b2_vals:    DVector::<f64>::zeros(0),
+        re_contrib: DVector::<f64>::zeros(0),
+    };
+
+    let report_every = (n_iter / 10).max(1);
+
+    // --- Find reasonable initial epsilon ---
+    {
+        if data.n_groups_b0 > 0 { sample_random_effects_nc(data, &mut state, &mut rng); }
+        sample_linear_coefs(data, priors, &mut state, &mut rng);
+        let init_cache = LinearCache::build(&state, data);
+        let init_omega = &data.x_om  * &state.beta_om;
+        let init_rho   = &data.x_rho * &state.beta_rho;
+
+        if let Some(ref mut h) = hmc_om {
+            let p = priors.p_om;
+            let r_idx = priors.om_range();
+            let pr_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
+            let pr_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
+            let pr_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
+            let pr_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
+            let q0 = state.beta_om.clone();
+            let sigma = state.sigma;
+            let inv_mass = h.inv_mass.clone();
+            h.find_reasonable_epsilon(|eps| {
+                let normal_dist = Normal::new(0.0, 1.0f64).unwrap();
+                let mut mom = DVector::<f64>::from_iterator(
+                    p, (0..p).map(|k| normal_dist.sample(&mut rng) / inv_mass[k].sqrt()));
+                let kinetic0: f64 = (0..p).map(|k| mom[k]*mom[k]*inv_mass[k]).sum::<f64>() * 0.5;
+                let ll0 = init_cache.log_likelihood(data, &init_omega, &init_rho, sigma);
+                let lp0 = log_truncated_normal_prior(q0.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let h0_val = -ll0 - lp0 + kinetic0;
+                let grad_ll = init_cache.grad_beta_om(data, &init_omega, &init_rho, sigma, p);
+                let grad_pr = grad_truncated_normal_prior(q0.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let grad_lp: DVector<f64> = &grad_ll + &grad_pr;
+                let mut q = q0.clone();
+                for k in 0..p { mom[k] += 0.5 * eps * grad_lp[k]; }
+                for k in 0..p {
+                    q[k] += eps * mom[k] * inv_mass[k];
+                    for _b in 0..MAX_REFLECTIONS {
+                        if q[k] < pr_lb[k] { q[k] = 2.0*pr_lb[k]-q[k]; mom[k]=-mom[k]; }
+                        else if q[k] > pr_ub[k] { q[k] = 2.0*pr_ub[k]-q[k]; mom[k]=-mom[k]; }
+                        else { break; }
+                    }
+                }
+                let omega_p = &data.x_om * &q;
+                let gl2 = init_cache.grad_beta_om(data, &omega_p, &init_rho, sigma, p);
+                let gp2 = grad_truncated_normal_prior(q.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let grad2: DVector<f64> = &gl2 + &gp2;
+                for k in 0..p { mom[k] += 0.5 * eps * grad2[k]; }
+                let ll1 = init_cache.log_likelihood(data, &omega_p, &init_rho, sigma);
+                let lp1 = log_truncated_normal_prior(q.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let kin1: f64 = (0..p).map(|k| mom[k]*mom[k]*inv_mass[k]).sum::<f64>() * 0.5;
+                let h1_val = -ll1 - lp1 + kin1;
+                h0_val - h1_val
+            });
+        }
+
+        if let Some(ref mut h) = hmc_rho {
+            let p = priors.p_rho;
+            let r_idx = priors.rho_range();
+            let pr_mean: Vec<f64> = priors.mean[r_idx.clone()].to_vec();
+            let pr_sd:   Vec<f64> = priors.sd[r_idx.clone()].to_vec();
+            let pr_lb:   Vec<f64> = priors.lb[r_idx.clone()].to_vec();
+            let pr_ub:   Vec<f64> = priors.ub[r_idx.clone()].to_vec();
+            let q0 = state.beta_rho.clone();
+            let sigma = state.sigma;
+            let inv_mass_rho = h.inv_mass.clone();
+            h.find_reasonable_epsilon(|eps| {
+                let normal_dist = Normal::new(0.0, 1.0f64).unwrap();
+                let mut mom = DVector::<f64>::from_iterator(
+                    p, (0..p).map(|k| normal_dist.sample(&mut rng) / inv_mass_rho[k].sqrt()));
+                let kinetic0: f64 = (0..p).map(|k| mom[k]*mom[k]*inv_mass_rho[k]).sum::<f64>() * 0.5;
+                let ll0 = init_cache.log_likelihood(data, &init_omega, &init_rho, sigma);
+                let lp0 = log_truncated_normal_prior(q0.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let h0_val = -ll0 - lp0 + kinetic0;
+                let grad_ll = init_cache.grad_beta_rho(data, &init_omega, &init_rho, sigma, p);
+                let grad_pr = grad_truncated_normal_prior(q0.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let grad_lp: DVector<f64> = &grad_ll + &grad_pr;
+                let mut q = q0.clone();
+                for k in 0..p { mom[k] += 0.5 * eps * grad_lp[k]; }
+                for k in 0..p {
+                    q[k] += eps * mom[k] * inv_mass_rho[k];
+                    for _b in 0..MAX_REFLECTIONS {
+                        if q[k] < pr_lb[k] { q[k] = 2.0*pr_lb[k]-q[k]; mom[k]=-mom[k]; }
+                        else if q[k] > pr_ub[k] { q[k] = 2.0*pr_ub[k]-q[k]; mom[k]=-mom[k]; }
+                        else { break; }
+                    }
+                }
+                let rho_p = &data.x_rho * &q;
+                let gl2 = init_cache.grad_beta_rho(data, &init_omega, &rho_p, sigma, p);
+                let gp2 = grad_truncated_normal_prior(q.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let grad2: DVector<f64> = &gl2 + &gp2;
+                for k in 0..p { mom[k] += 0.5 * eps * grad2[k]; }
+                let ll1 = init_cache.log_likelihood(data, &init_omega, &rho_p, sigma);
+                let lp1 = log_truncated_normal_prior(q.as_slice(), &pr_mean, &pr_sd, &pr_lb, &pr_ub);
+                let kin1: f64 = (0..p).map(|k| mom[k]*mom[k]*inv_mass_rho[k]).sum::<f64>() * 0.5;
+                let h1_val = -ll1 - lp1 + kin1;
+                h0_val - h1_val
+            });
+        }
+    }
+
+    // === Main sampling loop ===
+    for iter in 0..n_iter {
+        if verbose && iter % report_every == 0 {
+            progress_fn(chain_id, n_chains, iter, n_iter, iter < n_warmup);
+        }
+
+        // Block 1: Linear coefficients (respecting gamma)
+        if data.n_groups_b0 > 0 {
+            sample_linear_coefs_joint_ss(data, priors, ss, &mut state, &mut rng);
+        } else {
+            sample_linear_coefs_ss(data, priors, ss, &mut state, &mut rng);
+        }
+
+        // Enforce gamma zeroing on b2 coefficients for the cache
+        for k in 0..priors.p_b2 {
+            if !state.gamma[k] {
+                state.beta_b2[k] = 0.0;
+            }
+        }
+        enforce_gamma_on_om_rho(&mut state, ss);
+
+        // Rebuild cache and linear predictors
+        cache     = LinearCache::build(&state, data);
+        omega_cur = &data.x_om  * &state.beta_om;
+        rho_cur   = &data.x_rho * &state.beta_rho;
+
+        // Block 2a: Update beta_om
+        if use_hmc_om {
+            hmc_step_om(
+                data, priors, &mut state,
+                &cache, &mut omega_cur, &rho_cur,
+                hmc_om.as_mut().unwrap(),
+                &mut rng,
+            );
+        } else if priors.p_om == 1 {
+            scalar_mh_step_om(
+                data, priors, &mut state,
+                &cache, &mut omega_cur, &rho_cur,
+                scalar_om.as_mut().unwrap(),
+                &mut rng,
+            );
+        }
+
+        // Block 2b: Update beta_rho
+        if use_hmc_rho {
+            hmc_step_rho(
+                data, priors, &mut state,
+                &cache, &omega_cur, &mut rho_cur,
+                hmc_rho.as_mut().unwrap(),
+                &mut rng,
+            );
+        } else if priors.p_rho == 1 {
+            scalar_mh_step_rho(
+                data, priors, &mut state,
+                &cache, &omega_cur, &mut rho_cur,
+                scalar_rho.as_mut().unwrap(),
+                &mut rng,
+            );
+        }
+
+        // Enforce gamma on omega/rho after their update
+        enforce_gamma_on_om_rho(&mut state, ss);
+
+        // Block 3: Sample gamma indicators
+        // (Uses the Kuo-Mallick approach after all continuous parameters updated)
+        sample_gamma(data, priors, ss, &mut state, &mut rng);
+
+        // Block 4a: Sample sigma
+        sample_sigma(data, priors, &mut state, &mut rng);
+
+        // Block 4b: Sample sigma_u
+        if data.n_groups_b0 > 0 {
+            sample_sigma_u(priors, &mut state, &mut rng);
+        }
+
+        // --- Adaptation during warmup ---
+        if iter < n_warmup {
+            if (iter + 1) % tune_window == 0 {
+                if let Some(ref mut s) = scalar_om  { s.tune(0.234); }
+                if let Some(ref mut s) = scalar_rho { s.tune(0.234); }
+            }
+
+            if let Some(ref mut h) = hmc_om  { h.observe(&state.beta_om);  }
+            if let Some(ref mut h) = hmc_rho { h.observe(&state.beta_rho); }
+
+            if iter == mass_refresh_iter_om {
+                if let Some(ref mut h) = hmc_om {
+                    h.refresh_mass_matrix();
+                    h.da_count = 0;
+                    h.h_bar = 0.0;
+                    h.mu = (10.0 * h.epsilon).ln();
+                    h.log_eps_bar = h.epsilon.ln();
+                }
+            }
+            if iter == mass_refresh_iter_rho {
+                if let Some(ref mut h) = hmc_rho {
+                    h.refresh_mass_matrix();
+                    h.da_count = 0;
+                    h.h_bar = 0.0;
+                    h.mu = (10.0 * h.epsilon).ln();
+                    h.log_eps_bar = h.epsilon.ln();
+                }
+            }
+        }
+
+        // Freeze adaptation
+        if iter + 1 == n_warmup {
+            if let Some(ref mut h) = hmc_om  { h.freeze(); }
+            if let Some(ref mut h) = hmc_rho { h.freeze(); }
+        }
+
+        // Store post-warmup draws (including gamma)
+        if iter >= n_warmup {
+            let row = iter - n_warmup;
+            let draw = state.to_vec_ss();
+            for (col, &val) in draw.iter().enumerate() {
+                draws[(row, col)] = val;
+            }
+        }
+    }
+
+    if verbose {
+        progress_fn(chain_id, n_chains, n_iter, n_iter, false);
+    }
+
+    let n_div = hmc_om.as_ref().map_or(0, |h| h.n_divergent)
+        + hmc_rho.as_ref().map_or(0, |h| h.n_divergent);
+    (draws, n_div)
 }

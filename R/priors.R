@@ -154,3 +154,45 @@ print.smoothbp_priors <- function(x, ...) {
 
 # Null-coalescing helper (base R)
 `%||%` <- function(a, b) if (!is.null(a)) a else b
+
+#' Specify a spike-and-slab prior for variable selection on b2 coefficients
+#'
+#' Used with [smoothbp_ss()] to place a point-mass spike at zero on selected
+#' `b2` coefficients (and their corresponding `omega`/`rho` coefficients).
+#' When the spike is active (`gamma_k = 0`), the coefficient is exactly zero;
+#' when inactive (`gamma_k = 1`), it follows the slab distribution.
+#'
+#' @param pi Prior inclusion probability.  Scalar (applied to all eligible
+#'   coefficients) or a named numeric vector mapping coefficient names to
+#'   individual probabilities.  Default `0.5`.
+#' @param slab A [prior_normal()] object for the slab component.  Default
+#'   `prior_normal(0, 2)`.
+#' @param spike_intercept Logical; should the intercept of `b2` also receive
+#'   a spike-and-slab prior?  Default `FALSE` (intercept always included).
+#'
+#' @return A `smoothbp_spike_slab` object.
+#' @export
+prior_spike_slab <- function(pi = 0.5, slab = prior_normal(0, 2),
+                             spike_intercept = FALSE) {
+  stopifnot(
+    inherits(slab, "smoothbp_prior"),
+    slab$family == "normal",
+    is.numeric(pi),
+    all(pi > 0 & pi < 1),
+    is.logical(spike_intercept)
+  )
+  structure(
+    list(family = "spike_slab", pi = pi, slab = slab,
+         spike_intercept = spike_intercept),
+    class = "smoothbp_spike_slab"
+  )
+}
+
+#' @export
+print.smoothbp_spike_slab <- function(x, ...) {
+  cat(sprintf("SpikeSlab(pi=%s, slab=Normal(%g, %g), spike_intercept=%s)\n",
+              paste(format(x$pi), collapse = ","),
+              x$slab$mean, x$slab$sd,
+              x$spike_intercept))
+  invisible(x)
+}
