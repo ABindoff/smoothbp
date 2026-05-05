@@ -108,6 +108,8 @@
   dm        <- data_list$dm
   y         <- data_list$y
   priors    <- data_list$priors
+  spike     <- data_list$spike
+  gamma_names <- data_list$gamma_names
   b0_coefs  <- data_list$b0_coefs
   b1_coefs  <- data_list$b1_coefs
   b2_coefs  <- data_list$b2_coefs
@@ -115,6 +117,12 @@
   rho_coefs <- data_list$rho_coefs
   tau       <- data_list$tau
   n_groups  <- dm$n_groups_b0
+  
+  # ---- Quick bounds checking ------------------------------------------------
+  # If any parameter is NA, return -Inf immediately
+  if (any(is.na(pars))) {
+    return(-Inf)
+  }
 
   # ---- Extract parameter blocks from named vector --------------------------
   beta_b0  <- pars[paste0("b0_",    b0_coefs)]
@@ -123,6 +131,11 @@
   beta_om  <- pars[paste0("omega_", om_coefs)]
   beta_rho <- pars[paste0("rho_",   rho_coefs)]
   sigma    <- pars["sigma"]
+  
+  # Check for critical parameter validity (sigma must be positive)
+  if (is.na(sigma) || sigma <= 0) {
+    return(-Inf)
+  }
 
   # ---- Reconstruct mu_i ----------------------------------------------------
   omega_i <- as.vector(dm$X_om  %*% beta_om)
@@ -148,6 +161,11 @@
 
   # ---- Log likelihood -------------------------------------------------------
   ll <- sum(stats::dnorm(y, mean = mu_i, sd = sigma, log = TRUE))
+  
+  # Guard against -Inf or NaN from likelihood
+  if (!is.finite(ll)) {
+    return(-Inf)
+  }
 
   # ---- Log priors -----------------------------------------------------------
   lp <- 0
@@ -192,7 +210,45 @@
                                priors$sigma_u$scale)
   }
 
-  ll + lp
+  # ---- Spike-slab priors (if present) ----------------------------------------
+  # gamma parameters are binary (0/1) indicating inclusion in the slab
+  if (!is.null(spike) && spike$family == "spike_slab" && length(gamma_names) > 0) {
+    # Extract gamma values for each coefficient
+    gamma_vals <- pars[paste0("gamma_", b0_coefs[-1])]  # exclude intercept if spike_intercept=TRUE
+    
+    # If learning pi (the spike-slab mixture weight), include its prior
+    if (spike$learn_pi && "pi" %in% names(pars)) {
+      pi_val <- pars["pi"]
+      # pi ~ Beta(a, b)
+      lp <- lp + stats::dbeta(pi_val, spike$a, spike$b, log = TRUE)
+    } else {
+      # Use fixed pi
+      pi_val <- spike$pi
+    }
+    
+    # For each gamma: P(gamma=1) = pi under the prior
+    # gamma is a binary indicator, so the prior contribution depends on its value
+    # If gamma=1, log(pi); if gamma=0, log(1-pi)
+    for (g in gamma_vals) {
+      if (!is.na(g)) {
+        if (g == 1) {
+          lp <- lp + log(pi_val)
+        } else {
+          lp <- lp + log(1 - pi_val)
+        }
+      }
+    }
+  }
+
+  # Combine log likelihood and log prior
+  result <- ll + lp
+  
+  # Guard against NaN in result (can happen due to -Inf + finite or numerical issues)
+  if (is.nan(result)) {
+    return(-Inf)
+  }
+  
+  result
 }
 
 # ---------------------------------------------------------------------------
@@ -227,6 +283,28 @@
 #' at each posterior draw. Internally, this function reconstructs the model's
 #' linear predictors in R using the stored design matrices and computes the
 #' sum of the log likelihood and all log prior densities.
+#'
+#' For spike-slab variable selection, the function includes the spike-slab
+#' prior contribution (Beta prior on pi if learned, and Bernoulli*Gaussian
+#' mixture prior on each coefficient).
+#'
+#' ## Numerical stability
+#'
+#' When models include truncated normal priors (e.g., bounds on regression
+#' coefficients), the bridge sampling iterative scheme can occasionally
+#' encounter numerical instability. This typically occurs when the proposal
+#' distribution generates parameter values near prior boundaries, causing
+#' infinite log-prior contributions. If you encounter the error
+#' `missing value where TRUE/FALSE needed` during iteration, try setting
+#' `use_neff = FALSE`:
+#'
+#' ```r
+#' bridge_sampler(fit, use_neff = FALSE)
+#' ```
+#'
+#' This disables the effective sample size correction in the iterative scheme,
+#' making the algorithm more numerically stable at the cost of potentially
+#' more iterations.
 #'
 #' For comparison with a **brms** model, the brms model must have been fitted
 #' with `save_pars = save_pars(all = TRUE)`.
@@ -317,15 +395,17 @@ bridge_sampler.smoothbp_fit <- function(
   # ---- Data list for log posterior -----------------------------------------
   dm <- fit$dm
   data_list <- list(
-    dm        = dm,
-    y         = as.double(fit$data[[fit$response]]),
-    tau       = as.double(fit$data[[fit$time]]),
-    priors    = fit$priors,
-    b0_coefs  = colnames(dm$X_b0),
-    b1_coefs  = colnames(dm$X_b1),
-    b2_coefs  = colnames(dm$X_b2),
-    om_coefs  = colnames(dm$X_om),
-    rho_coefs = colnames(dm$X_rho)
+    dm         = dm,
+    y          = as.double(fit$data[[fit$response]]),
+    tau        = as.double(fit$data[[fit$time]]),
+    priors     = fit$priors,
+    spike      = fit$spike,
+    gamma_names = fit$gamma_names,
+    b0_coefs   = colnames(dm$X_b0),
+    b1_coefs   = colnames(dm$X_b1),
+    b2_coefs   = colnames(dm$X_b2),
+    om_coefs   = colnames(dm$X_om),
+    rho_coefs  = colnames(dm$X_rho)
   )
 
   # ---- Clamp samples to strictly within declared bounds --------------------
@@ -347,9 +427,17 @@ bridge_sampler.smoothbp_fit <- function(
   }
 
   # ---- Run bridge sampling -------------------------------------------------
+  # Create a wrapper that restores parameter names to each row as it's passed in
+  # (bridgesampling extracts rows as unnamed vectors from the matrix)
+  param_names <- colnames(samp_mat)
+  log_posterior_wrapper <- function(pars, data_list) {
+    names(pars) <- param_names
+    .smoothbp_log_posterior(pars, data_list)
+  }
+  
   bridgesampling::bridge_sampler(
     samples      = samp_mat,
-    log_posterior = .smoothbp_log_posterior,
+    log_posterior = log_posterior_wrapper,
     data         = data_list,
     lb           = lb_vec,
     ub           = ub_vec,

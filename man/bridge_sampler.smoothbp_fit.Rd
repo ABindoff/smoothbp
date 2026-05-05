@@ -54,8 +54,30 @@ at each posterior draw. Internally, this function reconstructs the model's
 linear predictors in R using the stored design matrices and computes the
 sum of the log likelihood and all log prior densities.
 
+For spike-slab variable selection, the function includes the spike-slab
+prior contribution (Beta prior on pi if learned, and Bernoulli*Gaussian
+mixture prior on each coefficient).
+\subsection{Numerical stability}{
+
+When models include truncated normal priors (e.g., bounds on regression
+coefficients), the bridge sampling iterative scheme can occasionally
+encounter numerical instability. This typically occurs when the proposal
+distribution generates parameter values near prior boundaries, causing
+infinite log-prior contributions. If you encounter the error
+\verb{missing value where TRUE/FALSE needed} during iteration, try setting
+\code{use_neff = FALSE}:
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{bridge_sampler(fit, use_neff = FALSE)
+}\if{html}{\out{</div>}}
+
+This disables the effective sample size correction in the iterative scheme,
+making the algorithm more numerically stable at the cost of potentially
+more iterations.
+
 For comparison with a \strong{brms} model, the brms model must have been fitted
 with \code{save_pars = save_pars(all = TRUE)}.
+}
+
 \subsection{Checking reliability}{
 
 Bridge sampling is a stochastic approximation.  Always check the
