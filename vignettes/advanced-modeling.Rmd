@@ -125,34 +125,49 @@ ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   labs(title = "Real 2023 Monthly Closing Prices", y = "Price (USD)", x = "Month")
 ```
 
-### Modeling Two Structural Shifts with `smoothbp_ss()`
-We model **two candidate breakpoints**, each with its own location sub-model conditional on the security ticker.
+### Modeling Philosophy: Noise vs. Structure
+We can fit the model in two ways: one that treats mid-year volatility as noise (conservative prior) and one that treats it as a structural event to be captured (permissive prior).
 
-```{r fit-market}
+#### Option 1: The "Conservative" Model (Smooth Trend)
+Here we use a low inclusion probability (`pi = 0.1`), forcing the model to only "accept" a second breakpoint if the evidence is overwhelming.
+
+```{r fit-market-cons}
 dat_market$ticker <- factor(dat_market$ticker, levels = c("AAPL", "MSFT", "NVDA"))
 
-fit_market <- smoothbp_ss(
-  formula = price ~ month,
-  b0      = ~ ticker,
-  deltas  = list(~ ticker, ~ ticker),
-  omega   = list(~ ticker, ~ ticker),
-  rho     = list(~ 1, ~ 1),
-  data    = dat_market,
-  spike   = prior_spike_slab(pi = 0.5),
-  priors  = smoothbp_priors(
-    omega = list(
-      prior_normal(5, 2, lb = 1, ub = 12), # Prior for AI Pivot
-      prior_normal(10, 2, lb = 1, ub = 12) # Prior for Year-End Rally
-    )
+fit_cons <- smoothbp_ss(
+  formula = price ~ month, b0 = ~ ticker,
+  deltas = list(~ ticker, ~ ticker), omega = list(~ ticker, ~ ticker),
+  rho = list(~ 1, ~ 1), data = dat_market,
+  spike = prior_spike_slab(pi = 0.1), # CONSERVATIVE
+  priors = smoothbp_priors(
+    b0 = prior_normal(200, 500), b1 = prior_normal(0, 50),
+    omega = list(prior_normal(5, 2, lb=1, ub=12), prior_normal(10, 2, lb=1, ub=12))
   ),
-  chains = 2, iter = 4000, warmup = 2000
+  chains = 2, iter = 2000, warmup = 1000
+)
+```
+
+#### Option 2: The "Permissive" Model (Capturing the Dip)
+Here we use a higher inclusion probability (`pi = 0.8`), allowing the model to capture the finer-grained dip and recovery cycles.
+
+```{r fit-market-perm}
+fit_perm <- smoothbp_ss(
+  formula = price ~ month, b0 = ~ ticker,
+  deltas = list(~ ticker, ~ ticker), omega = list(~ ticker, ~ ticker),
+  rho = list(~ 1, ~ 1), data = dat_market,
+  spike = prior_spike_slab(pi = 0.8), # PERMISSIVE
+  priors = smoothbp_priors(
+    b0 = prior_normal(200, 500), b1 = prior_normal(0, 50),
+    omega = list(prior_normal(5, 2, lb=1, ub=12), prior_normal(10, 2, lb=1, ub=12))
+  ),
+  chains = 2, iter = 2000, warmup = 1000
 )
 
-# Visualize the two-breakpoint fit
-pred_market <- fitted(fit_market)
-dat_market$y_fit <- pred_market$fitted_mean
-dat_market$lo    <- pred_market$fitted_Q2.5
-dat_market$hi    <- pred_market$fitted_Q97.5
+# Visualize the permissive fit
+pred_perm <- fitted(fit_perm)
+dat_market$y_fit <- pred_perm$fitted_mean
+dat_market$lo    <- pred_perm$fitted_Q2.5
+dat_market$hi    <- pred_perm$fitted_Q97.5
 
 ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   geom_point() +
@@ -160,14 +175,14 @@ ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   geom_line(aes(y = y_fit), size = 1) +
   facet_wrap(~ticker, scales = "free_y") +
   theme_minimal() +
-  labs(title = "Two-Breakpoint smoothbp_ss Fit", subtitle = "Capturing both the spring AI pivot and the autumn recovery.")
+  labs(title = "Permissive Model (pi = 0.8)", subtitle = "Capturing the structural autumn dip and recovery.")
 ```
 
 ### Analyzing Leadership Across Different Events
-By estimating independent lags for each breakpoint, we can see if the same security "led" both market movements.
+By using the permissive model, we can see if the same security "led" both the spring pivot and the autumn dip.
 
 ```{r market-prob}
-draws <- as_draws_matrix(fit_market$draws)
+draws <- as_draws_matrix(fit_perm$draws)
 
 # Event 1: AI Pivot
 # Prob NVDA led MSFT in the spring
