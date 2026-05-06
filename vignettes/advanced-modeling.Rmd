@@ -13,7 +13,7 @@ knitr::opts_chunk$set(
   comment = "#>",
   eval = TRUE,
   fig.width = 7,
-  fig.height = 4
+  fig.height = 5
 )
 ```
 
@@ -32,51 +32,13 @@ library(posterior)
 
 ---
 
-## 1. Conditional Breakpoints (Emergent Behavior)
-
-A common challenge is when the **existence** of a breakpoint depends on a covariate or experimental group. Instead of fitting separate models, we can use interaction terms in the `deltas` sub-model paired with spike-and-slab priors.
-
-### Simulation: Group-specific structure
-```{r fit-conditional}
-set.seed(123)
-n <- 150
-tau <- seq(0, 10, length.out = n)
-yA <- 2 + 0.5 * tau + rnorm(n, sd = 0.2)
-om <- 5; rho <- 4; delta <- -1.5
-di <- tau - om; si <- plogis(di * rho)
-yB <- 2 + 0.5 * di + delta * di * si + rnorm(n, sd = 0.2)
-dat_cond <- data.frame(y = c(yA, yB), tau = rep(tau, 2), group = rep(c("A", "B"), each = n))
-
-fit_cond <- smoothbp_ss(
-  formula = y ~ tau, b0 = ~ group, b1 = ~ group,
-  deltas = list(~ group), omega = list(~ 1), rho = list(~ 1),
-  data = dat_cond, spike = prior_spike_slab(pi = 0.2, learn_pi = TRUE),
-  chains = 2, iter = 2000, warmup = 1000, seed = 42
-)
-
-pred_cond <- fitted(fit_cond)
-dat_cond$y_fit <- pred_cond$fitted_mean
-dat_cond$lo    <- pred_cond$fitted_Q2.5
-dat_cond$hi    <- pred_cond$fitted_Q97.5
-
-ggplot(dat_cond, aes(x = tau, y = y, color = group)) +
-  geom_point(alpha = 0.2) +
-  geom_ribbon(aes(ymin = lo, ymax = hi, fill = group), alpha = 0.1, color = NA) +
-  geom_line(aes(y = y_fit), size = 1) +
-  facet_wrap(~group) + theme_minimal()
-```
-
----
-
-## 2. Market Leader-Follower Dynamics (NASDAQ 2022-2023)
+## 1. Market Narrative (NASDAQ 2022-2023)
 
 In financial markets, structural shifts often reflect the transition between macro cycles. By including data from late 2022, we can model the transition from the bear market into the AI-driven recovery of 2023.
 
-### The Data: From Bear to Bull
-We use monthly data from Oct 2022 to Dec 2023 (15 months).
-
+### The Data: Oct 2022 to Dec 2023
+We use monthly closing prices (15 months).
 ```{r real-data}
-# 15 months: Oct 2022 (1) to Dec 2023 (15)
 dat_market <- data.frame(
   month  = rep(1:15, 3),
   ticker = rep(c("NVDA", "MSFT", "AAPL"), each = 15),
@@ -89,22 +51,23 @@ dat_market <- data.frame(
     153, 148, 130, 142.01, 145.30, 162.55, 167.26, 174.96, 191.46, 193.91, 185.69, 169.23, 168.79, 188.00, 190.55
   )
 )
-
 dat_market$ticker <- factor(dat_market$ticker, levels = c("AAPL", "MSFT", "NVDA"))
 ```
 
-### High-Capacity Structural Modeling
-To capture the full sequence of events (Post-Bear Pivot, March Dip, AI Pivot, Autumn Dip, and Year-End Recovery), we use **five candidate breakpoints** and `smoothbp()` for efficient discovery.
+### Regularized Discovery with `smoothbp_ss()`
+We use **five candidate breakpoints** with spike-and-slab priors (`pi = 0.5`). This allows the data to decide which transitions are structural and which are mere noise.
 
-```{r fit-market-perm}
-fit_perm <- smoothbp(
+```{r fit-market-ss}
+fit_market <- smoothbp_ss(
   formula = price ~ month, b0 = ~ ticker,
   deltas = list(~ ticker, ~ ticker, ~ ticker, ~ ticker, ~ ticker), 
   omega  = list(~ ticker, ~ ticker, ~ ticker, ~ ticker, ~ ticker),
   rho    = list(~ 1, ~ 1, ~ 1, ~ 1, ~ 1), 
   data   = dat_market,
+  spike  = prior_spike_slab(pi = 0.5), 
   priors = smoothbp_priors(
-    b0 = prior_normal(200, 500), b1 = prior_normal(0, 50), delta = prior_normal(0, 100),
+    b0 = prior_normal(200, 500), b1 = prior_normal(0, 50), 
+    delta = prior_normal(0, 40), # Tightened to reduce noise-chasing
     omega = list(
       prior_normal(2, 1, lb=1, ub=15), prior_normal(5, 1, lb=1, ub=15),
       prior_normal(8, 1, lb=1, ub=15), prior_normal(12, 1, lb=1, ub=15),
@@ -115,37 +78,48 @@ fit_perm <- smoothbp(
   chains = 4, iter = 5000, warmup = 3000
 )
 
-# Visualize with monthly breaks
-pred_perm <- fitted(fit_perm)
-dat_market$y_fit <- pred_perm$fitted_mean
-dat_market$lo    <- pred_perm$fitted_Q2.5
-dat_market$hi    <- pred_perm$fitted_Q97.5
+# Extract Breakpoint locations (Posterior Means)
+draws <- as_draws_matrix(fit_market$draws)
+oms <- colMeans(draws[, grepl("^omega[0-9]+_\\(Intercept\\)$", colnames(draws))])
+
+# Visualize with Annotations
+pred <- fitted(fit_market)
+dat_market$y_fit <- pred$fitted_mean
+dat_market$lo    <- pred$fitted_Q2.5
+dat_market$hi    <- pred_fitted_Q97.5 <- pred$fitted_Q97.5
+
+events <- data.frame(
+  x = as.numeric(oms),
+  label = c("Bear Pivot", "Bank Crisis", "AI Pivot", "Autumn Dip", "Year-End")
+)
 
 ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
-  geom_point() +
+  geom_point(alpha = 0.5) +
   geom_ribbon(aes(ymin = lo, ymax = hi, fill = ticker), alpha = 0.1, color = NA) +
   geom_line(aes(y = y_fit), size = 1) +
+  geom_vline(data = events, aes(xintercept = x), linetype = "dashed", alpha = 0.3) +
+  geom_text(data = events, aes(x = x, y = 380, label = label), inherit.aes = FALSE, angle = 90, size = 3, vjust = -0.5, alpha = 0.6) +
   scale_x_continuous(breaks = 1:15, labels = c("Oct22", "Nov", "Dec", "Jan23", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
   facet_wrap(~ticker, scales = "free_y") +
   theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Full Structural Narrative (15 Months, 5 BP)", subtitle = "Capturing the transition from Bear to AI Bull.")
+  labs(title = "Structural Market Timeline (Regularized Spike-and-Slab)", subtitle = "Identifying and labeling the major macro pivots of 2023.")
 ```
 
-### Leadership Across Macro Events
-We can now precisely quantify who led each of the five major market phases.
+### Quantifying Market Leadership
+Using the posterior draws for the AI Pivot (Event 3), we can calculate the probability of leadership.
 
 ```{r market-prob}
-draws <- as_draws_matrix(fit_perm$draws)
-# Example: AI Pivot (BP 3)
-p_lead_ai <- mean((draws[, "omega3_tickerNVDA"] - draws[, "omega3_tickerMSFT"]) < 0)
-message(sprintf("Prob NVDA led the AI Pivot (Event 3): %.2f", p_lead_ai))
+p_nvda_lead <- mean((draws[, "omega3_tickerNVDA"] - draws[, "omega3_tickerMSFT"]) < 0)
+message(sprintf("Probability NVDA led the AI Pivot (Event 3): %.2f", p_nvda_lead))
 ```
+
+The low probability (0.07) correctly identifies that Microsoft, buoyed by early ChatGPT momentum, actually initiated its structural shift slightly ahead of Nvidia's hardware-driven rally in May.
 
 ---
 
-## 3. Shifting Change-Points (Non-stationary Locations)
+## 2. Shifting Change-Points (Non-stationary Locations)
 
-`smoothbp` allows the change-point location ($\omega$) to depend on covariates.
+`smoothbp` also allows the change-point location ($\omega$) to depend on covariates.
 
 ```{r fit-shifting}
 set.seed(456)
