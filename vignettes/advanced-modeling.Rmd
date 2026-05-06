@@ -75,75 +75,135 @@ fit_market <- smoothbp(
 )
 ```
 
-### Analytical Extremum Discovery
-We define $f'(\tau)$ to find the local maxima and minima for every posterior draw.
+### Finding Turning Points via the Analytical Derivative
 
-```{r derivative-logic}
-# Function to calculate the derivative of the mean function at month t
-calc_slope <- function(t, b1, deltas, omegas, rhos) {
-  # Base slope
-  slope <- b1
-  # Add sigmoidal slope changes
-  for (k in seq_along(deltas)) {
-    di <- t - omegas[k]
-    ri <- rhos[k]
-    si <- plogis(di * ri)
-    # Derivative of (t-om)*plogis((t-om)*rho) is:
-    # plogis(di*ri) + di * rho * dlogis(di*ri)
-    slope <- slope + deltas[k] * (si + di * ri * dlogis(di * ri))
-  }
-  return(slope)
+The `smoothbp` mean function is (from the source of `fitted.smoothbp_fit`):
+$$\mu(\tau) = b_0 + b_1(\tau - \omega_1) + \sum_{k=1}^K \delta_k (\tau - \omega_k)\, \sigma(\rho_k(\tau - \omega_k))$$
+
+Applying the product rule to the $k$-th term, letting $d_k = \tau-\omega_k$ and $s_k=\sigma(\rho_k d_k)$:
+$$f'(\tau) = b_1 + \sum_{k=1}^K \delta_k \left[s_k + \rho_k d_k s_k(1 - s_k)\right]$$
+
+We solve $f'(\tau) = 0$ by evaluating the fit on a fine grid and locating sign-changes. To propagate uncertainty, we do this per posterior draw, yielding a full posterior over the timing of every peak and trough.
+
+```{r turning-points}
+# ---- Helper: evaluate mean on a fine grid for a given ticker per draw ----
+# Using fitted() on a dense grid is equivalent to evaluating the analytical
+# mean function and correctly handles all centering/RE details.
+grid_months <- seq(1, 15, length.out = 1000)
+
+get_extrema_per_draw <- function(fit, ticker_level, n_draws_use = 500) {
+  newdata_fine <- data.frame(
+    month  = grid_months,
+    ticker = factor(ticker_level, levels = levels(dat_market$ticker))
+  )
+  # Evaluate on every draw (raw = no summary)
+  fit_raw <- fitted(fit, newdata = newdata_fine, summary = FALSE)
+  # fit_raw is [n_draws x n_grid] matrix
+  # Take a random subset of draws for speed
+  idx <- sample(nrow(fit_raw), min(n_draws_use, nrow(fit_raw)))
+  fit_raw <- fit_raw[idx, , drop = FALSE]
+
+  # For each draw, find sign-changes in the numerical derivative
+  h <- diff(grid_months)[1]
+  do.call(rbind, lapply(seq_len(nrow(fit_raw)), function(i) {
+    dy <- diff(fit_raw[i, ]) / h
+    # Sign changes: -1 = peak (+ to -), +1 = trough (- to +)
+    sc <- which(diff(sign(dy)) != 0)
+    if (length(sc) == 0) return(NULL)
+    data.frame(
+      draw      = i,
+      tau_star  = grid_months[sc + 1],
+      direction = ifelse(diff(sign(dy))[sc] < 0, "peak", "trough")
+    )
+  }))
 }
 
-# Find roots (extrema) for each draw
-get_extrema <- function(draw_row, ticker_idx) {
-  # Helper to extract params for a specific ticker
-  # (Simplified for the vignette logic)
-  # ... extraction logic ...
-  # For the sake of the demonstration, we'll find them on the posterior mean curve
-  # but in a real analysis, you would do this per draw to get credible intervals.
-}
+# Compute per-ticker posterior extrema
+extrema_list <- lapply(levels(dat_market$ticker), function(tk) {
+  ex <- get_extrema_per_draw(fit_market, tk)
+  if (!is.null(ex)) ex$ticker <- tk
+  ex
+})
+extrema_all <- do.call(rbind, extrema_list)
+
+# Posterior summary of turning points
+extrema_summary <- extrema_all |>
+  group_by(ticker, direction) |>
+  summarise(
+    tau_mean = mean(tau_star),
+    tau_lo   = quantile(tau_star, 0.025),
+    tau_hi   = quantile(tau_star, 0.975),
+    .groups  = "drop"
+  )
+print(extrema_summary)
 ```
 
 ### Visualizing Actual Turning Points
-The red markers below are not the $\omega$ parameters, but the **roots of the derivative**, marking the actual peaks and troughs in the price trend.
+The red markers now sit at the **posterior mean** of each turning point location — i.e., where $f'(\tau) = 0$ — not at $\omega_k$.
 
 ```{r plot-extrema}
-pred <- fitted(fit_market)
-dat_market$y_fit <- pred$fitted_mean
+# Get y-positions from the mean fit curve
+pred_fine_mean <- do.call(rbind, lapply(levels(dat_market$ticker), function(tk) {
+  nd <- data.frame(month = grid_months, ticker = factor(tk, levels = levels(dat_market$ticker)))
+  pf <- fitted(fit_market, newdata = nd)
+  data.frame(ticker = tk, month = grid_months, y_fit = pf$fitted_mean)
+}))
 
-# Discover peaks/troughs on the mean curve
-discovery <- dat_market %>%
-  group_by(ticker) %>%
-  do({
-    tk <- .$ticker[1]
-    # We find where slope changes sign
-    # Extract mean parameters for this ticker from the fit
-    # (Using a simplified grid search for the turning point)
-    months_grid <- seq(1, 15, length.out = 500)
-    # Calculate fit at high resolution to find extrema
-    # ... grid search ...
-    # We'll identify the significant 'corners' of the fit
-    data.frame(month = c(3.1, 9.2, 12.5), type = c("Trough", "Peak", "Recovery")) 
-  })
+# Merge extrema summary with fitted curve y-values
+extrema_plot <- extrema_summary |>
+  rowwise() |>
+  mutate(
+    y_val = approx(
+      pred_fine_mean$month[pred_fine_mean$ticker == ticker],
+      pred_fine_mean$y_fit[pred_fine_mean$ticker  == ticker],
+      xout = tau_mean
+    )$y
+  )
+
+# Main plot
+pred_orig <- fitted(fit_market)
+dat_market$y_fit <- pred_orig$fitted_mean
+dat_market$lo    <- pred_orig$fitted_Q2.5
+dat_market$hi    <- pred_orig$fitted_Q97.5
 
 ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   geom_point(alpha = 0.5) +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = ticker), alpha = 0.1, color = NA) +
   geom_line(aes(y = y_fit), size = 1) +
-  geom_point(data = discovery, aes(x = month, y = approx(dat_market$month, dat_market$y_fit, xout=month)$y), 
-             color = "red", shape = 4, size = 4, stroke = 1.5) +
-  scale_x_continuous(breaks = 1:15, labels = c("Oct22", "Nov", "Dec", "Jan23", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  # Red X at each turning point
+  geom_point(
+    data = extrema_plot,
+    aes(x = tau_mean, y = y_val, shape = direction),
+    color = "red", size = 4, stroke = 1.5, inherit.aes = FALSE
+  ) +
+  scale_shape_manual(values = c(peak = 4, trough = 3), name = "Turning point") +
+  scale_x_continuous(
+    breaks = 1:15,
+    labels = c("Oct22","Nov","Dec","Jan23","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+  ) +
   facet_wrap(~ticker, scales = "free_y") +
   theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Discovered Market Turning Points", subtitle = "Red markers identify where f'(tau) = 0 (actual peaks and troughs).")
+  labs(
+    title    = "Market Turning Points: where f'(tau) = 0",
+    subtitle = "X = peak (slope + to -), + = trough (slope - to +). Posterior means shown."
+  )
 ```
 
 ### Robust Leadership Analysis
-Instead of comparing $\omega_3$, we compare the **Timing of the Trough** across tickers. This confirms who "hit bottom" first before the AI rally began.
+By comparing the posterior distributions of turning points for the same **type** of event (e.g., the autumn trough) across tickers, we avoid the category error of comparing breakpoints with opposite signs.
 
 ```{r leadership-robust}
-# Prob(Ticker A Trough < Ticker B Trough)
-# This would be calculated by finding the root for each posterior draw.
+# Posterior probability that NVDA peaked before MSFT in the AI rally
+peak_nvda <- extrema_all |> filter(ticker == "NVDA", direction == "peak")
+peak_msft <- extrema_all |> filter(ticker == "MSFT", direction == "peak")
+
+# Match draws (use first peak per draw as the AI rally peak)
+peak_nvda_first <- peak_nvda |> group_by(draw) |> slice_min(tau_star) |> pull(tau_star)
+peak_msft_first <- peak_msft |> group_by(draw) |> slice_min(tau_star) |> pull(tau_star)
+
+n_common <- min(length(peak_nvda_first), length(peak_msft_first))
+p_nvda_peak_first <- mean(peak_nvda_first[1:n_common] < peak_msft_first[1:n_common])
+message(sprintf("Prob NVDA reached peak before MSFT: %.2f", p_nvda_peak_first))
 ```
 
 ---
