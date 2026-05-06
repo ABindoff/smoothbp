@@ -37,46 +37,23 @@ library(posterior)
 A common challenge is when the **existence** of a breakpoint depends on a covariate or experimental group. Instead of fitting separate models, we can use interaction terms in the `deltas` sub-model paired with spike-and-slab priors.
 
 ### Simulation: Group-specific structure
-* **Group A (Control)**: Simple linear trend (0 BP).
-* **Group B (Treatment)**: One smooth breakpoint at $\omega=5$.
-
-```{r sim-conditional}
+```{r fit-conditional}
 set.seed(123)
 n <- 150
 tau <- seq(0, 10, length.out = n)
-
-# Group A: Linear
 yA <- 2 + 0.5 * tau + rnorm(n, sd = 0.2)
-
-# Group B: 1 BP at 5
 om <- 5; rho <- 4; delta <- -1.5
 di <- tau - om; si <- plogis(di * rho)
 yB <- 2 + 0.5 * di + delta * di * si + rnorm(n, sd = 0.2)
+dat_cond <- data.frame(y = c(yA, yB), tau = rep(tau, 2), group = rep(c("A", "B"), each = n))
 
-dat_cond <- data.frame(
-  y     = c(yA, yB),
-  tau   = rep(tau, 2),
-  group = rep(c("A", "B"), each = n)
-)
-```
-
-### Fitting with Spike-and-Slab Interactions
-By using `deltas = list(~ group)`, the model can learn different slope changes for each group.
-
-```{r fit-conditional}
 fit_cond <- smoothbp_ss(
-  formula = y ~ tau,
-  b0      = ~ group,
-  b1      = ~ group,
-  deltas  = list(~ group),
-  omega   = list(~ 1),
-  rho     = list(~ 1),
-  data    = dat_cond,
-  spike   = prior_spike_slab(pi = 0.2, learn_pi = TRUE),
-  chains  = 2, iter = 2000, warmup = 1000, seed = 42
+  formula = y ~ tau, b0 = ~ group, b1 = ~ group,
+  deltas = list(~ group), omega = list(~ 1), rho = list(~ 1),
+  data = dat_cond, spike = prior_spike_slab(pi = 0.2, learn_pi = TRUE),
+  chains = 2, iter = 2000, warmup = 1000, seed = 42
 )
 
-# Visualize observed vs fitted
 pred_cond <- fitted(fit_cond)
 dat_cond$y_fit <- pred_cond$fitted_mean
 dat_cond$lo    <- pred_cond$fitted_Q2.5
@@ -86,119 +63,59 @@ ggplot(dat_cond, aes(x = tau, y = y, color = group)) +
   geom_point(alpha = 0.2) +
   geom_ribbon(aes(ymin = lo, ymax = hi, fill = group), alpha = 0.1, color = NA) +
   geom_line(aes(y = y_fit), size = 1) +
-  facet_wrap(~group) +
-  theme_minimal() +
-  labs(title = "Conditional Breakpoint Selection", subtitle = "Control correctly identified as linear; Treatment captures the break.")
+  facet_wrap(~group) + theme_minimal()
 ```
 
 ---
 
-## 2. Market Leader-Follower Dynamics (Real NASDAQ 2023 Data)
+## 2. Market Leader-Follower Dynamics (NASDAQ 2022-2023)
 
-In financial time series, assets often react to macro trends with varying lags. We use **real 2023 monthly closing prices** for Nvidia (NVDA), Microsoft (MSFT), and Apple (AAPL). 
+In financial markets, structural shifts often reflect the transition between macro cycles. By including data from late 2022, we can model the transition from the bear market into the AI-driven recovery of 2023.
 
-The 2023 market was characterized by two major shifts:
-1.  **The AI Pivot**: A structural trend shift in late spring/early summer.
-2.  **The Year-End Rally**: A sharp recovery starting in late autumn.
-
-### The Data: AI Boom and Year-End Recovery
-We use the actual monthly closing prices to model these two distinct shifts.
+### The Data: From Bear to Bull
+We use monthly data from Oct 2022 to Dec 2023 (15 months).
 
 ```{r real-data}
+# 15 months: Oct 2022 (1) to Dec 2023 (15)
 dat_market <- data.frame(
-  month  = rep(1:12, 3),
-  ticker = rep(c("NVDA", "MSFT", "AAPL"), each = 12),
+  month  = rep(1:15, 3),
+  ticker = rep(c("NVDA", "MSFT", "AAPL"), each = 15),
   price  = c(
     # NVDA
-    19.52, 23.19, 27.75, 27.72, 37.80, 42.27, 46.69, 49.32, 43.47, 40.75, 46.74, 49.49,
+    13.50, 16.50, 14.60, 19.52, 23.19, 27.75, 27.72, 37.80, 42.27, 46.69, 49.32, 43.47, 40.75, 46.74, 49.49,
     # MSFT
-    241.47, 243.65, 281.63, 300.15, 321.49, 333.39, 328.87, 321.56, 309.77, 331.71, 372.49, 369.67,
+    232, 255, 240, 241.47, 243.65, 281.63, 300.15, 321.49, 333.39, 328.87, 321.56, 309.77, 331.71, 372.49, 369.67,
     # AAPL
-    142.01, 145.30, 162.55, 167.26, 174.96, 191.46, 193.91, 185.69, 169.23, 168.79, 188.00, 190.55
+    153, 148, 130, 142.01, 145.30, 162.55, 167.26, 174.96, 191.46, 193.91, 185.69, 169.23, 168.79, 188.00, 190.55
   )
 )
 
-ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
-  geom_point() + geom_line() +
-  facet_wrap(~ticker, scales = "free_y") +
-  theme_minimal() +
-  labs(title = "Real 2023 Monthly Closing Prices", y = "Price (USD)", x = "Month")
-```
-
-### Modeling Philosophy: Noise vs. Structure
-We can fit the model in two ways: one that treats mid-year volatility as noise (conservative prior) and one that treats it as a structural event to be captured (permissive prior).
-
-#### Option 1: The "Conservative" Model (Smooth Trend)
-Here we use a low inclusion probability (`pi = 0.1`), forcing the model to only "accept" a second breakpoint if the evidence is overwhelming.
-
-```{r fit-market-cons}
 dat_market$ticker <- factor(dat_market$ticker, levels = c("AAPL", "MSFT", "NVDA"))
-
-fit_cons <- smoothbp_ss(
-  formula = price ~ month, b0 = ~ ticker,
-  deltas = list(~ ticker, ~ ticker, ~ ticker), 
-  omega  = list(~ ticker, ~ ticker, ~ ticker),
-  rho    = list(~ 1, ~ 1, ~ 1), 
-  data   = dat_market,
-  spike  = prior_spike_slab(pi = 0.5), # Standard model selection prior
-  priors = smoothbp_priors(
-    b0    = prior_normal(200, 500), 
-    b1    = prior_normal(0, 50),
-    delta = prior_normal(0, 100),
-    omega = list(
-      prior_normal(4, 2, lb=1, ub=12), 
-      prior_normal(8, 2, lb=1, ub=12),
-      prior_normal(10, 2, lb=1, ub=12)
-    ),
-    rho = list(prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1))
-  ),
-  chains = 2, iter = 2000, warmup = 1000
-)
-
-# Visualize the conservative fit
-pred_cons <- fitted(fit_cons)
-dat_market$y_fit_cons <- pred_cons$fitted_mean
-dat_market$lo_cons     <- pred_cons$fitted_Q2.5
-dat_market$hi_cons     <- pred_cons$fitted_Q97.5
-
-ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
-  geom_point() +
-  geom_ribbon(aes(ymin = lo_cons, ymax = hi_cons, fill = ticker), alpha = 0.1, color = NA) +
-  geom_line(aes(y = y_fit_cons), size = 1) +
-  facet_wrap(~ticker, scales = "free_y") +
-  theme_minimal() +
-  labs(title = "Conservative Model Selection (pi = 0.5)", subtitle = "Using spike-and-slab to identify significant structural changes.")
-
-# Inspect PIPs
-pip(fit_cons)
 ```
 
-#### Option 2: The "Permissive" Model (HMC discovery)
-For complex structures like the "Rise -> Dip -> Rally" cycle, we use `smoothbp()`. By avoiding the binary selection of spike-and-slab, the HMC sampler can more efficiently explore the sharp likelihood peaks of the autumn dip.
+### High-Capacity Structural Modeling
+To capture the full sequence of events (Post-Bear Pivot, March Dip, AI Pivot, Autumn Dip, and Year-End Recovery), we use **five candidate breakpoints** and `smoothbp()` for efficient discovery.
 
 ```{r fit-market-perm}
 fit_perm <- smoothbp(
   formula = price ~ month, b0 = ~ ticker,
-  deltas = list(~ ticker, ~ ticker, ~ ticker), 
-  omega  = list(~ ticker, ~ ticker, ~ ticker),
-  rho    = list(~ 1, ~ 1, ~ 1), 
+  deltas = list(~ ticker, ~ ticker, ~ ticker, ~ ticker, ~ ticker), 
+  omega  = list(~ ticker, ~ ticker, ~ ticker, ~ ticker, ~ ticker),
+  rho    = list(~ 1, ~ 1, ~ 1, ~ 1, ~ 1), 
   data   = dat_market,
   priors = smoothbp_priors(
-    b0    = prior_normal(200, 500), 
-    b1    = prior_normal(0, 50),
-    delta = prior_normal(0, 100),
+    b0 = prior_normal(200, 500), b1 = prior_normal(0, 50), delta = prior_normal(0, 100),
     omega = list(
-      prior_normal(4, 2, lb=1, ub=12), 
-      prior_normal(8, 2, lb=1, ub=12),
-      prior_normal(10, 2, lb=1, ub=12)
+      prior_normal(2, 1, lb=1, ub=15), prior_normal(5, 1, lb=1, ub=15),
+      prior_normal(8, 1, lb=1, ub=15), prior_normal(12, 1, lb=1, ub=15),
+      prior_normal(14, 1, lb=1, ub=15)
     ),
-    rho = list(prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1))
+    rho = list(prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1))
   ),
-  chains = 4, iter = 4000, warmup = 2000
+  chains = 4, iter = 5000, warmup = 3000
 )
-```
 
-# Visualize the permissive fit
+# Visualize with monthly breaks
 pred_perm <- fitted(fit_perm)
 dat_market$y_fit <- pred_perm$fitted_mean
 dat_market$lo    <- pred_perm$fitted_Q2.5
@@ -208,75 +125,44 @@ ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   geom_point() +
   geom_ribbon(aes(ymin = lo, ymax = hi, fill = ticker), alpha = 0.1, color = NA) +
   geom_line(aes(y = y_fit), size = 1) +
+  scale_x_continuous(breaks = 1:15, labels = c("Oct22", "Nov", "Dec", "Jan23", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
   facet_wrap(~ticker, scales = "free_y") +
-  theme_minimal() +
-  labs(title = "Permissive Model (pi = 0.8)", subtitle = "Capturing the structural autumn dip and recovery.")
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Full Structural Narrative (15 Months, 5 BP)", subtitle = "Capturing the transition from Bear to AI Bull.")
 ```
 
-### Analyzing Leadership Across Different Events
-By using the permissive model, we can see if the same security "led" both the spring pivot and the autumn dip.
+### Leadership Across Macro Events
+We can now precisely quantify who led each of the five major market phases.
 
 ```{r market-prob}
 draws <- as_draws_matrix(fit_perm$draws)
-
-# Event 1: AI Pivot (Spring)
-lag1 <- draws[, "omega1_tickerNVDA"] - draws[, "omega1_tickerMSFT"]
-p_lead1 <- mean(lag1 < 0)
-
-# Event 2: Autumn Dip (Sept/Oct)
-lag2 <- draws[, "omega2_tickerNVDA"] - draws[, "omega2_tickerMSFT"]
-p_lead2 <- mean(lag2 < 0)
-
-# Event 3: Year-End Rally (Nov/Dec)
-lag3 <- draws[, "omega3_tickerNVDA"] - draws[, "omega3_tickerMSFT"]
-p_lead3 <- mean(lag3 < 0)
-
-message(sprintf("Prob NVDA led AI Pivot: %.2f", p_lead1))
-message(sprintf("Prob NVDA led Autumn Dip: %.2f", p_lead2))
-message(sprintf("Prob NVDA led Year-End Rally: %.2f", p_lead3))
+# Example: AI Pivot (BP 3)
+p_lead_ai <- mean((draws[, "omega3_tickerNVDA"] - draws[, "omega3_tickerMSFT"]) < 0)
+message(sprintf("Prob NVDA led the AI Pivot (Event 3): %.2f", p_lead_ai))
 ```
 
 ---
 
 ## 3. Shifting Change-Points (Non-stationary Locations)
 
-In many systems, the *location* of a change-point ($\omega$) is not constant but depends on individual characteristics. `smoothbp` allows the change-point itself to have a linear predictor.
+`smoothbp` allows the change-point location ($\omega$) to depend on covariates.
 
-### Simulation: Age of onset depends on Covariate X
-Imagine a transition that happens earlier for individuals with higher values of $X$.
-
-```{r sim-shifting}
+```{r fit-shifting}
 set.seed(456)
-n_subj <- 40
-n_obs  <- 10
-tau    <- seq(0, 10, length.out = n_obs)
-x      <- runif(n_subj, 0, 1)
-
+n_subj <- 40; n_obs <- 10; tau <- seq(0, 10, length.out = n_obs); x <- runif(n_subj, 0, 1)
 rows <- list()
 for (i in 1:n_subj) {
-  # omega shifts from 7 down to 3 as x goes from 0 to 1
-  om_i <- 7 - 4 * x[i]
-  di   <- tau - om_i
+  om_i <- 7 - 4 * x[i]; di <- tau - om_i
   yi   <- 5 + 0.3 * di - 1.2 * di * plogis(di * 5) + rnorm(n_obs, sd = 0.1)
   rows[[i]] <- data.frame(subject = i, tau = tau, y = yi, x = x[i])
 }
 dat_shift <- do.call(rbind, rows)
-```
 
-### Fitting with `omega ~ x`
-We specify `omega = list(~ x)` to model this dependency.
-
-```{r fit-shifting}
 fit_shift <- smoothbp(
-  formula = y ~ tau,
-  b0      = ~ 1 + (1 | subject),
-  omega   = list(~ x),
-  deltas  = list(~ 1),
-  data    = dat_shift,
-  priors  = smoothbp_priors(omega = list(prior_normal(5, 3, lb = 0))),
+  formula = y ~ tau, b0 = ~ 1 + (1 | subject), omega = list(~ x), deltas = list(~ 1),
+  data = dat_shift, priors = smoothbp_priors(omega = list(prior_normal(5, 3, lb = 0))),
   chains = 2, iter = 2000, warmup = 1000, seed = 42
 )
-
 summary(fit_shift, effects = "fixed") |> filter(grepl("^omega", variable))
 ```
 
@@ -284,4 +170,4 @@ summary(fit_shift, effects = "fixed") |> filter(grepl("^omega", variable))
 
 ## Conclusion
 
-`smoothbp` provides a unified framework for modeling multiple structural changes that are themselves dependent on other factors. By modeling two breakpoints in financial data, we can reveal the evolving leadership dynamics of complex markets.
+By treating $\delta$, $\omega$, and $\rho$ as parameters that can vary with predictors, `smoothbp` provides a unified framework for modeling structural changes in complex systems.
