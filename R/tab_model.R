@@ -98,23 +98,37 @@ tab_smoothbp <- function(...,
   }
 
   # ---- Parse "block_term" variable names -----------------------------------
-  # e.g. "b0_GroupExperimental" -> block = "b0", term = "GroupExperimental"
-  #      "sigma"                -> block = "sigma", term = "sigma"
+  # e.g. "delta1_(Intercept)" -> block = "delta1", term = "(Intercept)"
   tbl$block <- sub("_.*", "", tbl$Parameter)
   tbl$term  <- sub("^[^_]+_", "", tbl$Parameter)
-  solo      <- tbl$block == tbl$term          # bare names like "sigma"
+  solo      <- tbl$block == tbl$term
   tbl$term[solo] <- tbl$block[solo]
 
-  block_labels <- c(
-    b0    = "\u03B2\u2080 \u2013 Intercept and covariates",
-    b1    = "\u03B2\u2081 \u2013 Pre-transition slope",
-    b2    = "\u03B2\u2082 \u2013 Post-transition slope change",
-    omega = "\u03C9 \u2013 Transition point",
-    rho   = "\u03C1 \u2013 Smoothing",
-    sigma = "\u03C3 \u2013 Residual SD",
-    gamma = "\u03B3 \u2013 Spike-slab inclusion"
-  )
-  tbl$block_label <- dplyr::coalesce(block_labels[tbl$block], tbl$block)
+  # Map block prefixes to pretty labels
+  pretty_block <- function(b) {
+    if (b == "b0") return("\u03B2\u2080 \u2013 Intercept and covariates")
+    if (b == "b1") return("\u03B2\u2081 \u2013 Pre-transition slope")
+    if (b == "sigma") return("\u03C3 \u2013 Residual SD")
+    if (grepl("^delta([0-9]+)$", b)) {
+       k <- sub("delta", "", b)
+       return(sprintf("\u0394\u03B2 %s \u2013 Slope change at BP%s", k, k))
+    }
+    if (grepl("^omega([0-9]+)$", b)) {
+       k <- sub("omega", "", b)
+       return(sprintf("\u03C9%s \u2013 Transition point %s", k, k))
+    }
+    if (grepl("^rho([0-9]+)$", b)) {
+       k <- sub("rho", "", b)
+       return(sprintf("\u03C1%s \u2013 Sharpness %s", k, k))
+    }
+    if (grepl("^gamma_b1", b)) return("\u03B3 b1 \u2013 Inclusion (b1)")
+    if (grepl("^gamma_delta([0-9]+)$", b)) {
+       k <- sub("gamma_delta", "", b)
+       return(sprintf("\u03B3%s \u2013 Inclusion (BP%s)", k, k))
+    }
+    b
+  }
+  tbl$block_label <- vapply(tbl$block, pretty_block, character(1))
 
   tbl_out <- tbl[, c("block_label", "term", labels)]
 

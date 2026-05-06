@@ -2,43 +2,31 @@
 % Please edit documentation in R/priors.R
 \name{prior_spike_slab}
 \alias{prior_spike_slab}
-\title{Specify a spike-and-slab prior for variable selection on b2 coefficients}
+\title{Specify a spike-and-slab prior for variable selection}
 \usage{
 prior_spike_slab(
   pi = 0.5,
   slab = prior_normal(0, 2),
-  spike_intercept = FALSE,
   learn_pi = FALSE,
   a = 1,
   b = 1
 )
 }
 \arguments{
-\item{pi}{Prior inclusion probability.  Scalar (applied to all eligible
-coefficients) or a named numeric vector mapping coefficient names to
-individual probabilities.  Default \code{0.5}.  Ignored when \code{learn_pi = TRUE}.}
+\item{pi}{Prior inclusion probability. Default \code{0.5}.}
 
-\item{slab}{A \code{\link[=prior_normal]{prior_normal()}} object for the slab component.  Default
-\code{prior_normal(0, 2)}.}
+\item{slab}{A \code{\link[=prior_normal]{prior_normal()}} object for the slab component.}
 
-\item{spike_intercept}{Logical; should the intercept of \code{b2} also receive
-a spike-and-slab prior?  Default \code{FALSE} (intercept always included).}
+\item{learn_pi}{Logical; if \code{TRUE}, place a \code{Beta(a, b)} hyperprior on pi.}
 
-\item{learn_pi}{Logical; if \code{TRUE}, place a \code{Beta(a, b)} hyperprior on the
-shared inclusion probability and sample it.  The \code{pi} argument is then
-used only for initialisation.  Default \code{FALSE}.}
+\item{a}{Shape parameter for the Beta hyperprior. Default \code{1}.}
 
-\item{a}{Shape parameter for the Beta hyperprior on pi.  Default \code{1}
-(uniform when \code{b = 1}).}
-
-\item{b}{Shape parameter for the Beta hyperprior on pi.  Default \code{1}.}
+\item{b}{Shape parameter for the Beta hyperprior. Default \code{1}.}
 }
 \value{
 A \code{smoothbp_spike_slab} object.
 }
 \description{
 Used with \code{\link[=smoothbp_ss]{smoothbp_ss()}} to place a point-mass spike at zero on selected
-\code{b2} coefficients (and their corresponding \code{omega}/\code{rho} coefficients).
-When the spike is active (\code{gamma_k = 0}), the coefficient is exactly zero;
-when inactive (\code{gamma_k = 1}), it follows the slab distribution.
+coefficients.
 }

@@ -19,36 +19,31 @@ knitr::opts_chunk$set(
 
 ## Why this vignette exists
 
-`smoothbp` is a bespoke Metropolis-within-Gibbs sampler for one specific
-model: a hierarchical piecewise regression with a logistic-smoothed
-change-point. The recovery test in `tests/testthat/test-smoothbp.R` shows
-the sampler returns posterior intervals that contain the data-generating
-values, which is necessary, but it is a self-consistency check: simulator
+`smoothbp` is a bespoke Metropolis-within-Gibbs sampler for Bayesian
+hierarchical piecewise regression with **multiple** logistic-smoothed
+change-points. The recovery tests are a self-consistency check — simulator
 and likelihood share the same code path. To trust the package one also
 wants to see that it agrees with an independent implementation. `brms`
 (via Stan) is the natural reference for fitting the same generative model
 via NUTS on a custom non-linear formula. `mcp` (via JAGS) is the closest
 specialist competitor and provides a complementary perspective: it fits
 **hard** (sharp) change-points rather than the logistic-smoothed
-transition that `smoothbp` uses, making it useful to understand where
-the two approaches agree, where they differ, and how the modelling
-choice affects inference.
+transition that `smoothbp` uses.
 
-Three scenarios are compared below:
+Four scenarios are compared below:
 
 1. **Intercept-only** — all parameters are scalar (the baseline case).
    Compared against **brms**.
-2. **Covariate on omega** — `omega ~ 1 + treatment`, which exercises the
-   HMC-within-Gibbs sampler path for the non-linear change-point
-   parameter. Compared against **brms**.
+2. **Covariate on omega** — `omega ~ 1 + treatment`. Compared against **brms**.
 3. **Hard vs smooth change-point** — single change-point, fixed effects
-   only. Compared against **mcp** to contrast modelling assumptions and
-   show that the two approaches converge when the transition is sharp.
+   only. Compared against **mcp**.
+4. **Multi-breakpoint** — two true change-points; smoothbp vs brms,
+   showing overlapping posterior distributions.
 
 ### One important practical note before we start
 
 When the change-point parameter `omega` drifts outside the range of the
-time variable, the smoothing term collapses and `b2` becomes effectively
+time variable, the smoothing term collapses and `delta1` becomes effectively
 unidentified. NUTS chains that initialise in that region can get stuck
 there for the entire run, producing an artificially multimodal posterior
 that has nothing to do with the data. The clean fix is to bound `omega`
@@ -57,7 +52,11 @@ the prior mean (which is what smoothbp does internally). Both fixes
 applied below.
 
 ```{r setup, message = FALSE, warning = FALSE}
-library(smoothbp)
+if (requireNamespace("pkgload", quietly = TRUE)) {
+  pkgload::load_all("..")
+} else {
+  library(smoothbp)
+}
 library(posterior)
 library(ggplot2)
 library(dplyr)
@@ -102,16 +101,15 @@ fit_sbp <- smoothbp(
   formula = y ~ tau,
   b0      = ~ 1 + (1 | subject),
   b1      = ~ 1,
-  b2      = ~ 1,
-  omega   = ~ 1,
-  rho     = ~ 1,
+  deltas  = list(~ 1),
+  omega   = list(~ 1),
+  rho     = list(~ 1),
   data    = dat,
   priors  = smoothbp_priors(
     b0      = prior_normal(0, 10),
     b1      = prior_normal(0, 2),
-    b2      = prior_normal(0, 2),
-    omega   = prior_normal(3, 2, lb = 0, ub = max(dat$tau)),
-    rho     = prior_normal(3, 2, lb = 0)
+    omega   = list(prior_normal(3, 2, lb = 0, ub = max(dat$tau))),
+    rho     = list(prior_normal(3, 2, lb = 0))
   ),
   chains  = 4L, iter = 2000L, warmup = 1000L,
   seed    = 31L, .verbose = FALSE
@@ -175,8 +173,8 @@ time_brms <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 
 ```{r brms-convergence, eval = have_brms}
 sbp_names <- c(
-  "b0_(Intercept)", "b1_(Intercept)", "b2_(Intercept)",
-  "omega_(Intercept)", "rho_(Intercept)",
+  "b0_(Intercept)", "b1_(Intercept)", "delta1_(Intercept)",
+  "omega1_(Intercept)", "rho1_(Intercept)",
   "sigma", "sigma_u"
 )
 brms_names <- c(
@@ -298,7 +296,7 @@ tau_range <- c(0, 6)
 
 b0_true      <- 5.0
 b1_true      <- -0.4
-b2_true      <- 1.4
+delta_true   <- 1.4
 omega_int    <- 3.2
 omega_trt    <- -0.8
 rho_true     <- 4.0
@@ -315,7 +313,7 @@ for (j in seq_len(n_subj)) {
   omega_j <- omega_int + omega_trt * treatment[j]
   d_j     <- tau_j - omega_j
   s_j     <- .sigmoid(d_j * rho_true)
-  mu_j    <- (b0_true + u_j[j]) + b1_true * d_j + b2_true * d_j * s_j
+  mu_j    <- (b0_true + u_j[j]) + b1_true * d_j + delta_true * d_j * s_j
   rows[[j]] <- data.frame(
     subject   = factor(j),
     tau       = tau_j,
@@ -339,19 +337,18 @@ fit_sbp_cov <- smoothbp(
   formula = y ~ tau,
   b0      = ~ 1 + (1 | subject),
   b1      = ~ 1,
-  b2      = ~ 1,
-  omega   = ~ 1 + treatment,
-  rho     = ~ 1,
+  deltas  = list(~ 1),
+  omega   = list(~ 1 + treatment),
+  rho     = list(~ 1),
   data    = dat_cov,
   priors  = smoothbp_priors(
     b0    = prior_normal(0, 10),
     b1    = prior_normal(0, 2),
-    b2    = prior_normal(0, 2),
-    omega = list(
+    omega = list(list(
       "(Intercept)" = prior_normal(3, 2, lb = 0, ub = max(dat_cov$tau)),
       "treatment"   = prior_normal(0, 2)
-    ),
-    rho   = prior_normal(3, 2, lb = 0)
+    )),
+    rho   = list(prior_normal(3, 2, lb = 0))
   ),
   chains  = 4L, iter = 2000L, warmup = 1000L,
   seed    = 8147L, .verbose = FALSE
@@ -407,9 +404,9 @@ time_brms_cov <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
 
 ```{r compare-cov, eval = have_brms}
 sbp_names_cov <- c(
-  "b0_(Intercept)", "b1_(Intercept)", "b2_(Intercept)",
-  "omega_(Intercept)", "omega_treatment",
-  "rho_(Intercept)", "sigma", "sigma_u"
+  "b0_(Intercept)", "b1_(Intercept)", "delta1_(Intercept)",
+  "omega1_(Intercept)", "omega1_treatment",
+  "rho1_(Intercept)", "sigma", "sigma_u"
 )
 brms_names_cov <- c(
   "b_b0_Intercept", "b_b1_Intercept", "b_b2_Intercept",
@@ -458,10 +455,10 @@ draws_long_cov %>%
 
 ```{r overlay-cov, eval = have_brms, fig.height = 5}
 true_vals_cov <- data.frame(
-  parameter = c("b0_(Intercept)", "b1_(Intercept)", "b2_(Intercept)",
-                 "omega_(Intercept)", "omega_treatment",
-                 "rho_(Intercept)", "sigma", "sigma_u"),
-  true_value = c(b0_true, b1_true, b2_true,
+  parameter = c("b0_(Intercept)", "b1_(Intercept)", "delta1_(Intercept)",
+                 "omega1_(Intercept)", "omega1_treatment",
+                 "rho1_(Intercept)", "sigma", "sigma_u"),
+  true_value = c(b0_true, b1_true, delta_true,
                   omega_int, omega_trt, rho_true, sigma_true, sigma_u_true)
 )
 
@@ -533,7 +530,7 @@ models are equivalent in structure.
 |---------------|---------------------|
 | `cp_1`        | `omega_(Intercept)` (change-point location) |
 | `time_1`      | `b1_(Intercept)` (pre-change slope) |
-| `time_2`      | `b1_(Intercept) + b2_(Intercept)` (post-change slope) |
+| `time_2`      | `b1_(Intercept) + delta1_(Intercept)` (post-change slope) |
 | `int_1`       | `b0_(Intercept) - b1 * omega` (level at tau = 0, not at change-point) |
 | `sigma_1`     | `sigma` |
 
@@ -564,7 +561,7 @@ dat_mcp <- simulate_smoothbp(
 # mcp expects a plain data.frame without the factor column
 dat_mcp_plain <- data.frame(tau = dat_mcp$tau, y = dat_mcp$y)
 
-cat(sprintf("n = %d  |  true omega = 3.2  |  true b1 = -0.4  |  true b2 = 1.4\n",
+cat(sprintf("n = %d  |  true omega = 3.2  |  true b1 = -0.4  |  true delta1 = 1.4\n",
             nrow(dat_mcp_plain)))
 ```
 
@@ -576,16 +573,15 @@ fit_sbp_mcp <- smoothbp(
   formula = y ~ tau,
   b0      = ~ 1,
   b1      = ~ 1,
-  b2      = ~ 1,
-  omega   = ~ 1,
-  rho     = ~ 1,
+  deltas  = list(~ 1),
+  omega   = list(~ 1),
+  rho     = list(~ 1),
   data    = dat_mcp,
   priors  = smoothbp_priors(
     b0    = prior_normal(0, 10),
     b1    = prior_normal(0, 2),
-    b2    = prior_normal(0, 2),
-    omega = prior_normal(3, 2, lb = 0, ub = max(dat_mcp$tau)),
-    rho   = prior_normal(3, 2, lb = 0)
+    omega = list(prior_normal(3, 2, lb = 0, ub = max(dat_mcp$tau))),
+    rho   = list(prior_normal(3, 2, lb = 0))
   ),
   chains = 4L, iter = 2000L, warmup = 1000L,
   seed = 5501L, .verbose = FALSE
@@ -622,13 +618,12 @@ cat(sprintf("mcp: %.1f s\n", time_mcp))
 
 The critical comparison is on `omega` / `cp_1` (change-point location)
 and the two slopes. The post-change slope from mcp (`time_2`) is
-equivalent to `b1 + b2` in smoothbp.
+equivalent to `b1 + delta1` in smoothbp.
 
 ```{r mcp-compare, eval = have_mcp}
 sbp_sum_mcp <- posterior::summarise_draws(fit_sbp_mcp$draws) |>
-  dplyr::filter(variable %in% c("b0_(Intercept)", "b1_(Intercept)",
-                                 "b2_(Intercept)", "omega_(Intercept)",
-                                 "rho_(Intercept)", "sigma"))
+                                 "delta1_(Intercept)", "omega1_(Intercept)",
+                                 "rho1_(Intercept)", "sigma"))
 
 mcp_sum <- summary(fit_mcp) |>
   dplyr::filter(name %in% c("cp_1", "int_1", "tau_1", "tau_2", "sigma_1"))
@@ -636,12 +631,12 @@ mcp_sum <- summary(fit_mcp) |>
 # Compute post-change slope from smoothbp draws for direct comparison
 dm_sbp_mcp <- posterior::as_draws_matrix(fit_sbp_mcp$draws)
 post_slope <- as.numeric(dm_sbp_mcp[, "b1_(Intercept)"] +
-                           dm_sbp_mcp[, "b2_(Intercept)"])
+                           dm_sbp_mcp[, "delta1_(Intercept)"])
 
 comparison_mcp <- data.frame(
   parameter          = c("omega / cp_1",
                           "b1 / time_1 (pre-change slope)",
-                          "b1+b2 / time_2 (post-change slope)",
+                          "b1+delta1 / time_2 (post-change slope)",
                           "sigma"),
   truth              = c(3.2, -0.4, -0.4 + 1.4, 0.4),
   sbp_mean           = c(
@@ -672,7 +667,7 @@ comparison_mcp <- data.frame(
 
 knitr::kable(comparison_mcp, digits = 3,
   caption = "Scenario 3: smoothbp vs mcp on comparable parameters.
-             smoothbp post-change slope is b1 + b2.")
+             smoothbp post-change slope is b1 + delta1.")
 ```
 
 ## Fitted trajectories: hard vs smooth
@@ -689,13 +684,13 @@ tau_grid <- seq(0, 6, length.out = 200)
 draws_sbp_mcp  <- posterior::as_draws_matrix(fit_sbp_mcp$draws)
 b0_m   <- mean(draws_sbp_mcp[, "b0_(Intercept)"])
 b1_m   <- mean(draws_sbp_mcp[, "b1_(Intercept)"])
-b2_m   <- mean(draws_sbp_mcp[, "b2_(Intercept)"])
-om_m   <- mean(draws_sbp_mcp[, "omega_(Intercept)"])
-rho_m  <- mean(draws_sbp_mcp[, "rho_(Intercept)"])
+delta1_m <- mean(draws_sbp_mcp[, "delta1_(Intercept)"])
+om_m   <- mean(draws_sbp_mcp[, "omega1_(Intercept)"])
+rho_m  <- mean(draws_sbp_mcp[, "rho1_(Intercept)"])
 
 sigmoid  <- function(x) 1 / (1 + exp(-x))
 d_grid   <- tau_grid - om_m
-mu_sbp   <- b0_m + b1_m * d_grid + b2_m * d_grid * sigmoid(d_grid * rho_m)
+mu_sbp   <- b0_m + b1_m * d_grid + delta1_m * d_grid * sigmoid(d_grid * rho_m)
 
 # mcp posterior mean trajectory
 cp_m    <- mcp_sum$mean[mcp_sum$name == "cp_1"]
@@ -731,8 +726,8 @@ ggplot() +
 ```{r mcp-ess, eval = have_mcp}
 # smoothbp ESS on omega
 sbp_ess_mcp <- posterior::summarise_draws(
-  fit_sbp_mcp$draws[,, c("omega_(Intercept)", "b1_(Intercept)",
-                          "b2_(Intercept)", "sigma")],
+  fit_sbp_mcp$draws[,, c("omega1_(Intercept)", "b1_(Intercept)",
+                          "delta1_(Intercept)", "sigma")],
   ess_bulk = posterior::ess_bulk
 ) |>
   dplyr::mutate(ess_per_sec = ess_bulk / time_sbp_mcp,
@@ -750,7 +745,7 @@ mcp_ess_raw <- setNames(mcp_ess_draws$ess_bulk, mcp_ess_draws$variable)
 data.frame(
   parameter   = c("omega / cp_1", "b1 / time_1", "sigma"),
   sbp_ess_s   = round(sbp_ess_mcp$ess_per_sec[
-    match(c("omega_(Intercept)", "b1_(Intercept)", "sigma"),
+    match(c("omega1_(Intercept)", "b1_(Intercept)", "sigma"),
           sbp_ess_mcp$variable)], 1),
   mcp_ess_s   = round(c(mcp_ess_raw["cp_1"],
                          mcp_ess_raw["tau_1"],
@@ -785,7 +780,7 @@ data.frame(
 - **Flexibility**: mcp supports multiple change-points, non-Gaussian
   families, variance and autoregressive terms, and quadratic/trig
   segments — features smoothbp does not offer. smoothbp supports
-  covariates on all five structural parameters (b0, b1, b2, omega, rho)
+  covariates on all five structural parameters (b0, b1, delta, omega, rho)
   in a single model, which is not directly available in mcp.
 
 ---
@@ -824,3 +819,229 @@ the posterior is genuinely multimodal, the chains may all converge to
 whichever mode is closest to the prior mean and fail to explore the
 others. If you suspect multimodality, fit with deliberately overdispersed
 initial values by varying the prior across runs.
+
+---
+
+# Scenario 4: Multi-breakpoint model
+
+This scenario validates the new multi-breakpoint architecture by simulating
+data with **two true change-points** and fitting both smoothbp and brms.
+If the two samplers agree — i.e., marginal posteriors overlap — we have
+strong evidence that the implementation is correct.
+
+## Simulate two-breakpoint data
+
+```{r simulate-multi}
+set.seed(9801)
+n  <- 300
+tau <- seq(0, 12, length.out = n)
+
+# True model: two breakpoints
+om1_true    <-  3.5;  rho1_true <- 5.0;  delta1_true <- -1.2
+om2_true    <-  8.0;  rho2_true <- 4.0;  delta2_true <-  1.8
+b0_true     <-  5.0;  b1_true   <-  0.3;  sigma_true  <-  0.3
+
+d1  <- tau - om1_true;  s1 <- plogis(d1 * rho1_true)
+d2  <- tau - om2_true;  s2 <- plogis(d2 * rho2_true)
+mu  <- b0_true + b1_true * (tau - om1_true) +
+       delta1_true * d1 * s1 + delta2_true * d2 * s2
+y   <- mu + rnorm(n, sd = sigma_true)
+dat_multi <- data.frame(y = y, tau = tau)
+
+cat(sprintf("True: b0=%.1f b1=%.1f delta1=%.1f omega1=%.1f delta2=%.1f omega2=%.1f sigma=%.1f\n",
+            b0_true, b1_true, delta1_true, om1_true, delta2_true, om2_true, sigma_true))
+```
+
+## Fit with smoothbp
+
+```{r fit-smoothbp-multi}
+t0 <- Sys.time()
+fit_sbp_multi <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1,
+  b1      = ~ 1,
+  deltas  = list(~ 1, ~ 1),
+  omega   = list(~ 1, ~ 1),
+  rho     = list(~ 1, ~ 1),
+  data    = dat_multi,
+  priors  = smoothbp_priors(
+    b0     = prior_normal(0, 10),
+    b1     = prior_normal(0, 2),
+    omega  = list(
+      prior_normal(3.5, 2, lb = 0, ub = 6),
+      prior_normal(8.0, 2, lb = 4, ub = max(dat_multi$tau))
+    ),
+    rho    = list(prior_normal(4, 2, lb = 0),
+                  prior_normal(4, 2, lb = 0))
+  ),
+  chains = 4L, iter = 2000L, warmup = 1000L,
+  seed = 9801L, .verbose = FALSE
+)
+time_sbp_multi <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+cat(sprintf("smoothbp: %.1f s\n", time_sbp_multi))
+```
+
+## Fit with brms (Stan / NUTS)
+
+```{r fit-brms-multi, eval = have_brms, message = FALSE, warning = FALSE, results = "hide"}
+suppressPackageStartupMessages(library(brms))
+
+# Two-breakpoint non-linear formula for brms
+bf_multi <- brms::bf(
+  y ~ b0 + b1 * (tau - om1) +
+        d1 * (tau - om1) / (1 + exp(-(tau - om1) * rho1)) +
+        d2 * (tau - om2) / (1 + exp(-(tau - om2) * rho2)),
+  b0 ~ 1, b1 ~ 1,
+  d1 ~ 1, om1 ~ 1, rho1 ~ 1,
+  d2 ~ 1, om2 ~ 1, rho2 ~ 1,
+  nl = TRUE
+)
+
+priors_brms_multi <- c(
+  brms::prior(normal(0, 10),  nlpar = "b0"),
+  brms::prior(normal(0, 2),   nlpar = "b1"),
+  brms::prior(normal(0, 2),   nlpar = "d1"),
+  brms::prior_string("normal(3.5, 2)", nlpar = "om1", lb = 0, ub = 6),
+  brms::prior(normal(4, 2),   nlpar = "rho1", lb = 0),
+  brms::prior(normal(0, 2),   nlpar = "d2"),
+  brms::prior_string("normal(8.0, 2)", nlpar = "om2", lb = 4, ub = 12),
+  brms::prior(normal(4, 2),   nlpar = "rho2", lb = 0)
+)
+
+init_multi <- function() list(
+  b_b0   = array(rnorm(1, 5, 0.5)),
+  b_b1   = array(rnorm(1, 0.3, 0.1)),
+  b_d1   = array(rnorm(1, -1, 0.3)),
+  b_om1  = array(rnorm(1, 3.5, 0.3)),
+  b_rho1 = array(rnorm(1, 5, 0.5)),
+  b_d2   = array(rnorm(1, 1.5, 0.3)),
+  b_om2  = array(rnorm(1, 8, 0.3)),
+  b_rho2 = array(rnorm(1, 4, 0.5))
+)
+
+t0 <- Sys.time()
+fit_brms_multi <- brms::brm(
+  bf_multi,
+  data    = dat_multi,
+  prior   = priors_brms_multi,
+  chains  = 4, iter = 2000, warmup = 1000,
+  seed    = 9801, refresh = 0,
+  init    = init_multi,
+  control = list(adapt_delta = 0.95)
+)
+time_brms_multi <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+```
+
+## Compare posteriors
+
+```{r compare-multi, eval = have_brms}
+sbp_names_multi <- c(
+  "b0_(Intercept)", "b1_(Intercept)",
+  "delta1_(Intercept)", "omega1_(Intercept)", "rho1_(Intercept)",
+  "delta2_(Intercept)", "omega2_(Intercept)", "rho2_(Intercept)",
+  "sigma"
+)
+brms_names_multi <- c(
+  "b_b0_Intercept", "b_b1_Intercept",
+  "b_d1_Intercept", "b_om1_Intercept", "b_rho1_Intercept",
+  "b_d2_Intercept", "b_om2_Intercept", "b_rho2_Intercept",
+  "sigma"
+)
+true_vals_multi <- c(b0_true, b1_true,
+                     delta1_true, om1_true, rho1_true,
+                     delta2_true, om2_true, rho2_true,
+                     sigma_true)
+
+sbp_draws_multi  <- posterior::as_draws_df(fit_sbp_multi$draws)[, sbp_names_multi]
+brms_draws_multi <- as.data.frame(
+  posterior::as_draws_df(fit_brms_multi)
+)[, brms_names_multi]
+colnames(brms_draws_multi) <- sbp_names_multi
+
+draws_long_multi <- dplyr::bind_rows(
+  tidyr::pivot_longer(sbp_draws_multi, cols = dplyr::everything(),
+                      names_to = "parameter", values_to = "value") |>
+    dplyr::mutate(package = "smoothbp"),
+  tidyr::pivot_longer(brms_draws_multi, cols = dplyr::everything(),
+                      names_to = "parameter", values_to = "value") |>
+    dplyr::mutate(package = "brms")
+)
+
+draws_long_multi |>
+  dplyr::group_by(parameter, package) |>
+  dplyr::summarise(mean = mean(value), sd = sd(value),
+                   q025 = quantile(value, 0.025),
+                   q975 = quantile(value, 0.975), .groups = "drop") |>
+  tidyr::pivot_wider(names_from = package,
+                     values_from = c(mean, sd, q025, q975),
+                     names_glue = "{package}_{.value}") |>
+  dplyr::mutate(
+    truth          = true_vals_multi[match(parameter, sbp_names_multi)],
+    delta_mean_pct = 100 * abs(smoothbp_mean - brms_mean) /
+                       (abs(brms_mean) + 1e-8)
+  ) |>
+  knitr::kable(digits = 3,
+               caption = "Scenario 4: two-breakpoint smoothbp vs brms.")
+```
+
+## Overlaid marginal posteriors — the key validation
+
+The densities from smoothbp (blue) and brms (red) should overlap almost
+exactly if both samplers are targeting the same posterior. Dashed vertical
+lines mark the true data-generating values.
+
+```{r overlay-multi, eval = have_brms, fig.height = 6}
+true_df_multi <- data.frame(
+  parameter  = sbp_names_multi,
+  true_value = true_vals_multi
+)
+
+ggplot(draws_long_multi, aes(x = value, fill = package, colour = package)) +
+  geom_density(alpha = 0.35, linewidth = 0.6) +
+  geom_vline(data = true_df_multi,
+             aes(xintercept = true_value),
+             linetype = "dashed", linewidth = 0.5, colour = "black") +
+  facet_wrap(~ parameter, scales = "free", ncol = 3) +
+  scale_fill_manual(values   = c(smoothbp = "#1f77b4", brms = "#d62728")) +
+  scale_colour_manual(values = c(smoothbp = "#1f77b4", brms = "#d62728")) +
+  labs(
+    title    = "Scenario 4: Multi-breakpoint posteriors — smoothbp vs brms",
+    subtitle = sprintf(
+      "Two true change-points. smoothbp: %.1fs   brms: %.1fs\nDashed = true value. Overlapping densities = agreement.",
+      time_sbp_multi, time_brms_multi
+    ),
+    x = NULL, y = "Density"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+```
+
+## What to look for
+
+- **Density overlap**: the blue (smoothbp) and red (brms) curves should be
+  nearly indistinguishable for every parameter. Meaningful separation
+  would indicate a bug in one of the implementations.
+- **True value coverage**: dashed lines should fall inside or very near
+  the high-density region of both posteriors.
+- **Timing**: smoothbp's Rust sampler should be substantially faster than
+  brms/Stan, especially at larger $n$.
+
+```{r ess-multi, eval = have_brms}
+ess_sbp_multi <- posterior::summarise_draws(
+  fit_sbp_multi$draws[, , sbp_names_multi], ess_bulk = posterior::ess_bulk
+) |>
+  dplyr::transmute(parameter = variable,
+                   smoothbp_ess_per_sec = ess_bulk / time_sbp_multi)
+
+ess_brms_multi <- posterior::summarise_draws(
+  posterior::as_draws_df(fit_brms_multi), ess_bulk = posterior::ess_bulk
+) |>
+  dplyr::filter(variable %in% brms_names_multi) |>
+  dplyr::mutate(parameter = sbp_names_multi[match(variable, brms_names_multi)]) |>
+  dplyr::transmute(parameter, brms_ess_per_sec = ess_bulk / time_brms_multi)
+
+dplyr::full_join(ess_sbp_multi, ess_brms_multi, by = "parameter") |>
+  knitr::kable(digits = 1,
+               caption = "ESS/second: smoothbp vs brms (two-breakpoint model).")
+```
+

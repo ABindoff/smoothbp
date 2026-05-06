@@ -30,3 +30,13 @@ loo <- function(x, ...) UseMethod("loo")
 #' @param ... Additional arguments passed to methods.
 #' @export
 waic <- function(x, ...) UseMethod("waic")
+
+#' Posterior predictive check
+#'
+#' Generic function. See \code{\link{pp_check.smoothbp_fit}} for the
+#' \code{smoothbp_fit} method.
+#'
+#' @param object A fitted model object.
+#' @param ... Additional arguments passed to methods.
+#' @export
+pp_check <- function(object, ...) UseMethod("pp_check")

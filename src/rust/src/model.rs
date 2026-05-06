@@ -9,90 +9,77 @@ pub struct ModelData {
     pub tau: DVector<f64>,
     pub x_b0: DMatrix<f64>,
     pub x_b1: DMatrix<f64>,
-    pub x_b2: DMatrix<f64>,
-    pub x_om: DMatrix<f64>,
-    pub x_rho: DMatrix<f64>,
+    /// List of design matrices for slope changes at each breakpoint
+    pub x_deltas: Vec<DMatrix<f64>>,
+    /// List of design matrices for breakpoint locations
+    pub x_om: Vec<DMatrix<f64>>,
+    /// List of design matrices for transition sharpness
+    pub x_rho: Vec<DMatrix<f64>>,
     /// 0-based group indices for b0 random intercept; -1 if observation has no RE
     pub group_b0: Vec<i32>,
     pub n_groups_b0: usize,
     pub n: usize,
+    pub n_breakpoints: usize,
 }
 
 // ---------------------------------------------------------------------------
 // Prior hyperparameters
 // ---------------------------------------------------------------------------
 
-/// Priors for all regression coefficients, stored as flat vectors ordered:
-/// [beta_b0 (p_b0), beta_b1 (p_b1), beta_b2 (p_b2), beta_om (p_om), beta_rho (p_rho)]
+/// Priors for all regression coefficients.
+/// Organized by parameter group.
 pub struct Priors {
-    pub mean: Vec<f64>,
-    pub sd: Vec<f64>,
-    /// Lower bound for each coefficient (-INF if unconstrained)
-    pub lb: Vec<f64>,
-    /// Upper bound for each coefficient (+INF if unconstrained)
-    pub ub: Vec<f64>,
+    pub b0_mean: Vec<f64>,
+    pub b0_sd: Vec<f64>,
+    pub b0_lb: Vec<f64>,
+    pub b0_ub: Vec<f64>,
+
+    pub b1_mean: Vec<f64>,
+    pub b1_sd: Vec<f64>,
+    pub b1_lb: Vec<f64>,
+    pub b1_ub: Vec<f64>,
+
+    pub delta_mean: Vec<Vec<f64>>,
+    pub delta_sd: Vec<Vec<f64>>,
+    pub delta_lb: Vec<Vec<f64>>,
+    pub delta_ub: Vec<Vec<f64>>,
+
+    pub om_mean: Vec<Vec<f64>>,
+    pub om_sd: Vec<Vec<f64>>,
+    pub om_lb: Vec<Vec<f64>>,
+    pub om_ub: Vec<Vec<f64>>,
+
+    pub rho_mean: Vec<Vec<f64>>,
+    pub rho_sd: Vec<Vec<f64>>,
+    pub rho_lb: Vec<Vec<f64>>,
+    pub rho_ub: Vec<Vec<f64>>,
+
     pub sigma_shape: f64,
     pub sigma_scale: f64,
     pub sigma_u_shape: f64,
     pub sigma_u_scale: f64,
+
     pub p_b0: usize,
     pub p_b1: usize,
-    pub p_b2: usize,
-    pub p_om: usize,
-    pub p_rho: usize,
-    /// Cached flag: true if any b0, b1, or b2 coefficient has finite bounds
-    pub has_lin_bounds: bool,
-}
-
-impl Priors {
-    pub fn b0_range(&self) -> std::ops::Range<usize> {
-        0..self.p_b0
-    }
-    pub fn b1_range(&self) -> std::ops::Range<usize> {
-        self.p_b0..(self.p_b0 + self.p_b1)
-    }
-    pub fn b2_range(&self) -> std::ops::Range<usize> {
-        (self.p_b0 + self.p_b1)..(self.p_b0 + self.p_b1 + self.p_b2)
-    }
-    pub fn om_range(&self) -> std::ops::Range<usize> {
-        let s = self.p_b0 + self.p_b1 + self.p_b2;
-        s..(s + self.p_om)
-    }
-    pub fn rho_range(&self) -> std::ops::Range<usize> {
-        let s = self.p_b0 + self.p_b1 + self.p_b2 + self.p_om;
-        s..(s + self.p_rho)
-    }
-
-    /// True if any linear coefficient (b0, b1, or b2) has a finite bound.
-    /// This is precomputed at construction for O(1) lookup.
-    pub fn lin_has_finite_bounds(&self) -> bool {
-        self.has_lin_bounds
-    }
+    pub p_deltas: Vec<usize>,
+    pub p_om: Vec<usize>,
+    pub p_rho: Vec<usize>,
 }
 
 // ---------------------------------------------------------------------------
-// Spike-and-slab configuration (used by run_chain_ss)
+// Spike-and-slab configuration
 // ---------------------------------------------------------------------------
 
-/// Per-coefficient spike-and-slab configuration for b2 variable selection.
-///
-/// When `spike_mask[k]` is true, coefficient k of b2 has a spike-and-slab
-/// prior: with probability `pi[k]`, it follows the slab (normal prior); with
-/// probability `1 - pi[k]`, it is exactly zero.  When a b2 coefficient is
-/// spiked to zero, the same-named coefficients in omega and rho (if they
-/// exist) are also zeroed via `om_map` and `rho_map`.
 pub struct SpikeSlabConfig {
-    /// Which b2 coefficients are eligible for spike-and-slab (length p_b2)
-    pub spike_mask: Vec<bool>,
-    /// Initial/fixed inclusion probability for each b2 coefficient (length p_b2)
-    pub pi_init: Vec<f64>,
-    /// Mapping from b2 coefficient index → omega coefficient index (-1 if no match)
-    pub om_map: Vec<i32>,
-    /// Mapping from b2 coefficient index → rho coefficient index (-1 if no match)
-    pub rho_map: Vec<i32>,
-    /// Beta hyperprior shape parameter a (0 = fixed pi, >0 = learn pi)
+    /// Whether b1 is eligible for spike-and-slab
+    pub b1_spike_mask: Vec<bool>,
+    /// Spike-and-slab for each breakpoint's delta coefficients
+    pub delta_spike_mask: Vec<Vec<bool>>,
+
+    pub pi_init: f64,
+
+    /// Beta hyperprior shape parameters for pi (if learn_pi > 0)
     pub beta_a: f64,
-    /// Beta hyperprior shape parameter b
     pub beta_b: f64,
 }
 
@@ -103,58 +90,59 @@ pub struct SpikeSlabConfig {
 #[derive(Clone)]
 pub struct State {
     pub beta_b0: DVector<f64>,
-    pub u_b0: DVector<f64>,   // random intercepts; length = n_groups_b0
+    pub u_b0: DVector<f64>,
     pub beta_b1: DVector<f64>,
-    pub beta_b2: DVector<f64>,
-    pub beta_om: DVector<f64>,
-    pub beta_rho: DVector<f64>,
-    pub sigma: f64,    // residual SD
-    pub sigma_u: f64,  // random-effect SD (unused when n_groups == 0)
-    /// Spike-and-slab inclusion indicators (length p_b2; all true in base model)
-    pub gamma: Vec<bool>,
-    /// Current inclusion probability (sampled when Beta hyperprior is active)
+    pub beta_deltas: Vec<DVector<f64>>,
+    pub beta_om: Vec<DVector<f64>>,
+    pub beta_rho: Vec<DVector<f64>>,
+    pub sigma: f64,
+    pub sigma_u: f64,
+    /// Inclusion indicators for b1
+    pub gamma_b1: Vec<bool>,
+    /// Inclusion indicators for each breakpoint's deltas
+    pub gamma_deltas: Vec<Vec<bool>>,
+    /// Current inclusion probability
     pub pi: f64,
 }
 
 impl State {
-    /// Number of scalar parameters stored per draw (base model, no gamma)
-    pub fn n_params(&self) -> usize {
-        self.beta_b0.len()
-            + self.u_b0.len()
-            + self.beta_b1.len()
-            + self.beta_b2.len()
-            + self.beta_om.len()
-            + self.beta_rho.len()
-            + 2 // sigma, sigma_u
+    pub fn n_params(&self, include_gammas: bool, learn_pi: bool) -> usize {
+        let mut n = self.beta_b0.len() + self.u_b0.len() + self.beta_b1.len() + 2;
+        for i in 0..self.beta_deltas.len() {
+            n += self.beta_deltas[i].len();
+            n += self.beta_om[i].len();
+            n += self.beta_rho[i].len();
+        }
+        if include_gammas {
+            // Inclusion indicators
+            n += self.gamma_b1.len();
+            for g_vec in &self.gamma_deltas {
+                n += g_vec.len();
+            }
+        }
+        if learn_pi { n += 1; }
+        n
     }
 
-    /// Number of parameters including gamma indicators and pi
-    pub fn n_params_ss(&self, learn_pi: bool) -> usize {
-        self.n_params() + self.gamma.len() + if learn_pi { 1 } else { 0 }
-    }
-
-    /// Flatten to a contiguous Vec for storage in the draw matrix.
-    /// Order: beta_b0 | u_b0 | beta_b1 | beta_b2 | beta_om | beta_rho | sigma | sigma_u
-    pub fn to_vec(&self) -> Vec<f64> {
-        let mut v = Vec::with_capacity(self.n_params());
+    pub fn to_vec(&self, include_gammas: bool, learn_pi: bool) -> Vec<f64> {
+        let mut v = Vec::with_capacity(self.n_params(include_gammas, learn_pi));
         v.extend_from_slice(self.beta_b0.as_slice());
         v.extend_from_slice(self.u_b0.as_slice());
         v.extend_from_slice(self.beta_b1.as_slice());
-        v.extend_from_slice(self.beta_b2.as_slice());
-        v.extend_from_slice(self.beta_om.as_slice());
-        v.extend_from_slice(self.beta_rho.as_slice());
+        for b in &self.beta_deltas { v.extend_from_slice(b.as_slice()); }
+        for b in &self.beta_om { v.extend_from_slice(b.as_slice()); }
+        for b in &self.beta_rho { v.extend_from_slice(b.as_slice()); }
         v.push(self.sigma);
         v.push(self.sigma_u);
-        v
-    }
-
-    /// Flatten to Vec including gamma indicators and optionally pi.
-    /// Order: beta_b0 | u_b0 | beta_b1 | beta_b2 | beta_om | beta_rho | sigma | sigma_u | gamma [| pi]
-    pub fn to_vec_ss(&self, learn_pi: bool) -> Vec<f64> {
-        let mut v = self.to_vec();
-        for &g in &self.gamma {
-            v.push(if g { 1.0 } else { 0.0 });
+        
+        if include_gammas {
+            // Gammas
+            for &g in &self.gamma_b1 { v.push(if g { 1.0 } else { 0.0 }); }
+            for g_vec in &self.gamma_deltas {
+                for &g in g_vec { v.push(if g { 1.0 } else { 0.0 }); }
+            }
         }
+        
         if learn_pi {
             v.push(self.pi);
         }
@@ -165,60 +153,72 @@ impl State {
     // Derived quantities
     // ------------------------------------------------------------------
 
-    /// omega_i = X_om * beta_om  (n-vector)
-    pub fn omega_vec(&self, x_om: &DMatrix<f64>) -> DVector<f64> {
-        x_om * &self.beta_om
+    pub fn omega_vec(&self, k: usize, x_om: &DMatrix<f64>) -> DVector<f64> {
+        x_om * &self.beta_om[k]
     }
 
-    /// rho_i = X_rho * beta_rho  (n-vector)
-    pub fn rho_vec(&self, x_rho: &DMatrix<f64>) -> DVector<f64> {
-        x_rho * &self.beta_rho
+    pub fn rho_vec(&self, k: usize, x_rho: &DMatrix<f64>) -> DVector<f64> {
+        x_rho * &self.beta_rho[k]
     }
 
-    /// Compute the model mean for every observation.
-    /// mu_i = b0_i + b1_i * d_i + b2_i * d_i * sigma(d_i * rho_i)
-    /// where d_i = tau_i - omega_i
     pub fn means(&self, data: &ModelData) -> DVector<f64> {
-        let omega = self.omega_vec(&data.x_om);
-        let rho = self.rho_vec(&data.x_rho);
-
-        // d_i = tau_i - omega_i
-        let d: DVector<f64> = data.tau.zip_map(&omega, |t, w| t - w);
-        // s_i = sigmoid(d_i * rho_i)
-        let s: DVector<f64> = d.zip_map(&rho, |di, ri| sigmoid(di * ri));
-
-        let b0_fixed = &data.x_b0 * &self.beta_b0;
-        let b1_vals = &data.x_b1 * &self.beta_b1;
-        let b2_vals = &data.x_b2 * &self.beta_b2;
-
-        // b1_i * d_i  and  b2_i * d_i * s_i
-        let b1_contrib: DVector<f64> = d.zip_map(&b1_vals, |di, b1i| di * b1i);
-        let b2_contrib: DVector<f64> =
-            d.zip_map(&s, |di, si| di * si)
-                .zip_map(&b2_vals, |ds, b2i| ds * b2i);
-
-        let mut mu = b0_fixed + b1_contrib + b2_contrib;
+        let n = data.n;
+        let mut mu = &data.x_b0 * &self.beta_b0;
 
         // Add random intercepts
         if data.n_groups_b0 > 0 {
-            for i in 0..data.n {
+            for i in 0..n {
                 let g = data.group_b0[i];
-                if g >= 0 {
-                    mu[i] += self.u_b0[g as usize];
-                }
+                if g >= 0 { mu[i] += self.u_b0[g as usize]; }
+            }
+        }
+
+        // Segment 1 (initial slope)
+        let mut b1_eff = self.beta_b1.clone();
+        for j in 0..b1_eff.len() {
+            if !self.gamma_b1[j] { b1_eff[j] = 0.0; }
+        }
+        let b1_vals = &data.x_b1 * &b1_eff;
+
+        if data.n_breakpoints > 0 {
+            // Center at first breakpoint for segment 1
+            let om1 = self.omega_vec(0, &data.x_om[0]);
+            for i in 0..n {
+                mu[i] += b1_vals[i] * (data.tau[i] - om1[i]);
+            }
+        } else {
+            // Linear model fallback
+            for i in 0..n {
+                mu[i] += b1_vals[i] * data.tau[i];
+            }
+        }
+
+        // Breakpoints
+        for k in 0..data.n_breakpoints {
+            let om = self.omega_vec(k, &data.x_om[k]);
+            let rho = self.rho_vec(k, &data.x_rho[k]);
+            
+            let mut bd_eff = self.beta_deltas[k].clone();
+            for j in 0..bd_eff.len() {
+                if !self.gamma_deltas[k][j] { bd_eff[j] = 0.0; }
+            }
+            let b_delta = &data.x_deltas[k] * &bd_eff;
+            
+            for i in 0..n {
+                let di = data.tau[i] - om[i];
+                let si = sigmoid(di * rho[i]);
+                mu[i] += b_delta[i] * di * si;
             }
         }
 
         mu
     }
-
 }
 
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
 
-/// Numerically stable logistic sigmoid
 pub fn sigmoid(x: f64) -> f64 {
     if x >= 0.0 {
         1.0 / (1.0 + (-x).exp())
@@ -228,8 +228,6 @@ pub fn sigmoid(x: f64) -> f64 {
     }
 }
 
-/// Log-density of an (optionally truncated) normal prior.
-/// Returns -INF if any value violates its bounds.
 pub fn log_truncated_normal_prior(
     values: &[f64],
     means: &[f64],

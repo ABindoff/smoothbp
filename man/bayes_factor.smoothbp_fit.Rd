@@ -2,73 +2,19 @@
 % Please edit documentation in R/bridge_sampling.R
 \name{bayes_factor.smoothbp_fit}
 \alias{bayes_factor.smoothbp_fit}
-\title{Bayes factor comparison for smoothbp_fit objects}
+\title{Bayes Factor for smoothbp_fit}
 \usage{
 \method{bayes_factor}{smoothbp_fit}(x1, x2, log = FALSE, ...)
 }
 \arguments{
-\item{x1}{A \code{smoothbp_fit} object (the numerator model).}
+\item{x1}{A \code{smoothbp_fit} object.}
 
-\item{x2}{A second model object: another \code{smoothbp_fit}, a \code{brmsfit}, or any
-object with a \code{bridge_sampler} method.}
+\item{x2}{A \code{smoothbp_fit} object.}
 
-\item{log}{Logical; if \code{TRUE} return the log Bayes factor. Default \code{FALSE}.}
+\item{log}{Logical; if TRUE, return log Bayes Factor.}
 
-\item{...}{Additional arguments passed to \code{bridge_sampler()}.}
-}
-\value{
-A \code{bf_bridge} object from the \strong{bridgesampling} package. Print it
-to see the Bayes factor (BF10 = evidence for \code{x} over \code{y}).
+\item{...}{Passed to \code{\link[bridgesampling]{bridge_sampler}}.}
 }
 \description{
-Computes the Bayes factor between a \code{smoothbp_fit} model and another
-Bayesian model. The second model (\code{y}) may be another \code{smoothbp_fit} or a
-\code{brmsfit} object (or any object with a \code{bridge_sampler} method).
-}
-\details{
-The Bayes factor BF10 = p(data | model x) / p(data | model y) is computed
-by dividing the marginal likelihoods obtained via bridge sampling.
-
-\strong{Important}: if \code{y} is a \code{brmsfit}, it must have been fitted with
-\code{save_pars = save_pars(all = TRUE)} so that bridge sampling can access all
-posterior draws.
-
-Because S3 dispatch uses the class of the first argument, this function
-handles the case where \code{x} is a \code{smoothbp_fit}. If your \code{brmsfit} is the
-model you want in the numerator, either reverse the argument order and take
-the reciprocal, or call \code{bridge_sampler()} on both models and use
-\code{bridgesampling::bayes_factor()} directly.
-\subsection{Checking reliability}{
-
-This function runs bridge sampling internally and does not expose the
-intermediate \code{bridge} objects.  To inspect the reliability of each
-marginal likelihood estimate (via \code{\link[bridgesampling:error_measures]{bridgesampling::error_measures()}}),
-call \code{bridge_sampler()} on each model separately:
-
-\if{html}{\out{<div class="sourceCode r">}}\preformatted{bs_x <- bridge_sampler(x)
-bs_y <- bridge_sampler(y)
-bridgesampling::error_measures(bs_x)  # check $cv
-bridgesampling::bayes_factor(bs_x, bs_y)
-}\if{html}{\out{</div>}}
-
-A coefficient of variation (\verb{$cv}) below 0.05 is ideal.  Above ~0.15,
-treat the Bayes factor as approximate and consider increasing \code{iter}.
-}
-}
-\examples{
-\dontrun{
-library(brms)
-
-# Fit models
-fit_piece  <- smoothbp(y ~ tau, b0 = ~1 + (1|subject), data = d)
-fit_linear <- brm(y ~ tau + (1|subject), data = d,
-                  save_pars = save_pars(all = TRUE))
-
-# Bayes factor: piecewise (numerator) vs linear (denominator)
-bayes_factor(fit_piece, fit_linear)
-
-# Two smoothbp models
-fit_grouped <- smoothbp(y ~ tau, b0 = ~group + (1|subject), data = d)
-bayes_factor(fit_piece, fit_grouped)  # x1 vs x2
-}
+Bayes Factor for smoothbp_fit
 }

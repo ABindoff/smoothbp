@@ -14,61 +14,9 @@ NULL
 #' @useDynLib smoothbp, .registration = TRUE
 NULL
 
-#' Run Metropolis-within-Gibbs sampler for the smooth change-point model.
-#'
-#' @param y           Response vector (n).
-#' @param tau         Time variable (n).
-#' @param x_b0        Design matrix for b0 as flat column-major vector.
-#' @param p_b0        Number of columns in x_b0.
-#' @param x_b1        Design matrix for b1.
-#' @param p_b1        Number of columns in x_b1.
-#' @param x_b2        Design matrix for b2.
-#' @param p_b2        Number of columns in x_b2.
-#' @param x_om        Design matrix for omega.
-#' @param p_om        Number of columns in x_om.
-#' @param x_rho       Design matrix for rho.
-#' @param p_rho       Number of columns in x_rho.
-#' @param group_b0    0-based group indices for b0 random intercept (-1 = no RE).
-#' @param n_groups_b0 Number of RE groups (0 = no random effect).
-#' @param prior_mean  Prior means concatenated in the order
-#'                    `b0`, `b1`, `b2`, `omega`, `rho`.
-#' @param prior_sd    Prior SDs (same order).
-#' @param prior_lb    Lower bounds (-Inf for unconstrained).
-#' @param prior_ub    Upper bounds (+Inf for unconstrained).
-#' @param sigma_shape Shape of InvGamma prior on residual variance.
-#' @param sigma_scale Scale of InvGamma prior on residual variance.
-#' @param sigma_u_shape Shape of InvGamma prior on RE variance.
-#' @param sigma_u_scale Scale of InvGamma prior on RE variance.
-#' @param step_om     Initial step size for omega coefficients (scalar MH
-#'                    proposal SD when p_om == 1; initial HMC leapfrog
-#'                    step size when p_om >= 2).
-#' @param step_rho    Initial step size for rho coefficients (same semantics
-#'                    as step_om).
-#' @param target_accept Target acceptance probability for HMC dual averaging
-#'                    (used only when p_om >= 2 or p_rho >= 2).  Recommended
-#'                    range 0.6–0.85; default 0.65.
-#' @param chains      Number of independent chains.
-#' @param iter        Total iterations per chain (warmup + sampling).
-#' @param warmup      Number of warmup iterations discarded.
-#' @param seed        Integer random seed.
-#' @param verbose     Print progress to the R console.
-#' @param n_cores     Number of threads for parallel chain execution.
-#'                    1 = sequential (with progress bar); > 1 = parallel
-#'                    (progress bar suppressed; chains run concurrently).
-#' @return List with one matrix per chain (rows = post-warmup draws, cols = parameters).
-#' @export
-run_mcmc <- function(y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, chains, iter, warmup, seed, verbose, n_cores) .Call(wrap__run_mcmc, y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, chains, iter, warmup, seed, verbose, n_cores)
+#' Run Metropolis-within-Gibbs sampler for the multi-breakpoint model.
+run_mcmc <- function(y, tau, x_b0, p_b0, x_b1, p_b1, x_deltas, p_deltas, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean_b0, prior_sd_b0, prior_lb_b0, prior_ub_b0, prior_mean_b1, prior_sd_b1, prior_lb_b1, prior_ub_b1, prior_mean_deltas, prior_sd_deltas, prior_lb_deltas, prior_ub_deltas, prior_mean_om, prior_sd_om, prior_lb_om, prior_ub_om, prior_mean_rho, prior_sd_rho, prior_lb_rho, prior_ub_rho, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, chains, iter, warmup, seed, verbose, n_cores) .Call(wrap__run_mcmc, y, tau, x_b0, p_b0, x_b1, p_b1, x_deltas, p_deltas, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean_b0, prior_sd_b0, prior_lb_b0, prior_ub_b0, prior_mean_b1, prior_sd_b1, prior_lb_b1, prior_ub_b1, prior_mean_deltas, prior_sd_deltas, prior_lb_deltas, prior_ub_deltas, prior_mean_om, prior_sd_om, prior_lb_om, prior_ub_om, prior_mean_rho, prior_sd_rho, prior_lb_rho, prior_ub_rho, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, chains, iter, warmup, seed, verbose, n_cores)
 
-#' Run spike-and-slab variable selection sampler.
-#'
-#' Same interface as run_mcmc plus spike-and-slab configuration:
-#' @param spike_mask  Integer vector (0/1) of length p_b2: which b2 coefficients
-#'                    are eligible for spike-and-slab.
-#' @param spike_pi    Double vector of length p_b2: prior inclusion probability.
-#' @param om_map      Integer vector of length p_b2: for each b2 coef, the index
-#'                    of the corresponding omega coefficient (-1 if no match).
-#' @param rho_map     Integer vector of length p_b2: same for rho.
-#' @export
-run_mcmc_ss <- function(y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, spike_mask, spike_pi, om_map, rho_map, pi_beta_a, pi_beta_b, chains, iter, warmup, seed, verbose, n_cores) .Call(wrap__run_mcmc_ss, y, tau, x_b0, p_b0, x_b1, p_b1, x_b2, p_b2, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean, prior_sd, prior_lb, prior_ub, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, spike_mask, spike_pi, om_map, rho_map, pi_beta_a, pi_beta_b, chains, iter, warmup, seed, verbose, n_cores)
+run_mcmc_ss <- function(y, tau, x_b0, p_b0, x_b1, p_b1, x_deltas, p_deltas, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean_b0, prior_sd_b0, prior_lb_b0, prior_ub_b0, prior_mean_b1, prior_sd_b1, prior_lb_b1, prior_ub_b1, prior_mean_deltas, prior_sd_deltas, prior_lb_deltas, prior_ub_deltas, prior_mean_om, prior_sd_om, prior_lb_om, prior_ub_om, prior_mean_rho, prior_sd_rho, prior_lb_rho, prior_ub_rho, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, b1_spike_mask, delta_spike_mask, pi_init, pi_beta_a, pi_beta_b, chains, iter, warmup, seed, verbose, n_cores) .Call(wrap__run_mcmc_ss, y, tau, x_b0, p_b0, x_b1, p_b1, x_deltas, p_deltas, x_om, p_om, x_rho, p_rho, group_b0, n_groups_b0, prior_mean_b0, prior_sd_b0, prior_lb_b0, prior_ub_b0, prior_mean_b1, prior_sd_b1, prior_lb_b1, prior_ub_b1, prior_mean_deltas, prior_sd_deltas, prior_lb_deltas, prior_ub_deltas, prior_mean_om, prior_sd_om, prior_lb_om, prior_ub_om, prior_mean_rho, prior_sd_rho, prior_lb_rho, prior_ub_rho, sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale, step_om, step_rho, target_accept, b1_spike_mask, delta_spike_mask, pi_init, pi_beta_a, pi_beta_b, chains, iter, warmup, seed, verbose, n_cores)
 
 # nolint end

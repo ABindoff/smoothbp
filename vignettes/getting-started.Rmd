@@ -13,12 +13,14 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
 
 ## Overview
 
-`smoothbp` fits hierarchical piecewise regression models in which the
-transition between two linear regimes is smoothed by a logistic sigmoid.
-The observation-level mean function is:
+`smoothbp` fits hierarchical piecewise regression models with **multiple
+change-points**, each smoothed by a logistic sigmoid. The general mean function
+for $K$ change-points is:
 
 $$
-\mu_i = b0_i + b1_i(\tau_i - \omega_i) + b2_i(\tau_i - \omega_i)\,\sigma\!\left[(\tau_i - \omega_i)\rho_i\right]
+\mu_i = b0_i + b1_i(\tau_i - \omega_{1i}) +
+  \sum_{k=1}^{K} \delta_{ki}(\tau_i - \omega_{ki})\,
+  \sigma\!\left[(\tau_i - \omega_{ki})\rho_{ki}\right]
 $$
 
 where
@@ -26,42 +28,47 @@ where
 | Symbol | Role |
 |--------|------|
 | $\tau$ | time / covariate |
-| $\omega$ | change-point location |
-| $\rho$ | transition sharpness ($\rho \to \infty$ → hard kink) |
-| $b0$ | level at the change-point |
-| $b1$ | pre-change slope |
-| $b1 + b2$ | post-change slope (asymptotically) |
+| $\omega_k$ | location of the $k$-th change-point |
+| $\rho_k$ | transition sharpness for change-point $k$ ($\rho \to \infty$ → hard kink) |
+| $b0$ | level at the first change-point |
+| $b1$ | pre-change slope (anchored at $\omega_1$) |
+| $\delta_k$ | slope change attributable to change-point $k$ |
 
-Each of $b0$, $b1$, $b2$, $\omega$, $\rho$ has its own linear predictor
-specified via a formula. $b0$ may also include a random intercept
-`(1 | group)` for clustered / repeated-measures data.
+When $K = 0$ the model reduces to a standard hierarchical linear regression.
+When $K = 1$ it matches the classic two-phase piecewise model.
 
-Posterior inference uses a **Metropolis-within-Gibbs sampler written in
-Rust** for speed:
+Each parameter has its own linear predictor specified via a formula.
+`b0` may also include a random intercept `(1 | group)` for clustered /
+repeated-measures data.
 
-- $b0$, $b1$, $b2$, random intercepts — exact Gibbs (conjugate normal,
-  non-centred reparameterisation for random effects).
-- $\omega$, $\rho$ — random-walk Metropolis with adaptive step sizes
-  during warmup targeting ~23% acceptance.
+Posterior inference uses a **Metropolis-within-Gibbs sampler written in Rust**:
+
+- $b0$, $b1$, $\delta_k$, random intercepts — exact Gibbs (conjugate normal).
+- $\omega_k$, $\rho_k$ — Hamiltonian Monte Carlo with adaptive mass matrix during warmup.
 - $\sigma$, $\sigma_u$ — exact Gibbs (inverse-gamma conjugate).
+- $\gamma_k$ (spike-and-slab) — Gibbs with Bernoulli likelihood.
 
 ---
 
 ## Simulating data
 
-`simulate_smoothbp()` generates synthetic data from the model.  It is
+`simulate_smoothbp()` generates synthetic data from the model. It is
 useful for testing and for understanding how the parameters relate to the
 observable trajectory shape.
 
 ```{r simulate}
-library(smoothbp)
+if (requireNamespace("pkgload", quietly = TRUE)) {
+  pkgload::load_all("..")
+} else {
+  library(smoothbp)
+}
 
 dat <- simulate_smoothbp(
   n_subj    = 20,
   n_obs     = 8,
   b0        = 5.0,   # level at change-point
   b1        = -0.3,  # pre-change slope
-  b2        =  1.2,  # change in slope
+  b2        =  1.2,  # slope change (delta_1)
   omega     =  3.0,  # change-point location
   rho       =  4.0,  # transition sharpness
   sigma     =  0.4,  # residual SD
@@ -71,97 +78,91 @@ dat <- simulate_smoothbp(
 )
 
 head(dat)
-#>   subject       tau       mu        y
-#> 1       1 0.0000000 6.588... 7.107...
-#> ...
-
-# Inspect the data-generating values
 true_params(dat)
-#> Data-generating parameters:
-#>   b0:        5
-#>   b1:        -0.3
-#>   ...
-```
-
-The returned data frame carries the true values as an attribute:
-
-```{r true-params-attr}
-attr(dat, "true_params")
-```
-
-Unbalanced designs are supported by passing a vector to `n_obs`:
-
-```{r unbalanced}
-dat_unbal <- simulate_smoothbp(n_subj = 10, n_obs = c(4, 6, 8, 5, 7, 6, 8, 4, 5, 6))
 ```
 
 ---
 
 ## Fitting the model
 
-Pass a two-sided formula identifying the response and time variable, then
-one one-sided formula per parameter component.
+### Zero change-points (linear fallback)
 
-```{r fit}
-fit <- smoothbp(
+When `deltas`, `omega`, and `rho` are empty lists, `smoothbp` fits a
+standard hierarchical linear regression:
+
+```{r fit-zero-bp}
+fit0 <- smoothbp(
   formula = y ~ tau,
-  b0      = ~ 1 + (1 | subject),   # random intercept per subject
+  b0      = ~ 1 + (1 | subject),
   b1      = ~ 1,
-  b2      = ~ 1,
-  omega   = ~ 1,
-  rho     = ~ 1,
+  deltas  = list(),   # no change-points
+  omega   = list(),
+  rho     = list(),
+  data    = dat,
+  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
+)
+summary(fit0)
+```
+
+### One change-point
+
+```{r fit-one-bp}
+fit1 <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),
+  b1      = ~ 1,
+  deltas  = list(~ 1),          # one slope change
+  omega   = list(~ 1),          # one change-point location
+  rho     = list(~ 1),          # one sharpness
   data    = dat,
   priors  = smoothbp_priors(
-    omega = prior_normal(3, 2, lb = 0)
+    omega = list(prior_normal(3, 2, lb = 0))
   ),
-  chains  = 4L,
-  iter    = 2000L,
-  warmup  = 1000L,
-  seed    = 42L
+  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
+)
+summary(fit1)
+```
+
+### Multiple change-points
+
+Pass lists of equal length to `deltas`, `omega`, and `rho`. Each list element
+is a formula for that change-point's sub-model.
+
+```{r fit-multi-bp}
+fit3 <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),
+  b1      = ~ 1,
+  deltas  = list(~ 1, ~ 1, ~ 1),   # three possible slope changes
+  omega   = list(~ 1, ~ 1, ~ 1),
+  rho     = list(~ 1, ~ 1, ~ 1),
+  data    = dat,
+  priors  = smoothbp_priors(
+    omega = list(
+      prior_normal(2, 1, lb = 0),
+      prior_normal(4, 1, lb = 0),
+      prior_normal(5, 1, lb = 0)
+    )
+  ),
+  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
 )
 ```
 
-### Progress bar
+> **Tip**: If you are unsure how many change-points are present, use
+> `smoothbp_ss()` with spike-and-slab regularization — see
+> `vignette("spike-and-slab")`.
 
-While sampling, each chain prints an ASCII progress bar that distinguishes
-warmup from sampling:
-
-```
-Chain 1/4
-  Chain 1/4 [                    ]   0%  (warmup  )  iter 0/2000
-  Chain 1/4 [~~                  ]  10%  (warmup  )  iter 200/2000
-  ...
-  Chain 1/4 [~~~~~~~~~~          ]  50%  (sampling)  iter 1000/2000
-  Chain 1/4 [~~~~~~~~~~==        ]  60%  (sampling)  iter 1200/2000
-  ...
-  Chain 1/4 [~~~~~~~~~~==========] 100%  (done    )  iter 2000/2000
-```
-
-`~` marks the warmup portion; `=` marks post-warmup sampling.  Pass
-`.verbose = FALSE` to suppress output.
-
-### Parallel chains
-
-By default chains run sequentially with the full progress bar.  Pass
-`cores` to run them in parallel using Rayon:
+### Progress and parallel chains
 
 ```{r fit-parallel}
-fit <- smoothbp(
+fit1 <- smoothbp(
   formula = y ~ tau,
   b0      = ~ 1 + (1 | subject),
   data    = dat,
-  priors  = smoothbp_priors(omega = prior_normal(3, 2, lb = 0)),
   chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L,
   cores   = 4L    # run all 4 chains concurrently
 )
-#> Running 4 chains in parallel on 4 thread(s)...
-#> All 4 chains complete.
 ```
-
-The per-iteration progress bar is suppressed in parallel mode (interleaved
-output from multiple threads would be unreadable); only the start/done
-messages are printed.  Results are **identical** to the sequential run for
-the same `seed` — each chain's seed is derived deterministically.
 
 To make parallel the default for a project, add this to `.Rprofile`:
 
@@ -169,26 +170,31 @@ To make parallel the default for a project, add this to `.Rprofile`:
 options(smoothbp.cores = parallel::detectCores())
 ```
 
-### Posterior summary
+---
+
+## Posterior summary
 
 `print()` displays results in labelled sections; `summary()` returns a
-data frame.  The `effects` argument (accepted by both) filters which
-parameters are shown — mirroring `brms`:
+data frame. The `effects` argument filters which parameters are shown:
 
 ```{r summary}
-print(fit)                               # all sections (default)
-print(fit, effects = "fixed")            # population-level only
-summary(fit, effects = "fixed")          # same, as a data frame
-summary(fit, effects = c("fixed", "ran_pars"))  # fixed + sigma_u, no u[j]
-summary(fit, effects = "ran_vals")       # individual u[j] only
+print(fit1)                                        # all sections (default)
+print(fit1, effects = "fixed")                     # population-level only
+summary(fit1, effects = "fixed")                   # same, as a data frame
+summary(fit1, effects = c("fixed", "ran_pars"))    # fixed + sigma_u, no u[j]
 ```
 
-| `effects` value | Parameters shown |
-|-----------------|-----------------|
-| `"fixed"` | Regression coefficients + $\sigma$ |
-| `"ran_pars"` | Random-effect SD $\sigma_u$ |
-| `"ran_vals"` | Individual deviations $u_j$ |
-| `"all"` | Everything (default) |
+Parameter names follow the convention:
+
+| Name | Meaning |
+|------|---------|
+| `b0_(Intercept)` | Intercept (level at first change-point) |
+| `b1_(Intercept)` | Pre-change slope |
+| `delta1_(Intercept)` | Slope change at change-point 1 |
+| `omega1_(Intercept)` | Change-point 1 location |
+| `rho1_(Intercept)` | Change-point 1 sharpness |
+| `sigma` | Residual SD |
+| `sigma_u` | Between-group SD (random intercept) |
 
 ---
 
@@ -196,62 +202,22 @@ summary(fit, effects = "ran_vals")       # individual u[j] only
 
 ### Trace plots with mixing indicators
 
-`trace_plot()` annotates each panel with $\hat{R}$ and bulk-ESS, and
-highlights poorly mixing parameters with a red background.
-
 ```{r trace}
-trace_plot(fit)
+plot(fit1)        # alias for trace_plot(fit1)
+trace_plot(fit1, type = "both")   # trace + density
 ```
 
 Parameters with $\hat{R} > 1.05$ or bulk-ESS $< 100$ are flagged with a
-⚠ symbol in the panel header, a red-tinted background, and a warning
-message listing the affected parameters.  The thresholds are adjustable:
+⚠ symbol and a red-tinted background. Thresholds are adjustable:
 
 ```{r trace-strict}
-trace_plot(fit, rhat_thresh = 1.01, ess_thresh = 400)
+trace_plot(fit1, rhat_thresh = 1.01, ess_thresh = 400)
 ```
-
-`type = "density"` or `type = "both"` produces posterior density overlays
-instead of (or alongside) the trace:
-
-```{r density}
-trace_plot(fit, type = "both")
-```
-
-`plot(fit)` is a convenient alias for `trace_plot(fit)`.
 
 ### Posterior predictive check
 
 ```{r pp-check}
-pp_check(fit)
-```
-
-Overlays the marginal predictive densities from 50 posterior draws over
-the observed response density.
-
----
-
-## Parameter recovery
-
-When fitting a model to data from `simulate_smoothbp()`, use
-`recovery_plot()` to compare the posterior against the known truth.
-
-```{r recovery}
-recovery_plot(fit, dat)
-```
-
-Each row shows one population-level parameter:
-
-- **Filled circle** — posterior mean
-- **Horizontal line** — 95% credible interval (width set by `level`)
-- **×** — true data-generating value
-- **Green** — interval contains truth; **red** — interval misses truth
-
-The subtitle reports the overall coverage count and turns red if any
-interval misses the truth.
-
-```{r recovery-90}
-recovery_plot(fit, dat, level = 0.90)
+pp_check(fit1)
 ```
 
 ---
@@ -259,84 +225,74 @@ recovery_plot(fit, dat, level = 0.90)
 ## Prior specification
 
 `smoothbp_priors()` accepts either a single prior applied to all
-coefficients of a component, or a named list for per-coefficient overrides.
-All priors are truncated normal (via `prior_normal()`) or inverse-gamma
-(via `prior_invgamma()`).
+coefficients of a component, or a named list. For multi-breakpoint models,
+`omega` and `rho` accept a **list of priors** (one per breakpoint):
 
 ```{r priors}
 smoothbp_priors(
   b0    = prior_normal(0, 10),
   b1    = prior_normal(0, 5),
-  b2    = prior_normal(0, 5),
   omega = list(
-    "(Intercept)"    = prior_normal(3, 2, lb = 0, ub = 6),
-    "groupTreatment" = prior_normal(0, 2)
+    prior_normal(2, 1, lb = 0, ub = 4),   # change-point 1
+    prior_normal(5, 1, lb = 2)             # change-point 2
   ),
-  rho   = prior_normal(4, 2, lb = 0),
+  rho   = list(
+    prior_normal(4, 2, lb = 0),
+    prior_normal(4, 2, lb = 0)
+  ),
   sigma = prior_invgamma(shape = 2, scale = 1)
 )
 ```
 
-The `lb` and `ub` arguments to `prior_normal()` impose hard bounds.
-`omega` should always have `lb = 0` (it is a location on the time axis).
-`rho` should have `lb = 0` (sharpness must be positive).
+The `lb` and `ub` arguments impose hard bounds. `omega` should always have
+`lb = 0`. `rho` should have `lb = 0` (sharpness must be positive).
 
-### Spike-and-slab variable selection
+---
 
-When you have multiple covariates in the `b2` formula and want to identify
-which ones genuinely contribute to the slope change, `smoothbp_ss()` extends
-the model with spike-and-slab priors on the `b2` coefficients.  Covariates
-excluded by the spike are structurally zeroed — both their `b2` effect and
-the corresponding `omega`/`rho` terms are set to exactly zero.
+## Breakpoint selection with spike-and-slab
 
-See `vignette("spike-and-slab")` for a full tutorial with worked examples.
+When the number of change-points is unknown, fit a model with $K$ potential
+breakpoints using `smoothbp_ss()`. Each slope change $\delta_k$ has a binary
+inclusion indicator $\gamma_k$; the posterior mean of $\gamma_k$ is the
+**posterior inclusion probability (PIP)** for that breakpoint.
+
+```{r ss-overview}
+fit_ss <- smoothbp_ss(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),
+  b1      = ~ 1,
+  deltas  = list(~ 1, ~ 1, ~ 1),   # 3 candidate breakpoints
+  omega   = list(~ 1, ~ 1, ~ 1),
+  rho     = list(~ 1, ~ 1, ~ 1),
+  data    = dat,
+  spike   = prior_spike_slab(pi = 0.1, learn_pi = TRUE),
+  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
+)
+
+# Posterior inclusion probabilities per breakpoint
+pip(fit_ss)
+#> gamma_delta1_(Intercept) gamma_delta2_(Intercept) gamma_delta3_(Intercept)
+#>                    0.987                    0.063                    0.041
+```
+
+A PIP near 1 indicates that breakpoint is supported by the data; a low PIP
+indicates the slope change is not needed.
+
+See `vignette("spike-and-slab")` for a full tutorial.
 
 ---
 
 ## Hypothesis tests and evidence ratios
 
-`hypothesis()` evaluates directional hypotheses and linear contrasts directly
-against the posterior draws.
+`hypothesis()` evaluates directional hypotheses against the posterior draws.
 
 ```{r hypothesis-directional}
-# Is the change in slope positive?
-hypothesis(fit, "b2_(Intercept) > 0")
+# Is the slope change at breakpoint 1 positive?
+hypothesis(fit1, "delta1_(Intercept) > 0")
 
 # Does the change-point fall before time 4?
-hypothesis(fit, "omega_(Intercept) < 4")
+hypothesis(fit1, "omega1_(Intercept) < 4")
 ```
-
-Multiple hypotheses can be tested in one call:
-
-```{r hypothesis-multiple}
-hypothesis(fit, c(
-  "b2_(Intercept) > 0",
-  "b1_(Intercept) < 0",
-  "omega_(Intercept) < 4",
-  "b2_(Intercept) - b1_(Intercept) > 0"
-))
-```
-
-Passing an expression **without** a comparison operator returns the full
-posterior summary of that derived quantity:
-
-```{r hypothesis-contrast}
-# Posterior distribution of the net slope change
-hypothesis(fit, "b2_(Intercept) - b1_(Intercept)")
-```
-
-### How evidence ratios are computed
-
-For a directional hypothesis $H: A > B$ the function:
-
-1. Computes the contrast $c = A - B$ for every posterior draw.
-2. Reports $P(H) = P(c > 0)$ and the **evidence ratio**
-   $ER = P(H) \,/\, (1 - P(H))$.
-
-For $H: A < B$ the contrast is reversed so $P(H) = P(B - A > 0)$.  The
-reported `Estimate` and credible interval always describe the contrast
-(direction-adjusted), making it easy to see both the magnitude and the
-uncertainty of the effect alongside the probability.
 
 | Stars | ER | $P(H)$ |
 |-------|----|--------|
@@ -344,251 +300,55 @@ uncertainty of the effect alongside the probability.
 | `**` | > 19 | > 0.95 |
 | `*`  | > 3  | > 0.75 |
 
-Point-null tests ($H: \theta = 0$) are not supported because they require
-the Savage-Dickey density ratio.  For equivalence testing use
-`bayestestR::rope()` on `posterior_draws(fit)`.
-
 ---
 
 ## Model comparison
 
 ### Leave-one-out cross-validation (LOO-IC)
 
-Compare models using leave-one-out cross-validation with Pareto smoothed
-importance sampling:
-
 ```{r loo}
-# Compute LOO-IC for a single model
-loo1 <- loo(fit)
+# Compare 0-BP (linear) vs 1-BP vs 3-BP models
+loo0 <- loo(fit0)
+loo1 <- loo(fit1)
+loo3 <- loo(fit3)
 
-# Fit an alternative model and compare
-fit2 <- smoothbp(
-  formula = y ~ tau,
-  b0      = ~ Group + (1 | subject),  # different formula
-  b1      = ~ 1,
-  b2      = ~ 1,
-  omega   = ~ 1,
-  rho     = ~ 1,
-  data    = dat,
-  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
-)
-
-loo2 <- loo(fit2)
-
-# Compare: negative elpd_diff favours the first model
-loo::loo_compare(loo1, loo2)
-#>       elpd_diff se_diff
-#> fit1    0.0      0.0
-#> fit2  -45.2     10.8  # model 1 is preferred
+loo::loo_compare(loo0, loo1, loo3)
 ```
-
-Negative `elpd_diff` indicates that the first model has better expected
-log predictive density (higher is better).
-
-### Watanabe-Akaike Information Criterion (WAIC)
-
-Alternatively, use WAIC for model comparison:
-
-```{r waic}
-waic1 <- waic(fit)
-waic2 <- waic(fit2)
-
-loo::loo_compare(waic1, waic2)
-```
-
-### Comparing smoothbp and brms models
-
-Because both `loo.smoothbp_fit` and `loo.brmsfit` return `psis_loo` objects,
-`loo::loo_compare()` works directly across packages:
-
-```{r loo-cross-package}
-library(brms)
-
-fit_linear <- brm(
-  y ~ tau + (1 | subject),
-  data      = dat,
-  chains    = 4L, iter = 2000L, warmup = 1000L, seed = 42L,
-  save_pars = save_pars(all = TRUE)  # required for bridge sampling
-)
-
-# LOO comparison: smoothbp (piecewise) vs brms (linear)
-loo::loo_compare(loo(fit), loo(fit_linear))
-#>            elpd_diff se_diff
-#> model1       0.0       0.0
-#> fit_linear -22.9       4.6   # piecewise model preferred
-```
-
-A negative `elpd_diff` for `fit_linear` indicates the smoothbp model has
-better expected log predictive density.
 
 ### Bayes factors via bridge sampling
 
-LOO quantifies **predictive** performance.  For **posterior model
-probabilities** (Bayes factors), use bridge sampling.  The Bayes factor
-BF10 = p(data | model 1) / p(data | model 2) penalises model complexity
-automatically through the prior (Occam's razor), and so can be more
-decisive than LOO when models differ substantially in their number of
-parameters.
-
-#### Computing the Bayes factor
-
-The package registers a `bridge_sampler.smoothbp_fit` method that integrates
-with the [bridgesampling](https://cran.r-project.org/package=bridgesampling)
-package:
-
 ```{r bridge-sampler}
 library(bridgesampling)
-
-# Compute log marginal likelihoods
-bs_piece  <- bridge_sampler(fit)          # smoothbp model
-bs_linear <- bridge_sampler(fit_linear)   # brms model (save_pars required)
-
-# Bayes factor: piecewise (numerator) vs linear (denominator)
-bayes_factor(bs_piece, bs_linear)
-#> Estimated Bayes factor in favor of x1 over x2: 2699738
-```
-
-Alternatively, use the convenience wrapper that handles both types:
-
-```{r bayes-factor-wrapper}
-# Dispatches on the first argument; smoothbp model must be first
-bayes_factor(fit, fit_linear)
-```
-
-#### Assessing reliability with error_measures()
-
-Bridge sampling is a stochastic approximation.  Always check the
-uncertainty of the log marginal likelihood estimate before interpreting
-the Bayes factor:
-
-```{r error-measures}
-error_measures(bs_piece)
-#> $re2        # relative squared error
-#> [1] 0.011
-#>
-#> $cv         # coefficient of variation (ideal: < 0.05)
-#> [1] 0.106
-#>
-#> $percentage # expressed as a percentage
-#> [1] "11%"
-```
-
-| `cv` value | Interpretation |
-|---|---|
-| < 5% | Reliable estimate |
-| 5–15% | Moderate uncertainty; increase iterations if possible |
-| > 15% | Unreliable; consider more iterations or use LOO instead |
-
-A high CV most commonly means the MCMC chains did not fully explore the
-posterior — check `trace_plot()` and increase `iter` before trusting the
-Bayes factor.
-
-#### When the change-point is weakly identified
-
-When data are close to linear, the change-point parameters ($\omega$, $\rho$)
-become weakly identified, chains mix poorly, and bridge sampling estimates
-carry high uncertainty.  In this situation, LOO-IC is a more robust
-comparison tool because it only requires the pointwise log-likelihood:
-
-```{r loo-vs-bf}
-# Check mixing before computing Bayes factors
-trace_plot(fit, params = c("b2_(Intercept)", "omega_(Intercept)"))
-
-# If Rhat > 1.05 or bulk-ESS < 400, prefer LOO over Bayes factors
-loo::loo_compare(loo(fit), loo(fit_linear))
-```
-
-#### Two smoothbp models
-
-The same workflow applies when both models are `smoothbp_fit` objects:
-
-```{r bf-two-smoothbp}
-fit_grouped <- smoothbp(
-  y ~ tau,
-  b0     = ~ group + (1 | subject),   # group effect on intercept
-  data   = dat,
-  chains = 4L, iter = 2000L, warmup = 1000L, seed = 43L
-)
-
-# Compare: random-effects-only vs group-effect model
-bs_base    <- bridge_sampler(fit)
-bs_grouped <- bridge_sampler(fit_grouped)
-
-bayes_factor(bs_base, bs_grouped)
-error_measures(bs_base)
-error_measures(bs_grouped)
+bs0 <- bridge_sampler(fit0)
+bs1 <- bridge_sampler(fit1)
+bayes_factor(bs1, bs0)
 ```
 
 ---
 
 ## Extracting results
 
-### Posterior draws
-
-Access the full posterior draws in `posterior` package format:
-
-```{r extract-draws}
-# Full draws_array (posterior package format)
-posterior_draws(fit)
-```
-
 ### Fitted values
 
-Compute posterior distributions of the latent mean $\mu_i$ for each observation:
-
 ```{r fitted-training}
-# Fitted values with 95% CI at training observations
-fitted(fit)
-#>   .observation fitted_mean fitted_Q2.5 fitted_Q97.5
-#> 1            1      6.420      6.120       6.720
-#> 2            2      ...
-```
+# Posterior mean + 95% CI at training observations
+fitted(fit1)
 
-Access the full posterior draws instead of summaries:
-
-```{r fitted-draws}
-# Fitted draws matrix (n_draws × n_obs) — for custom summaries
-draws_mat <- fitted(fit, summary = FALSE)
-
-# Derive custom summaries, e.g. P(μ > 6) per observation
-colMeans(draws_mat > 6)
+# Full posterior draws matrix (n_draws × n_obs)
+draws_mat <- fitted(fit1, summary = FALSE)
 ```
 
 ### Marginal predictions
 
-To obtain **population-level predictions** at arbitrary covariate values, 
-provide `newdata` **without** the random-effect grouping variable:
-
 ```{r fitted-marginal}
-# New time points, no subject specified → marginal (population-level)
-newdata_marginal <- data.frame(
-  tau = seq(0, 6, by = 0.5),
-  # omit 'subject' to get population-level predictions
-)
-
-fitted(fit, newdata = newdata_marginal)
-#>   .observation fitted_mean fitted_Q2.5 fitted_Q97.5
-#> 1            1      6.310      6.010       6.610
-#> ...
+# Population-level predictions at new time points
+newdata_marginal <- data.frame(tau = seq(0, 6, by = 0.1))
+fitted(fit1, newdata = newdata_marginal)
 ```
 
 ### Conditional predictions
 
-To obtain **subject-specific (group-level) predictions**, include the 
-random-effect grouping variable in `newdata`:
-
 ```{r fitted-conditional}
-# Include 'subject' → conditional predictions for that subject
-newdata_conditional <- data.frame(
-  tau     = seq(0, 6, by = 0.5),
-  subject = "1"  # must be a level from the training data
-)
-
-fitted(fit, newdata = newdata_conditional)
-#>   .observation fitted_mean fitted_Q2.5 fitted_Q97.5
-#> 1            1      6.512      6.212       6.812
-#> ...
+# Subject-specific predictions
+fitted(fit1, newdata = data.frame(tau = seq(0, 6, by = 0.1), subject = "1"))
 ```
-
-Subjects not present in the training data will be treated as marginal (u = 0) 
-with a warning.

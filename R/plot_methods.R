@@ -14,7 +14,8 @@
 #' @export
 plot.smoothbp_fit <- function(x, type = "trace", pars = NULL, ...) {
   if (is.null(pars)) {
-    pars <- x$param_names[!grepl("^u\\[", x$param_names)]
+    all_pars <- posterior::variables(x$draws)
+    pars <- all_pars[!grepl("^u\\[", all_pars)]
   }
   trace_plot(x, pars = pars, type = type, ...)
 }
@@ -72,7 +73,8 @@ trace_plot <- function(
   }
 
   if (is.null(pars)) {
-    pars <- fit$param_names[!grepl("^u\\[", fit$param_names)]
+    all_pars <- posterior::variables(fit$draws)
+    pars <- all_pars[!grepl("^u\\[", all_pars)]
   }
 
   # ---- Compute mixing diagnostics -----------------------------------------
@@ -121,18 +123,17 @@ trace_plot <- function(
 # ---------------------------------------------------------------------------
 
 .mixing_diagnostics <- function(fit, pars, rhat_thresh, ess_thresh) {
-  # posterior::rhat() / ess_bulk() operate on one variable at a time when
-  # applied to a draws_array; use summarise_draws for the multi-variable case.
-  diag <- posterior::summarise_draws(
-    fit$draws[, , pars, drop = FALSE],
-    rhat      = posterior::rhat,
-    ess_bulk  = posterior::ess_bulk
-  )
-
-  # Align to the requested pars order
-  diag <- diag[match(pars, diag$variable), ]
-  rhats <- diag$rhat
-  ess   <- diag$ess_bulk
+  # Compute Rhat and ESS per parameter, guarding against empty results
+  draws_sub <- fit$draws[, , pars, drop = FALSE]
+  
+  rhats <- vapply(pars, function(p) {
+    tryCatch(posterior::rhat(draws_sub[, , p, drop = FALSE]), error = function(e) NA_real_)
+  }, numeric(1))
+  
+  ess <- vapply(pars, function(p) {
+    tryCatch(posterior::ess_bulk(draws_sub[, , p, drop = FALSE]), error = function(e) NA_real_)
+  }, numeric(1))
+  
   names(rhats) <- pars
   names(ess)   <- pars
 

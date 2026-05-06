@@ -51,33 +51,16 @@ print.smoothbp_prior <- function(x, ...) {
 #' - A named list mapping coefficient names (matching column names of the design
 #'   matrix) to individual `prior_normal()` objects.
 #'
-#' ## Bounds (`lb`, `ub`)
+#' For multi-breakpoint models, `deltas`, `omega`, and `rho` can also be
+#' **lists of prior specifications** (one per breakpoint slot). If a single
+#' specification is provided, it is applied to all slots.
 #'
-#' All five regression-coefficient parameters (`b0`, `b1`, `b2`, `omega`,
-#' `rho`) support finite lower and upper bounds via the `lb` and `ub` arguments
-#' of [prior_normal()].  The bounds are enforced by the sampler:
-#'
-#' - **`b0`, `b1`, `b2`**: The conjugate Gibbs draw is used as an independence
-#'   Metropolis-Hastings proposal; the entire linear draw is rejected whenever
-#'   any coefficient falls outside its `[lb, ub]` interval.  This is exact
-#'   rejection sampling from the truncated full conditional and has no cost
-#'   when all bounds are infinite (the default).
-#' - **`omega`, `rho`**: Bounds are enforced by boundary reflection during HMC
-#'   leapfrog integration (for multi-coefficient predictors) or by immediate
-#'   rejection of out-of-bounds proposals (for intercept-only predictors).
-#'
-#' Typical usage: bound the `omega` intercept to the observed time range to
-#' prevent the change-point from drifting into an unidentifiable region
-#' (`prior_normal(3, 2, lb = 0, ub = max(data$tau))`).  Bounds on `b1` or
-#' `b2` can encode scientific constraints such as requiring a non-negative
-#' slope change (`b2 = prior_normal(0, 2, lb = 0)`).
-#'
-#' @param b0     Prior(s) for `b0` regression coefficients.
-#' @param b1     Prior(s) for `b1` regression coefficients.
-#' @param b2     Prior(s) for `b2` regression coefficients.
-#' @param omega  Prior(s) for `omega` regression coefficients.
-#' @param rho    Prior(s) for `rho` regression coefficients.
-#' @param sigma  `prior_invgamma()` for residual SD.
+#' @param b0      Prior(s) for `b0` regression coefficients.
+#' @param b1      Prior(s) for `b1` regression coefficients.
+#' @param deltas  Prior(s) for slope change coefficients (one list per segment).
+#' @param omega   Prior(s) for `omega` coefficients (one list per segment).
+#' @param rho     Prior(s) for `rho` coefficients (one list per segment).
+#' @param sigma   `prior_invgamma()` for residual SD.
 #' @param sigma_u `prior_invgamma()` for random-effect SD.
 #'
 #' @return A `smoothbp_priors` list.
@@ -85,14 +68,14 @@ print.smoothbp_prior <- function(x, ...) {
 smoothbp_priors <- function(
     b0      = prior_normal(0, 10),
     b1      = prior_normal(0, 2),
-    b2      = prior_normal(0, 2),
+    deltas  = prior_normal(0, 2),
     omega   = prior_normal(3, 2, lb = 0),
     rho     = prior_normal(3, 2, lb = 0),
     sigma   = prior_invgamma(1, 1),
     sigma_u = prior_invgamma(1, 1)
 ) {
   structure(
-    list(b0 = b0, b1 = b1, b2 = b2, omega = omega, rho = rho,
+    list(b0 = b0, b1 = b1, deltas = deltas, omega = omega, rho = rho,
          sigma = sigma, sigma_u = sigma_u),
     class = "smoothbp_priors"
   )
@@ -101,9 +84,13 @@ smoothbp_priors <- function(
 #' @export
 print.smoothbp_priors <- function(x, ...) {
   cat("smoothbp priors:\n")
-  for (nm in c("b0", "b1", "b2", "omega", "rho", "sigma", "sigma_u")) {
+  for (nm in c("b0", "b1", "deltas", "omega", "rho", "sigma", "sigma_u")) {
     cat(sprintf("  %-8s: ", nm))
-    print(x[[nm]])
+    if (is.list(x[[nm]]) && !inherits(x[[nm]], "smoothbp_prior")) {
+        cat("<list of priors>\n")
+    } else {
+        print(x[[nm]])
+    }
   }
   invisible(x)
 }
@@ -112,13 +99,9 @@ print.smoothbp_priors <- function(x, ...) {
 # Internal helpers: expand priors to per-coefficient vectors
 # ---------------------------------------------------------------------------
 
-# Given a prior spec (single prior_normal or named list) and a vector of
-# coefficient names, return a data.frame with mean/sd/lb/ub per coefficient.
 .expand_prior <- function(prior_spec, coef_names) {
   n <- length(coef_names)
-
   if (inherits(prior_spec, "smoothbp_prior") && prior_spec$family == "normal") {
-    # Single prior applied to all coefficients
     data.frame(
       name = coef_names,
       mean = prior_spec$mean,
@@ -128,7 +111,6 @@ print.smoothbp_priors <- function(x, ...) {
       stringsAsFactors = FALSE
     )
   } else if (is.list(prior_spec) && !inherits(prior_spec, "smoothbp_prior")) {
-    # Named list: start with defaults, then override
     default <- prior_spec[["."]] %||% prior_normal(0, 10)
     out <- data.frame(
       name = coef_names,
@@ -152,49 +134,32 @@ print.smoothbp_priors <- function(x, ...) {
   }
 }
 
-# Null-coalescing helper (base R)
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-#' Specify a spike-and-slab prior for variable selection on b2 coefficients
+#' Specify a spike-and-slab prior for variable selection
 #'
 #' Used with [smoothbp_ss()] to place a point-mass spike at zero on selected
-#' `b2` coefficients (and their corresponding `omega`/`rho` coefficients).
-#' When the spike is active (`gamma_k = 0`), the coefficient is exactly zero;
-#' when inactive (`gamma_k = 1`), it follows the slab distribution.
+#' coefficients.
 #'
-#' @param pi Prior inclusion probability.  Scalar (applied to all eligible
-#'   coefficients) or a named numeric vector mapping coefficient names to
-#'   individual probabilities.  Default `0.5`.  Ignored when `learn_pi = TRUE`.
-#' @param slab A [prior_normal()] object for the slab component.  Default
-#'   `prior_normal(0, 2)`.
-#' @param spike_intercept Logical; should the intercept of `b2` also receive
-#'   a spike-and-slab prior?  Default `FALSE` (intercept always included).
-#' @param learn_pi Logical; if `TRUE`, place a `Beta(a, b)` hyperprior on the
-#'   shared inclusion probability and sample it.  The `pi` argument is then
-#'   used only for initialisation.  Default `FALSE`.
-#' @param a Shape parameter for the Beta hyperprior on pi.  Default `1`
-#'   (uniform when `b = 1`).
-#' @param b Shape parameter for the Beta hyperprior on pi.  Default `1`.
+#' @param pi Prior inclusion probability. Default `0.5`.
+#' @param slab A [prior_normal()] object for the slab component.
+#' @param learn_pi Logical; if `TRUE`, place a `Beta(a, b)` hyperprior on pi.
+#' @param a Shape parameter for the Beta hyperprior. Default `1`.
+#' @param b Shape parameter for the Beta hyperprior. Default `1`.
 #'
 #' @return A `smoothbp_spike_slab` object.
 #' @export
 prior_spike_slab <- function(pi = 0.5, slab = prior_normal(0, 2),
-                             spike_intercept = FALSE,
                              learn_pi = FALSE, a = 1, b = 1) {
   stopifnot(
     inherits(slab, "smoothbp_prior"),
     slab$family == "normal",
     is.numeric(pi),
     all(pi > 0 & pi < 1),
-    is.logical(spike_intercept),
     is.logical(learn_pi)
   )
-  if (learn_pi) {
-    stopifnot(a > 0, b > 0)
-  }
   structure(
     list(family = "spike_slab", pi = pi, slab = slab,
-         spike_intercept = spike_intercept,
          learn_pi = learn_pi, a = a, b = b),
     class = "smoothbp_spike_slab"
   )

@@ -6,17 +6,6 @@
 \usage{
 \method{print}{smoothbp_fit}(x, digits = 3, effects = "all", ...)
 }
-\arguments{
-\item{x}{A \code{smoothbp_fit} object.}
-
-\item{digits}{Number of decimal places. Default \code{3}.}
-
-\item{effects}{Which parameters to display.  See
-\code{\link{summary.smoothbp_fit}} for accepted values.}
-
-\item{...}{Unused.}
-}
 \description{
-Displays a model header followed by posterior summaries, optionally filtered
-by effect type.  Arguments are passed to \code{\link{summary.smoothbp_fit}}.
+Print a smoothbp_fit
 }

@@ -7,7 +7,7 @@
 smoothbp_priors(
   b0 = prior_normal(0, 10),
   b1 = prior_normal(0, 2),
-  b2 = prior_normal(0, 2),
+  deltas = prior_normal(0, 2),
   omega = prior_normal(3, 2, lb = 0),
   rho = prior_normal(3, 2, lb = 0),
   sigma = prior_invgamma(1, 1),
@@ -19,11 +19,11 @@ smoothbp_priors(
 
 \item{b1}{Prior(s) for \code{b1} regression coefficients.}
 
-\item{b2}{Prior(s) for \code{b2} regression coefficients.}
+\item{deltas}{Prior(s) for slope change coefficients (one list per segment).}
 
-\item{omega}{Prior(s) for \code{omega} regression coefficients.}
+\item{omega}{Prior(s) for \code{omega} coefficients (one list per segment).}
 
-\item{rho}{Prior(s) for \code{rho} regression coefficients.}
+\item{rho}{Prior(s) for \code{rho} coefficients (one list per segment).}
 
 \item{sigma}{\code{prior_invgamma()} for residual SD.}
 
@@ -41,26 +41,7 @@ matrix) to individual \code{prior_normal()} objects.
 }
 }
 \details{
-\subsection{Bounds (\code{lb}, \code{ub})}{
-
-All five regression-coefficient parameters (\code{b0}, \code{b1}, \code{b2}, \code{omega},
-\code{rho}) support finite lower and upper bounds via the \code{lb} and \code{ub} arguments
-of \code{\link[=prior_normal]{prior_normal()}}.  The bounds are enforced by the sampler:
-\itemize{
-\item \strong{\code{b0}, \code{b1}, \code{b2}}: The conjugate Gibbs draw is used as an independence
-Metropolis-Hastings proposal; the entire linear draw is rejected whenever
-any coefficient falls outside its \verb{[lb, ub]} interval.  This is exact
-rejection sampling from the truncated full conditional and has no cost
-when all bounds are infinite (the default).
-\item \strong{\code{omega}, \code{rho}}: Bounds are enforced by boundary reflection during HMC
-leapfrog integration (for multi-coefficient predictors) or by immediate
-rejection of out-of-bounds proposals (for intercept-only predictors).
-}
-
-Typical usage: bound the \code{omega} intercept to the observed time range to
-prevent the change-point from drifting into an unidentifiable region
-(\code{prior_normal(3, 2, lb = 0, ub = max(data$tau))}).  Bounds on \code{b1} or
-\code{b2} can encode scientific constraints such as requiring a non-negative
-slope change (\code{b2 = prior_normal(0, 2, lb = 0)}).
-}
+For multi-breakpoint models, \code{deltas}, \code{omega}, and \code{rho} can also be
+\strong{lists of prior specifications} (one per breakpoint slot). If a single
+specification is provided, it is applied to all slots.
 }

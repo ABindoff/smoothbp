@@ -1,109 +1,33 @@
-#' Fit a hierarchical piecewise regression model with a smoothed change-point
-#'
-#' Fits the model:
-#' \deqn{y_i = b0_i + b1_i(\tau_i - \omega_i) + b2_i(\tau_i - \omega_i)\,\sigma\bigl((\tau_i - \omega_i)\rho_i\bigr) + \varepsilon_i}
-#'
-#' where \eqn{\sigma(\cdot)} is the logistic sigmoid, \eqn{\omega} is the
-#' change-point location, and \eqn{\rho} controls the sharpness of the
-#' transition.  Each parameter (\eqn{b0}, \eqn{b1}, \eqn{b2}, \eqn{\omega},
-#' \eqn{\rho}) has its own linear predictor specified via a one-sided R formula.
-#' A random intercept is supported for \eqn{b0} using standard \code{(1 | group)}
-#' syntax.
-#'
-#' Posterior inference is performed via a Metropolis-within-Gibbs sampler
-#' compiled in Rust:
-#' \itemize{
-#'   \item \strong{Gibbs} (exact conjugate) for \eqn{b0}, \eqn{b1}, \eqn{b2}
-#'         coefficients and the random intercepts.  When any of these
-#'         parameters has finite bounds specified in \code{priors}, the
-#'         conjugate draw is used as an independence Metropolis-Hastings
-#'         proposal and rejected if any coefficient falls outside its
-#'         \code{[lb, ub]} interval.  This is equivalent to rejection
-#'         sampling from the truncated full conditional.
-#'   \item \strong{HMC-within-Gibbs} for \eqn{\omega} and \eqn{\rho}
-#'         coefficients when their linear predictor has \eqn{p \ge 2}
-#'         columns.  Uses a short leapfrog trajectory (L drawn uniformly
-#'         from 5--15) with analytical gradients, boundary reflection for
-#'         truncated priors, diagonal mass-matrix adaptation (refreshed at
-#'         60\% of warmup), and Nesterov dual-averaging step-size
-#'         adaptation targeting \code{target_accept}.  For 1-D linear
-#'         predictors (e.g. \code{omega = ~ 1}) the sampler uses a
-#'         classical scalar adaptive random-walk MH targeting ~23.4\%.
-#'   \item \strong{Gibbs} (inverse-gamma conjugate) for \eqn{\sigma} and
-#'         \eqn{\sigma_u}.
-#' }
-#'
-#' To keep the per-iteration cost low, the HMC and MH steps for \eqn{\omega}
-#' and \eqn{\rho} reuse a precomputed linear-predictor cache so each
-#' gradient/energy evaluation costs O(n) rather than recomputing the entire
-#' fitted-mean function.
+#' Fit a hierarchical piecewise regression model with smoothed change-points
 #'
 #' @param formula A two-sided formula identifying the response and time variable,
 #'   e.g. \code{value ~ tau}.
 #' @param b0 One-sided formula for the \eqn{b0} linear predictor.
-#'   May include a single random-intercept term, e.g.
-#'   \code{~ 1 + age + sex + (1 | subject_id)}.
 #' @param b1 One-sided formula for \eqn{b1}. Default \code{~ 1}.
-#' @param b2 One-sided formula for \eqn{b2}. Default \code{~ 1}.
-#' @param omega One-sided formula for the change-point \eqn{\omega}. Default \code{~ 1}.
-#' @param rho One-sided formula for the sharpness \eqn{\rho}. Default \code{~ 1}.
-#' @param data A data frame containing all variables referenced in formulas.
-#' @param priors A \code{\link{smoothbp_priors}} object. Defaults to
-#'   \code{smoothbp_priors()}.
-#' @param chains Number of independent MCMC chains. Default 4.
-#' @param iter Total iterations per chain (warmup + sampling). Default 2000.
-#' @param warmup Number of warmup iterations (discarded). Default 1000.
-#' @param seed Integer random seed for reproducibility.
-#' @param step_om Initial step size for \eqn{\omega} coefficients.  When the
-#'   omega linear predictor has a single column (\code{omega = ~ 1}), this is
-#'   the scalar MH proposal SD.  When the predictor has \eqn{p \ge 2} columns,
-#'   this is the initial HMC leapfrog step size (tuned automatically via dual
-#'   averaging during warmup). Default 0.3.
-#' @param step_rho Initial step size for \eqn{\rho} coefficients.  Same
-#'   semantics as \code{step_om}. Default 0.3.
-#' @param target_accept Target acceptance probability for the HMC dual-averaging
-#'   step-size adaptation.  Only used when \code{omega} or \code{rho} has two
-#'   or more predictor columns; ignored for intercept-only specifications.
-#'   Recommended range \code{[0.6, 0.85]}.  Higher values produce smaller step
-#'   sizes and more conservative trajectories. Default 0.65.
-#' @param cores Number of CPU cores used to run chains in parallel.  When
-#'   \code{cores > 1} all chains run concurrently via Rayon (the per-iteration
-#'   progress bar is suppressed in this mode — only a start and done message
-#'   are printed).  Defaults to \code{getOption("smoothbp.cores", 1L)}.  Set
-#'   \code{options(smoothbp.cores = parallel::detectCores())} in your
-#'   \code{.Rprofile} to make parallel the default.
-#' @param .verbose Logical; print progress messages. Default \code{TRUE}.
+#' @param deltas List of one-sided formulas for slope changes. Default \code{list(~ 1)}.
+#' @param omega List of one-sided formulas for change-point locations. Default \code{list(~ 1)}.
+#' @param rho List of one-sided formulas for transition sharpness. Default \code{list(~ 1)}.
+#' @param data A data frame.
+#' @param priors A \code{\link{smoothbp_priors}} object.
+#' @param chains Number of chains. Default 4.
+#' @param iter Total iterations per chain. Default 2000.
+#' @param warmup Warmup iterations. Default 1000.
+#' @param seed Random seed.
+#' @param step_om Initial HMC/MH step size for omega.
+#' @param step_rho Initial HMC/MH step size for rho.
+#' @param target_accept Target HMC acceptance probability.
+#' @param cores Number of CPU cores.
+#' @param .verbose Print progress.
 #'
 #' @return A \code{smoothbp_fit} object.
-#'
-#' @examples
-#' \dontrun{
-#' fit <- smoothbp(
-#'   formula = value ~ tau,
-#'   b0    = ~ 1 + age + treatment + (1 | subject),
-#'   b1    = ~ 1 + treatment,
-#'   b2    = ~ 1 + treatment,
-#'   omega = ~ 1 + treatment,
-#'   rho   = ~ 1,
-#'   data  = mydata,
-#'   priors = smoothbp_priors(
-#'     omega = list(
-#'       "(Intercept)"  = prior_normal(3, 2, lb = 0, ub = 6),
-#'       "treatmentExp" = prior_normal(0, 2)
-#'     )
-#'   ),
-#'   chains = 4, iter = 2000, warmup = 1000, seed = 42
-#' )
-#' print(fit)
-#' }
 #' @export
 smoothbp <- function(
     formula,
     b0     = ~ 1,
     b1     = ~ 1,
-    b2     = ~ 1,
-    omega  = ~ 1,
-    rho    = ~ 1,
+    deltas = list(~ 1),
+    omega  = list(~ 1),
+    rho    = list(~ 1),
     data,
     priors = smoothbp_priors(),
     chains = 4L,
@@ -116,53 +40,57 @@ smoothbp <- function(
     cores    = getOption("smoothbp.cores", 1L),
     .verbose = TRUE
 ) {
-  # ---- Input validation ---------------------------------------------------
   if (!inherits(formula, "formula") || length(formula) != 3L) {
     stop("`formula` must be a two-sided formula, e.g. value ~ tau.")
   }
-  stopifnot(warmup < iter, chains >= 1L)
-
+  
   response_name <- deparse(formula[[2]])
   time_name     <- deparse(formula[[3]])
-
+  
   if (!response_name %in% names(data)) {
     stop(sprintf("Response variable '%s' not found in data.", response_name))
   }
-  if (!time_name %in% names(data)) {
-    stop(sprintf("Time variable '%s' not found in data.", time_name))
+  if (!time_name %in% names(data) && time_name != "1") {
+    stop(sprintf("Time variable '%s' not found in data. Did you mean to use 'time'?", time_name))
   }
 
   y   <- as.double(data[[response_name]])
   tau <- as.double(data[[time_name]])
-
-  if (any(is.na(y)) || any(is.na(tau))) {
-    stop("Missing values in response or time variable are not supported.")
-  }
-
+  
   if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1L)
 
-  # ---- Build design matrices ----------------------------------------------
   if (.verbose) message("Building design matrices...")
-  dm <- .build_design_matrices(b0, b1, b2, omega, rho, data)
-
-  # ---- Build prior vectors ------------------------------------------------
+  dm <- .build_design_matrices(b0, b1, deltas, omega, rho, data)
   pv <- .build_prior_vectors(priors, dm)
 
-  # ---- Run sampler --------------------------------------------------------
+  if (.verbose) message("Running sampler...")
   raw <- run_mcmc(
     y             = y,
     tau           = tau,
     x_b0          = as.double(dm$X_b0),  p_b0  = ncol(dm$X_b0),
     x_b1          = as.double(dm$X_b1),  p_b1  = ncol(dm$X_b1),
-    x_b2          = as.double(dm$X_b2),  p_b2  = ncol(dm$X_b2),
-    x_om          = as.double(dm$X_om),  p_om  = ncol(dm$X_om),
-    x_rho         = as.double(dm$X_rho), p_rho = ncol(dm$X_rho),
+    x_deltas      = lapply(dm$X_deltas, as.double),
+    p_deltas      = as.integer(sapply(dm$X_deltas, ncol)),
+    x_om          = lapply(dm$X_om, as.double),
+    p_om          = as.integer(sapply(dm$X_om, ncol)),
+    x_rho         = lapply(dm$X_rho, as.double),
+    p_rho         = as.integer(sapply(dm$X_rho, ncol)),
     group_b0      = dm$group_b0,
     n_groups_b0   = dm$n_groups_b0,
-    prior_mean    = pv$mean,
-    prior_sd      = pv$sd,
-    prior_lb      = pv$lb,
-    prior_ub      = pv$ub,
+    prior_mean_b0 = pv$b0$mean, prior_sd_b0 = pv$b0$sd, prior_lb_b0 = pv$b0$lb, prior_ub_b0 = pv$b0$ub,
+    prior_mean_b1 = pv$b1$mean, prior_sd_b1 = pv$b1$sd, prior_lb_b1 = pv$b1$lb, prior_ub_b1 = pv$b1$ub,
+    prior_mean_deltas = lapply(pv$deltas, `[[`, "mean"),
+    prior_sd_deltas   = lapply(pv$deltas, `[[`, "sd"),
+    prior_lb_deltas   = lapply(pv$deltas, `[[`, "lb"),
+    prior_ub_deltas   = lapply(pv$deltas, `[[`, "ub"),
+    prior_mean_om     = lapply(pv$om, `[[`, "mean"),
+    prior_sd_om       = lapply(pv$om, `[[`, "sd"),
+    prior_lb_om       = lapply(pv$om, `[[`, "lb"),
+    prior_ub_om       = lapply(pv$om, `[[`, "ub"),
+    prior_mean_rho    = lapply(pv$rho, `[[`, "mean"),
+    prior_sd_rho      = lapply(pv$rho, `[[`, "sd"),
+    prior_lb_rho      = lapply(pv$rho, `[[`, "lb"),
+    prior_ub_rho      = lapply(pv$rho, `[[`, "ub"),
     sigma_shape   = priors$sigma$shape,
     sigma_scale   = priors$sigma$scale,
     sigma_u_shape = priors$sigma_u$shape,
@@ -178,55 +106,35 @@ smoothbp <- function(
     n_cores  = as.integer(max(1L, cores))
   )
 
-  # ---- Label parameters and wrap in posterior draws_array -----------------
   pnames <- .param_names(dm, pv)
 
-  # raw$draws is a list of matrices (one per chain); convert to draws_array
-  n_post   <- nrow(raw$draws[[1]])
+  # Assemble fit object
+  n_post <- nrow(raw$draws[[1]])
   n_params <- ncol(raw$draws[[1]])
   chain_arr <- array(
-    data     = unlist(lapply(raw$draws, function(m) t(m))),  # params × draws per chain
+    data     = unlist(lapply(raw$draws, function(m) t(m))),
     dim      = c(n_params, n_post, chains),
     dimnames = list(variable = pnames, draw = NULL, chain = NULL)
   )
-  # posterior::draws_array expects [draw, chain, variable]
   da <- posterior::as_draws_array(aperm(chain_arr, c(2, 3, 1)))
 
-  # ---- Check for divergent transitions -----------------------------------
-  n_divergent <- raw$n_divergent %||% 0L
-  if (n_divergent > 0L) {
-    warning(
-      sprintf(
-        "%d divergent transition(s) after warmup. Posterior may be unreliable. ",
-        n_divergent
-      ),
-      "Try increasing target_accept or tightening priors.",
-      call. = FALSE
-    )
-  }
-
-  # ---- Assemble fit object ------------------------------------------------
   structure(
     list(
       draws         = da,
-      n_divergent   = n_divergent,
-      param_names   = pnames,
       formula       = formula,
-      b0_formula    = b0,
-      b1_formula    = b1,
-      b2_formula    = b2,
-      omega_formula = omega,
-      rho_formula   = rho,
-      priors        = priors,
-      data          = data,
       response      = response_name,
       time          = time_name,
+      data          = data,
       dm            = dm,
+      pv            = pv,
+      b0_formula    = b0,
+      b1_formula    = b1,
+      deltas_formula = deltas,
+      omega_formula  = omega,
+      rho_formula    = rho,
       chains        = as.integer(chains),
       iter          = as.integer(iter),
-      warmup        = as.integer(warmup),
-      seed          = seed,
-      cores         = as.integer(max(1L, cores))
+      warmup        = as.integer(warmup)
     ),
     class = "smoothbp_fit"
   )

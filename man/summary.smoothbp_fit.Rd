@@ -6,42 +6,6 @@
 \usage{
 \method{summary}{smoothbp_fit}(object, effects = "all", digits = 3, ...)
 }
-\arguments{
-\item{object}{A \code{smoothbp_fit} object.}
-
-\item{effects}{Character vector controlling which parameters are included.
-Accepted values (may be combined):
-\describe{
-\item{\code{"fixed"}}{Population-level regression coefficients
-(\eqn{b0}, \eqn{b1}, \eqn{b2}, \eqn{\omega}, \eqn{\rho}) and the
-residual SD \eqn{\sigma}.  This is the most commonly needed subset.}
-\item{\code{"ran_pars"}}{Random-effect variance parameter
-\eqn{\sigma_u}.}
-\item{\code{"ran_vals"}}{Individual group-level deviations
-\eqn{u_j}.}
-\item{\code{"all"}}{All of the above (default).}
-}
-Combinations are accepted, e.g. \code{effects = c("fixed", "ran_pars")}.}
-
-\item{digits}{Number of decimal places. Default \code{3}.}
-
-\item{...}{Unused.}
-}
-\value{
-A data frame with one row per selected parameter and columns
-\code{variable}, \code{mean}, \code{SD}, \code{Q2.5}, \code{Q97.5},
-\code{rhat}, \code{ess_bulk}, \code{ess_tail}.
-}
 \description{
-Returns a data frame of posterior summaries (mean, SD, 95\% CI, Rhat,
-bulk-ESS, tail-ESS) for selected parameters.
-}
-\examples{
-\dontrun{
-summary(fit)                              # all parameters (default)
-summary(fit, effects = "fixed")           # population-level only
-summary(fit, effects = "ran_pars")        # sigma_u only
-summary(fit, effects = "ran_vals")        # u[j] deviations only
-summary(fit, effects = c("fixed", "ran_pars"))  # fixed + SD, no u[j]
-}
+Summarise a smoothbp_fit
 }

@@ -2,15 +2,15 @@
 % Please edit documentation in R/smoothbp.R
 \name{smoothbp}
 \alias{smoothbp}
-\title{Fit a hierarchical piecewise regression model with a smoothed change-point}
+\title{Fit a hierarchical piecewise regression model with smoothed change-points}
 \usage{
 smoothbp(
   formula,
   b0 = ~1,
   b1 = ~1,
-  b2 = ~1,
-  omega = ~1,
-  rho = ~1,
+  deltas = list(~1),
+  omega = list(~1),
+  rho = list(~1),
   data,
   priors = smoothbp_priors(),
   chains = 4L,
@@ -28,116 +28,41 @@ smoothbp(
 \item{formula}{A two-sided formula identifying the response and time variable,
 e.g. \code{value ~ tau}.}
 
-\item{b0}{One-sided formula for the \eqn{b0} linear predictor.
-May include a single random-intercept term, e.g.
-\code{~ 1 + age + sex + (1 | subject_id)}.}
+\item{b0}{One-sided formula for the \eqn{b0} linear predictor.}
 
 \item{b1}{One-sided formula for \eqn{b1}. Default \code{~ 1}.}
 
-\item{b2}{One-sided formula for \eqn{b2}. Default \code{~ 1}.}
+\item{deltas}{List of one-sided formulas for slope changes. Default \code{list(~ 1)}.}
 
-\item{omega}{One-sided formula for the change-point \eqn{\omega}. Default \code{~ 1}.}
+\item{omega}{List of one-sided formulas for change-point locations. Default \code{list(~ 1)}.}
 
-\item{rho}{One-sided formula for the sharpness \eqn{\rho}. Default \code{~ 1}.}
+\item{rho}{List of one-sided formulas for transition sharpness. Default \code{list(~ 1)}.}
 
-\item{data}{A data frame containing all variables referenced in formulas.}
+\item{data}{A data frame.}
 
-\item{priors}{A \code{\link{smoothbp_priors}} object. Defaults to
-\code{smoothbp_priors()}.}
+\item{priors}{A \code{\link{smoothbp_priors}} object.}
 
-\item{chains}{Number of independent MCMC chains. Default 4.}
+\item{chains}{Number of chains. Default 4.}
 
-\item{iter}{Total iterations per chain (warmup + sampling). Default 2000.}
+\item{iter}{Total iterations per chain. Default 2000.}
 
-\item{warmup}{Number of warmup iterations (discarded). Default 1000.}
+\item{warmup}{Warmup iterations. Default 1000.}
 
-\item{seed}{Integer random seed for reproducibility.}
+\item{seed}{Random seed.}
 
-\item{step_om}{Initial step size for \eqn{\omega} coefficients.  When the
-omega linear predictor has a single column (\code{omega = ~ 1}), this is
-the scalar MH proposal SD.  When the predictor has \eqn{p \ge 2} columns,
-this is the initial HMC leapfrog step size (tuned automatically via dual
-averaging during warmup). Default 0.3.}
+\item{step_om}{Initial HMC/MH step size for omega.}
 
-\item{step_rho}{Initial step size for \eqn{\rho} coefficients.  Same
-semantics as \code{step_om}. Default 0.3.}
+\item{step_rho}{Initial HMC/MH step size for rho.}
 
-\item{target_accept}{Target acceptance probability for the HMC dual-averaging
-step-size adaptation.  Only used when \code{omega} or \code{rho} has two
-or more predictor columns; ignored for intercept-only specifications.
-Recommended range \code{[0.6, 0.85]}.  Higher values produce smaller step
-sizes and more conservative trajectories. Default 0.65.}
+\item{target_accept}{Target HMC acceptance probability.}
 
-\item{cores}{Number of CPU cores used to run chains in parallel.  When
-\code{cores > 1} all chains run concurrently via Rayon (the per-iteration
-progress bar is suppressed in this mode — only a start and done message
-are printed).  Defaults to \code{getOption("smoothbp.cores", 1L)}.  Set
-\code{options(smoothbp.cores = parallel::detectCores())} in your
-\code{.Rprofile} to make parallel the default.}
+\item{cores}{Number of CPU cores.}
 
-\item{.verbose}{Logical; print progress messages. Default \code{TRUE}.}
+\item{.verbose}{Print progress.}
 }
 \value{
 A \code{smoothbp_fit} object.
 }
 \description{
-Fits the model:
-\deqn{y_i = b0_i + b1_i(\tau_i - \omega_i) + b2_i(\tau_i - \omega_i)\,\sigma\bigl((\tau_i - \omega_i)\rho_i\bigr) + \varepsilon_i}
-}
-\details{
-where \eqn{\sigma(\cdot)} is the logistic sigmoid, \eqn{\omega} is the
-change-point location, and \eqn{\rho} controls the sharpness of the
-transition.  Each parameter (\eqn{b0}, \eqn{b1}, \eqn{b2}, \eqn{\omega},
-\eqn{\rho}) has its own linear predictor specified via a one-sided R formula.
-A random intercept is supported for \eqn{b0} using standard \code{(1 | group)}
-syntax.
-
-Posterior inference is performed via a Metropolis-within-Gibbs sampler
-compiled in Rust:
-\itemize{
-\item \strong{Gibbs} (exact conjugate) for \eqn{b0}, \eqn{b1}, \eqn{b2}
-coefficients and the random intercepts.  When any of these
-parameters has finite bounds specified in \code{priors}, the
-conjugate draw is used as an independence Metropolis-Hastings
-proposal and rejected if any coefficient falls outside its
-\code{[lb, ub]} interval.  This is equivalent to rejection
-sampling from the truncated full conditional.
-\item \strong{HMC-within-Gibbs} for \eqn{\omega} and \eqn{\rho}
-coefficients when their linear predictor has \eqn{p \ge 2}
-columns.  Uses a short leapfrog trajectory (L drawn uniformly
-from 5--15) with analytical gradients, boundary reflection for
-truncated priors, diagonal mass-matrix adaptation (refreshed at
-60\\% of warmup), and Nesterov dual-averaging step-size
-adaptation targeting \code{target_accept}.  For 1-D linear
-predictors (e.g. \code{omega = ~ 1}) the sampler uses a
-classical scalar adaptive random-walk MH targeting ~23.4\\%.
-\item \strong{Gibbs} (inverse-gamma conjugate) for \eqn{\sigma} and
-\eqn{\sigma_u}.
-}
-
-To keep the per-iteration cost low, the HMC and MH steps for \eqn{\omega}
-and \eqn{\rho} reuse a precomputed linear-predictor cache so each
-gradient/energy evaluation costs O(n) rather than recomputing the entire
-fitted-mean function.
-}
-\examples{
-\dontrun{
-fit <- smoothbp(
-  formula = value ~ tau,
-  b0    = ~ 1 + age + treatment + (1 | subject),
-  b1    = ~ 1 + treatment,
-  b2    = ~ 1 + treatment,
-  omega = ~ 1 + treatment,
-  rho   = ~ 1,
-  data  = mydata,
-  priors = smoothbp_priors(
-    omega = list(
-      "(Intercept)"  = prior_normal(3, 2, lb = 0, ub = 6),
-      "treatmentExp" = prior_normal(0, 2)
-    )
-  ),
-  chains = 4, iter = 2000, warmup = 1000, seed = 42
-)
-print(fit)
-}
+Fit a hierarchical piecewise regression model with smoothed change-points
 }

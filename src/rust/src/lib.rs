@@ -13,64 +13,33 @@ fn flat_to_dmatrix(data: &[f64], nrow: usize, ncol: usize) -> DMatrix<f64> {
     DMatrix::from_column_slice(nrow, ncol, data)
 }
 
-/// Run Metropolis-within-Gibbs sampler for the smooth change-point model.
-///
-/// @param y           Response vector (n).
-/// @param tau         Time variable (n).
-/// @param x_b0        Design matrix for b0 as flat column-major vector.
-/// @param p_b0        Number of columns in x_b0.
-/// @param x_b1        Design matrix for b1.
-/// @param p_b1        Number of columns in x_b1.
-/// @param x_b2        Design matrix for b2.
-/// @param p_b2        Number of columns in x_b2.
-/// @param x_om        Design matrix for omega.
-/// @param p_om        Number of columns in x_om.
-/// @param x_rho       Design matrix for rho.
-/// @param p_rho       Number of columns in x_rho.
-/// @param group_b0    0-based group indices for b0 random intercept (-1 = no RE).
-/// @param n_groups_b0 Number of RE groups (0 = no random effect).
-/// @param prior_mean  Prior means concatenated in the order
-///                    `b0`, `b1`, `b2`, `omega`, `rho`.
-/// @param prior_sd    Prior SDs (same order).
-/// @param prior_lb    Lower bounds (-Inf for unconstrained).
-/// @param prior_ub    Upper bounds (+Inf for unconstrained).
-/// @param sigma_shape Shape of InvGamma prior on residual variance.
-/// @param sigma_scale Scale of InvGamma prior on residual variance.
-/// @param sigma_u_shape Shape of InvGamma prior on RE variance.
-/// @param sigma_u_scale Scale of InvGamma prior on RE variance.
-/// @param step_om     Initial step size for omega coefficients (scalar MH
-///                    proposal SD when p_om == 1; initial HMC leapfrog
-///                    step size when p_om >= 2).
-/// @param step_rho    Initial step size for rho coefficients (same semantics
-///                    as step_om).
-/// @param target_accept Target acceptance probability for HMC dual averaging
-///                    (used only when p_om >= 2 or p_rho >= 2).  Recommended
-///                    range 0.6–0.85; default 0.65.
-/// @param chains      Number of independent chains.
-/// @param iter        Total iterations per chain (warmup + sampling).
-/// @param warmup      Number of warmup iterations discarded.
-/// @param seed        Integer random seed.
-/// @param verbose     Print progress to the R console.
-/// @param n_cores     Number of threads for parallel chain execution.
-///                    1 = sequential (with progress bar); > 1 = parallel
-///                    (progress bar suppressed; chains run concurrently).
-/// @return List with one matrix per chain (rows = post-warmup draws, cols = parameters).
-/// @export
+fn list_to_vec_dmatrix(list: List, nrow: usize, p_vec: &[i32]) -> Vec<DMatrix<f64>> {
+    list.iter()
+        .zip(p_vec.iter())
+        .map(|(robj, &p)| {
+            let data: Vec<f64> = robj.1.as_real_vector().unwrap();
+            flat_to_dmatrix(&data, nrow, p as usize)
+        })
+        .collect()
+}
+
+/// Run Metropolis-within-Gibbs sampler for the multi-breakpoint model.
 #[extendr]
 fn run_mcmc(
     y: &[f64],
     tau: &[f64],
     x_b0: &[f64], p_b0: i32,
     x_b1: &[f64], p_b1: i32,
-    x_b2: &[f64], p_b2: i32,
-    x_om: &[f64],  p_om: i32,
-    x_rho: &[f64], p_rho: i32,
+    x_deltas: List, p_deltas: &[i32],
+    x_om: List, p_om: &[i32],
+    x_rho: List, p_rho: &[i32],
     group_b0: &[i32],
     n_groups_b0: i32,
-    prior_mean: &[f64],
-    prior_sd: &[f64],
-    prior_lb: &[f64],
-    prior_ub: &[f64],
+    prior_mean_b0: &[f64], prior_sd_b0: &[f64], prior_lb_b0: &[f64], prior_ub_b0: &[f64],
+    prior_mean_b1: &[f64], prior_sd_b1: &[f64], prior_lb_b1: &[f64], prior_ub_b1: &[f64],
+    prior_mean_deltas: List, prior_sd_deltas: List, prior_lb_deltas: List, prior_ub_deltas: List,
+    prior_mean_om: List, prior_sd_om: List, prior_lb_om: List, prior_ub_om: List,
+    prior_mean_rho: List, prior_sd_rho: List, prior_lb_rho: List, prior_ub_rho: List,
     sigma_shape: f64,
     sigma_scale: f64,
     sigma_u_shape: f64,
@@ -86,217 +55,101 @@ fn run_mcmc(
     n_cores: i32,
 ) -> List {
     let n = y.len();
-    let p_b0 = p_b0 as usize;
-    let p_b1 = p_b1 as usize;
-    let p_b2 = p_b2 as usize;
-    let p_om = p_om as usize;
-    let p_rho = p_rho as usize;
+    let n_bp = p_deltas.len();
 
     let data = ModelData {
         y: DVector::from_column_slice(y),
         tau: DVector::from_column_slice(tau),
-        x_b0:  flat_to_dmatrix(x_b0,  n, p_b0),
-        x_b1:  flat_to_dmatrix(x_b1,  n, p_b1),
-        x_b2:  flat_to_dmatrix(x_b2,  n, p_b2),
-        x_om:  flat_to_dmatrix(x_om,  n, p_om),
-        x_rho: flat_to_dmatrix(x_rho, n, p_rho),
+        x_b0: flat_to_dmatrix(x_b0, n, p_b0 as usize),
+        x_b1: flat_to_dmatrix(x_b1, n, p_b1 as usize),
+        x_deltas: list_to_vec_dmatrix(x_deltas, n, p_deltas),
+        x_om: list_to_vec_dmatrix(x_om, n, p_om),
+        x_rho: list_to_vec_dmatrix(x_rho, n, p_rho),
         group_b0: group_b0.to_vec(),
         n_groups_b0: n_groups_b0 as usize,
+        n_breakpoints: n_bp,
         n,
     };
 
-    // Precompute whether any linear coefficient has finite bounds.
-    // This is needed before constructing Priors.
-    let lb_vec = prior_lb.to_vec();
-    let ub_vec = prior_ub.to_vec();
-    let b0_range = 0..p_b0;
-    let b1_range = p_b0..(p_b0 + p_b1);
-    let b2_range = (p_b0 + p_b1)..(p_b0 + p_b1 + p_b2);
-    let has_lin_bounds =
-        lb_vec[b0_range.clone()].iter().any(|v| v.is_finite())
-            || ub_vec[b0_range].iter().any(|v| v.is_finite())
-            || lb_vec[b1_range.clone()].iter().any(|v| v.is_finite())
-            || ub_vec[b1_range].iter().any(|v| v.is_finite())
-            || lb_vec[b2_range.clone()].iter().any(|v| v.is_finite())
-            || ub_vec[b2_range].iter().any(|v| v.is_finite());
-
     let priors = Priors {
-        mean: prior_mean.to_vec(),
-        sd: prior_sd.to_vec(),
-        lb: lb_vec,
-        ub: ub_vec,
+        b0_mean: prior_mean_b0.to_vec(),
+        b0_sd: prior_sd_b0.to_vec(),
+        b0_lb: prior_lb_b0.to_vec(),
+        b0_ub: prior_ub_b0.to_vec(),
+        b1_mean: prior_mean_b1.to_vec(),
+        b1_sd: prior_sd_b1.to_vec(),
+        b1_lb: prior_lb_b1.to_vec(),
+        b1_ub: prior_ub_b1.to_vec(),
+        delta_mean: prior_mean_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_sd: prior_sd_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_lb: prior_lb_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_ub: prior_ub_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_mean: prior_mean_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_sd: prior_sd_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_lb: prior_lb_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_ub: prior_ub_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_mean: prior_mean_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_sd: prior_sd_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_lb: prior_lb_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_ub: prior_ub_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
         sigma_shape,
         sigma_scale,
         sigma_u_shape,
         sigma_u_scale,
-        p_b0,
-        p_b1,
-        p_b2,
-        p_om,
-        p_rho,
-        has_lin_bounds,
+        p_b0: p_b0 as usize,
+        p_b1: p_b1 as usize,
+        p_deltas: p_deltas.iter().map(|&p| p as usize).collect(),
+        p_om: p_om.iter().map(|&p| p as usize).collect(),
+        p_rho: p_rho.iter().map(|&p| p as usize).collect(),
     };
 
-    let n_chains  = chains as usize;
-    let n_iter    = iter as usize;
-    let n_warmup  = warmup as usize;
+    let n_chains = chains as usize;
+    let n_iter = iter as usize;
+    let n_warmup = warmup as usize;
     let base_seed = seed as u64;
-    let n_cores   = (n_cores as usize).max(1);
-    let parallel  = n_cores > 1 && n_chains > 1;
+    let n_cores = (n_cores as usize).max(1);
 
-    // -----------------------------------------------------------------------
-    // Step 1: run all chains and collect DMatrix<f64> results.
-    //
-    // DMatrix<f64> is Send, so Rayon worker threads may produce it.
-    // The R API (rprintln!, RMatrix) is NOT thread-safe and must only be
-    // called from the main R thread — see Step 2.
-    // -----------------------------------------------------------------------
-
-    let results: Vec<(DMatrix<f64>, usize)> = if parallel {
-        // Announce parallel run from the main thread before handing off.
-        if verbose {
-            rprintln!(
-                "Running {} chains in parallel on {} thread(s)...",
-                n_chains, n_cores
-            );
-        }
-
-        // Build a scoped thread pool so the number of threads is controlled
-        // per-call without touching the global Rayon pool.
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(n_cores)
-            .build()
-            .expect("Failed to build Rayon thread pool");
-
+    let results: Vec<(DMatrix<f64>, usize)> = if n_cores > 1 && n_chains > 1 {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(n_cores).build().unwrap();
         pool.install(|| {
-            (0..n_chains)
-                .into_par_iter()
-                .map(|c| {
-                    let chain_seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                    // Pass a no-op progress closure: calling rprintln! from a
-                    // worker thread would invoke Rprintf on a non-R thread,
-                    // which is undefined behaviour.
-                    run_chain(
-                        &data, &priors,
-                        n_iter, n_warmup,
-                        step_om, step_rho,
-                        target_accept,
-                        chain_seed,
-                        false,           // verbose = false inside worker
-                        c, n_chains,
-                        &|_, _, _, _, _| {},
-                    )
-                })
-                .collect()
+            (0..n_chains).into_par_iter().map(|c| {
+                let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
+                run_chain(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &|_,_,_,_,_| {})
+            }).collect()
         })
-
     } else {
-        // Sequential path: full two-colour progress bar per chain.
-        //
-        // '~' = warmup portion, '=' = sampling portion, ' ' = remaining.
-        // This closure is only ever called from the main R thread.
-        let progress_fn = move |chain_id: usize, n_chains: usize,
-                                 iter: usize, n_iter: usize, in_warmup: bool| {
-            let safe_n      = n_iter.max(1);
-            let pct         = (iter * 100) / safe_n;
-            let done        = iter * 20 / safe_n;
-            let warmup_end  = n_warmup * 20 / safe_n;
-            let warmup_fill = warmup_end.min(done);
-            let sample_fill = done.saturating_sub(warmup_fill);
-            let empty       = 20usize.saturating_sub(done);
-            let bar: String = "~".repeat(warmup_fill)
-                + &"=".repeat(sample_fill)
-                + &" ".repeat(empty);
-            let phase = if iter == n_iter { "done    " }
-                        else if in_warmup  { "warmup  " }
-                        else               { "sampling" };
-            rprintln!(
-                "  Chain {}/{} [{}] {:3}%  ({})  iter {}/{}",
-                chain_id + 1, n_chains, bar, pct, phase, iter, n_iter
-            );
-        };
-
-        (0..n_chains)
-            .map(|c| {
-                if verbose {
-                    rprintln!("Chain {}/{}", c + 1, n_chains);
-                }
-                let chain_seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                run_chain(
-                    &data, &priors,
-                    n_iter, n_warmup,
-                    step_om, step_rho,
-                    target_accept,
-                    chain_seed,
-                    verbose, c, n_chains,
-                    &progress_fn,
-                )
-            })
-            .collect()
+        (0..n_chains).map(|c| {
+            let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
+            run_chain(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &|_,_,_,_,_| {})
+        }).collect()
     };
 
-    if verbose && parallel {
-        rprintln!("All {} chains complete.", n_chains);
-    }
+    let chain_results: Vec<Robj> = results.into_iter().map(|(draws, _)| {
+        let nr = draws.nrows();
+        let nc = draws.ncols();
+        let flat: Vec<f64> = draws.iter().cloned().collect();
+        RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into()
+    }).collect();
 
-    // -----------------------------------------------------------------------
-    // Step 2: convert DMatrix results to R matrices on the main thread.
-    // -----------------------------------------------------------------------
-    let mut total_divergent: usize = 0;
-    let chain_results: Vec<Robj> = results
-        .into_iter()
-        .map(|(draws, n_div)| {
-            total_divergent += n_div;
-            let n_post   = draws.nrows();
-            let n_params = draws.ncols();
-            let flat: Vec<f64> = draws.iter().cloned().collect();
-            RMatrix::new_matrix(n_post, n_params, |r, c| flat[c * n_post + r]).into()
-        })
-        .collect();
-
-    if total_divergent > 0 && verbose {
-        rprintln!(
-            "WARNING: {} divergent transitions after warmup.              Posterior may be unreliable. Try increasing target_accept or              tightening priors.",
-            total_divergent
-        );
-    }
-
-    let n_params_total = p_b0 + (n_groups_b0 as usize) + p_b1 + p_b2 + p_om + p_rho + 2;
-    list!(
-        draws       = chain_results,
-        iter        = iter,
-        warmup      = warmup,
-        chains      = chains,
-        n_params    = n_params_total as i32,
-        n_divergent = total_divergent as i32
-    )
+    list!(draws = chain_results)
 }
 
-/// Run spike-and-slab variable selection sampler.
-///
-/// Same interface as run_mcmc plus spike-and-slab configuration:
-/// @param spike_mask  Integer vector (0/1) of length p_b2: which b2 coefficients
-///                    are eligible for spike-and-slab.
-/// @param spike_pi    Double vector of length p_b2: prior inclusion probability.
-/// @param om_map      Integer vector of length p_b2: for each b2 coef, the index
-///                    of the corresponding omega coefficient (-1 if no match).
-/// @param rho_map     Integer vector of length p_b2: same for rho.
-/// @export
 #[extendr]
 fn run_mcmc_ss(
     y: &[f64],
     tau: &[f64],
     x_b0: &[f64], p_b0: i32,
     x_b1: &[f64], p_b1: i32,
-    x_b2: &[f64], p_b2: i32,
-    x_om: &[f64],  p_om: i32,
-    x_rho: &[f64], p_rho: i32,
+    x_deltas: List, p_deltas: &[i32],
+    x_om: List, p_om: &[i32],
+    x_rho: List, p_rho: &[i32],
     group_b0: &[i32],
     n_groups_b0: i32,
-    prior_mean: &[f64],
-    prior_sd: &[f64],
-    prior_lb: &[f64],
-    prior_ub: &[f64],
+    prior_mean_b0: &[f64], prior_sd_b0: &[f64], prior_lb_b0: &[f64], prior_ub_b0: &[f64],
+    prior_mean_b1: &[f64], prior_sd_b1: &[f64], prior_lb_b1: &[f64], prior_ub_b1: &[f64],
+    prior_mean_deltas: List, prior_sd_deltas: List, prior_lb_deltas: List, prior_ub_deltas: List,
+    prior_mean_om: List, prior_sd_om: List, prior_lb_om: List, prior_ub_om: List,
+    prior_mean_rho: List, prior_sd_rho: List, prior_lb_rho: List, prior_ub_rho: List,
     sigma_shape: f64,
     sigma_scale: f64,
     sigma_u_shape: f64,
@@ -304,10 +157,9 @@ fn run_mcmc_ss(
     step_om: f64,
     step_rho: f64,
     target_accept: f64,
-    spike_mask: &[i32],
-    spike_pi: &[f64],
-    om_map: &[i32],
-    rho_map: &[i32],
+    b1_spike_mask: &[i32],
+    delta_spike_mask: List,
+    pi_init: f64,
     pi_beta_a: f64,
     pi_beta_b: f64,
     chains: i32,
@@ -318,183 +170,93 @@ fn run_mcmc_ss(
     n_cores: i32,
 ) -> List {
     let n = y.len();
-    let p_b0 = p_b0 as usize;
-    let p_b1 = p_b1 as usize;
-    let p_b2 = p_b2 as usize;
-    let p_om = p_om as usize;
-    let p_rho = p_rho as usize;
+    let n_bp = p_deltas.len();
 
     let data = ModelData {
         y: DVector::from_column_slice(y),
         tau: DVector::from_column_slice(tau),
-        x_b0:  flat_to_dmatrix(x_b0,  n, p_b0),
-        x_b1:  flat_to_dmatrix(x_b1,  n, p_b1),
-        x_b2:  flat_to_dmatrix(x_b2,  n, p_b2),
-        x_om:  flat_to_dmatrix(x_om,  n, p_om),
-        x_rho: flat_to_dmatrix(x_rho, n, p_rho),
+        x_b0: flat_to_dmatrix(x_b0, n, p_b0 as usize),
+        x_b1: flat_to_dmatrix(x_b1, n, p_b1 as usize),
+        x_deltas: list_to_vec_dmatrix(x_deltas, n, p_deltas),
+        x_om: list_to_vec_dmatrix(x_om, n, p_om),
+        x_rho: list_to_vec_dmatrix(x_rho, n, p_rho),
         group_b0: group_b0.to_vec(),
         n_groups_b0: n_groups_b0 as usize,
+        n_breakpoints: n_bp,
         n,
     };
 
-    let lb_vec = prior_lb.to_vec();
-    let ub_vec = prior_ub.to_vec();
-    let b0_range = 0..p_b0;
-    let b1_range = p_b0..(p_b0 + p_b1);
-    let b2_range = (p_b0 + p_b1)..(p_b0 + p_b1 + p_b2);
-    let has_lin_bounds =
-        lb_vec[b0_range.clone()].iter().any(|v| v.is_finite())
-            || ub_vec[b0_range].iter().any(|v| v.is_finite())
-            || lb_vec[b1_range.clone()].iter().any(|v| v.is_finite())
-            || ub_vec[b1_range].iter().any(|v| v.is_finite())
-            || lb_vec[b2_range.clone()].iter().any(|v| v.is_finite())
-            || ub_vec[b2_range].iter().any(|v| v.is_finite());
-
     let priors = Priors {
-        mean: prior_mean.to_vec(),
-        sd: prior_sd.to_vec(),
-        lb: lb_vec,
-        ub: ub_vec,
+        b0_mean: prior_mean_b0.to_vec(),
+        b0_sd: prior_sd_b0.to_vec(),
+        b0_lb: prior_lb_b0.to_vec(),
+        b0_ub: prior_ub_b0.to_vec(),
+        b1_mean: prior_mean_b1.to_vec(),
+        b1_sd: prior_sd_b1.to_vec(),
+        b1_lb: prior_lb_b1.to_vec(),
+        b1_ub: prior_ub_b1.to_vec(),
+        delta_mean: prior_mean_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_sd: prior_sd_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_lb: prior_lb_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_ub: prior_ub_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_mean: prior_mean_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_sd: prior_sd_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_lb: prior_lb_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_ub: prior_ub_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_mean: prior_mean_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_sd: prior_sd_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_lb: prior_lb_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_ub: prior_ub_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
         sigma_shape,
         sigma_scale,
         sigma_u_shape,
         sigma_u_scale,
-        p_b0,
-        p_b1,
-        p_b2,
-        p_om,
-        p_rho,
-        has_lin_bounds,
+        p_b0: p_b0 as usize,
+        p_b1: p_b1 as usize,
+        p_deltas: p_deltas.iter().map(|&p| p as usize).collect(),
+        p_om: p_om.iter().map(|&p| p as usize).collect(),
+        p_rho: p_rho.iter().map(|&p| p as usize).collect(),
     };
 
     let ss_config = SpikeSlabConfig {
-        spike_mask: spike_mask.iter().map(|&v| v != 0).collect(),
-        pi_init: spike_pi.to_vec(),
-        om_map: om_map.to_vec(),
-        rho_map: rho_map.to_vec(),
+        b1_spike_mask: b1_spike_mask.iter().map(|&v| v != 0).collect(),
+        delta_spike_mask: delta_spike_mask.iter().map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v != 0).collect()).collect(),
+        pi_init: pi_init,
         beta_a: pi_beta_a,
         beta_b: pi_beta_b,
     };
 
-    let n_chains  = chains as usize;
-    let n_iter    = iter as usize;
-    let n_warmup  = warmup as usize;
+    let n_chains = chains as usize;
+    let n_iter = iter as usize;
+    let n_warmup = warmup as usize;
     let base_seed = seed as u64;
-    let n_cores   = (n_cores as usize).max(1);
-    let parallel  = n_cores > 1 && n_chains > 1;
+    let n_cores = (n_cores as usize).max(1);
 
-    let results: Vec<(DMatrix<f64>, usize)> = if parallel {
-        if verbose {
-            rprintln!(
-                "Running {} chains in parallel on {} thread(s)...",
-                n_chains, n_cores
-            );
-        }
-
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(n_cores)
-            .build()
-            .expect("Failed to build Rayon thread pool");
-
+    let results: Vec<(DMatrix<f64>, usize)> = if n_cores > 1 && n_chains > 1 {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(n_cores).build().unwrap();
         pool.install(|| {
-            (0..n_chains)
-                .into_par_iter()
-                .map(|c| {
-                    let chain_seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                    run_chain_ss(
-                        &data, &priors, &ss_config,
-                        n_iter, n_warmup,
-                        step_om, step_rho,
-                        target_accept,
-                        chain_seed,
-                        false, c, n_chains,
-                        &|_, _, _, _, _| {},
-                    )
-                })
-                .collect()
+            (0..n_chains).into_par_iter().map(|c| {
+                let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
+                run_chain_ss(&data, &priors, &ss_config, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &|_,_,_,_,_| {})
+            }).collect()
         })
-
     } else {
-        let progress_fn = move |chain_id: usize, n_chains: usize,
-                                 iter: usize, n_iter: usize, in_warmup: bool| {
-            let safe_n      = n_iter.max(1);
-            let pct         = (iter * 100) / safe_n;
-            let done        = iter * 20 / safe_n;
-            let warmup_end  = n_warmup * 20 / safe_n;
-            let warmup_fill = warmup_end.min(done);
-            let sample_fill = done.saturating_sub(warmup_fill);
-            let empty       = 20usize.saturating_sub(done);
-            let bar: String = "~".repeat(warmup_fill)
-                + &"=".repeat(sample_fill)
-                + &" ".repeat(empty);
-            let phase = if iter == n_iter { "done    " }
-                        else if in_warmup  { "warmup  " }
-                        else               { "sampling" };
-            rprintln!(
-                "  Chain {}/{} [{}] {:3}%  ({})  iter {}/{}",
-                chain_id + 1, n_chains, bar, pct, phase, iter, n_iter
-            );
-        };
-
-        (0..n_chains)
-            .map(|c| {
-                if verbose {
-                    rprintln!("Chain {}/{}", c + 1, n_chains);
-                }
-                let chain_seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                run_chain_ss(
-                    &data, &priors, &ss_config,
-                    n_iter, n_warmup,
-                    step_om, step_rho,
-                    target_accept,
-                    chain_seed,
-                    verbose, c, n_chains,
-                    &progress_fn,
-                )
-            })
-            .collect()
+        (0..n_chains).map(|c| {
+            let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
+            run_chain_ss(&data, &priors, &ss_config, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &|_,_,_,_,_| {})
+        }).collect()
     };
 
-    if verbose && parallel {
-        rprintln!("All {} chains complete.", n_chains);
-    }
+    let chain_results: Vec<Robj> = results.into_iter().map(|(draws, _)| {
+        let nr = draws.nrows();
+        let nc = draws.ncols();
+        let flat: Vec<f64> = draws.iter().cloned().collect();
+        RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into()
+    }).collect();
 
-    let mut total_divergent: usize = 0;
-    let chain_results: Vec<Robj> = results
-        .into_iter()
-        .map(|(draws, n_div)| {
-            total_divergent += n_div;
-            let n_post   = draws.nrows();
-            let n_params = draws.ncols();
-            let flat: Vec<f64> = draws.iter().cloned().collect();
-            RMatrix::new_matrix(n_post, n_params, |r, c| flat[c * n_post + r]).into()
-        })
-        .collect();
-
-    if total_divergent > 0 && verbose {
-        rprintln!(
-            "WARNING: {} divergent transitions after warmup. \
-             Posterior may be unreliable. Try increasing target_accept or \
-             tightening priors.",
-            total_divergent
-        );
-    }
-
-    let learn_pi = pi_beta_a > 0.0;
-    let n_params_total = p_b0 + (n_groups_b0 as usize) + p_b1 + p_b2 + p_om + p_rho + 2
-        + p_b2 + if learn_pi { 1 } else { 0 };
-    list!(
-        draws       = chain_results,
-        iter        = iter,
-        warmup      = warmup,
-        chains      = chains,
-        n_params    = n_params_total as i32,
-        n_divergent = total_divergent as i32,
-        learn_pi    = learn_pi
-    )
+    list!(draws = chain_results)
 }
 
-// Macro to register exports with R
 extendr_module! {
     mod smoothbp;
     fn run_mcmc;

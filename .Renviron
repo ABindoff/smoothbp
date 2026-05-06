@@ -1,0 +1,3 @@
+R_HOME=C:/Users/bindoffa/AppData/Local/Programs/R/R-4.6.0
+R_LIBS_USER=C:/Users/bindoffa/AppData/Local/Programs/R/R-4.6.0/library
+PATH="${R_HOME}/bin/x64;C:/rtools45/usr/bin;C:/rtools45/x86_64-w64-mingw32.static.posix/bin;C:/Users/bindoffa/.cargo/bin;${PATH}"

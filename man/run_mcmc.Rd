@@ -2,7 +2,7 @@
 % Please edit documentation in R/extendr-wrappers.R
 \name{run_mcmc}
 \alias{run_mcmc}
-\title{Run Metropolis-within-Gibbs sampler for the smooth change-point model.}
+\title{Run Metropolis-within-Gibbs sampler for the multi-breakpoint model.}
 \usage{
 run_mcmc(
   y,
@@ -11,18 +11,34 @@ run_mcmc(
   p_b0,
   x_b1,
   p_b1,
-  x_b2,
-  p_b2,
+  x_deltas,
+  p_deltas,
   x_om,
   p_om,
   x_rho,
   p_rho,
   group_b0,
   n_groups_b0,
-  prior_mean,
-  prior_sd,
-  prior_lb,
-  prior_ub,
+  prior_mean_b0,
+  prior_sd_b0,
+  prior_lb_b0,
+  prior_ub_b0,
+  prior_mean_b1,
+  prior_sd_b1,
+  prior_lb_b1,
+  prior_ub_b1,
+  prior_mean_deltas,
+  prior_sd_deltas,
+  prior_lb_deltas,
+  prior_ub_deltas,
+  prior_mean_om,
+  prior_sd_om,
+  prior_lb_om,
+  prior_ub_om,
+  prior_mean_rho,
+  prior_sd_rho,
+  prior_lb_rho,
+  prior_ub_rho,
   sigma_shape,
   sigma_scale,
   sigma_u_shape,
@@ -38,80 +54,6 @@ run_mcmc(
   n_cores
 )
 }
-\arguments{
-\item{y}{Response vector (n).}
-
-\item{tau}{Time variable (n).}
-
-\item{x_b0}{Design matrix for b0 as flat column-major vector.}
-
-\item{p_b0}{Number of columns in x_b0.}
-
-\item{x_b1}{Design matrix for b1.}
-
-\item{p_b1}{Number of columns in x_b1.}
-
-\item{x_b2}{Design matrix for b2.}
-
-\item{p_b2}{Number of columns in x_b2.}
-
-\item{x_om}{Design matrix for omega.}
-
-\item{p_om}{Number of columns in x_om.}
-
-\item{x_rho}{Design matrix for rho.}
-
-\item{p_rho}{Number of columns in x_rho.}
-
-\item{group_b0}{0-based group indices for b0 random intercept (-1 = no RE).}
-
-\item{n_groups_b0}{Number of RE groups (0 = no random effect).}
-
-\item{prior_mean}{Prior means concatenated in the order
-\code{b0}, \code{b1}, \code{b2}, \code{omega}, \code{rho}.}
-
-\item{prior_sd}{Prior SDs (same order).}
-
-\item{prior_lb}{Lower bounds (-Inf for unconstrained).}
-
-\item{prior_ub}{Upper bounds (+Inf for unconstrained).}
-
-\item{sigma_shape}{Shape of InvGamma prior on residual variance.}
-
-\item{sigma_scale}{Scale of InvGamma prior on residual variance.}
-
-\item{sigma_u_shape}{Shape of InvGamma prior on RE variance.}
-
-\item{sigma_u_scale}{Scale of InvGamma prior on RE variance.}
-
-\item{step_om}{Initial step size for omega coefficients (scalar MH
-proposal SD when p_om == 1; initial HMC leapfrog
-step size when p_om >= 2).}
-
-\item{step_rho}{Initial step size for rho coefficients (same semantics
-as step_om).}
-
-\item{target_accept}{Target acceptance probability for HMC dual averaging
-(used only when p_om >= 2 or p_rho >= 2).  Recommended
-range 0.6–0.85; default 0.65.}
-
-\item{chains}{Number of independent chains.}
-
-\item{iter}{Total iterations per chain (warmup + sampling).}
-
-\item{warmup}{Number of warmup iterations discarded.}
-
-\item{seed}{Integer random seed.}
-
-\item{verbose}{Print progress to the R console.}
-
-\item{n_cores}{Number of threads for parallel chain execution.
-1 = sequential (with progress bar); > 1 = parallel
-(progress bar suppressed; chains run concurrently).}
-}
-\value{
-List with one matrix per chain (rows = post-warmup draws, cols = parameters).
-}
 \description{
-Run Metropolis-within-Gibbs sampler for the smooth change-point model.
+Run Metropolis-within-Gibbs sampler for the multi-breakpoint model.
 }
