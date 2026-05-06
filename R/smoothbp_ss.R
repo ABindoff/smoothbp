@@ -171,7 +171,9 @@ smoothbp_ss <- function(
       gamma_names   = gamma_names,
       chains        = as.integer(chains),
       iter          = as.integer(iter),
-      warmup        = as.integer(warmup)
+      warmup        = as.integer(warmup),
+      priors        = priors,
+      spike         = spike
     ),
     class = c("smoothbp_ss_fit", "smoothbp_fit")
   )

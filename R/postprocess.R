@@ -139,13 +139,13 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
     if (!is.list(fml_list)) fml_list <- list(fml_list)
     lapply(fml_list, function(f) .mk_mm_single(.parse_re(f)$fixed, dat, object$data))
   }
-  X_b0     <- .mk_mm_single(.parse_re(object$dm$b0_formula)$fixed, newdata, object$data)
-  X_b1     <- .mk_mm_single(.parse_re(object$dm$b1_formula)$fixed, newdata, object$data)
-  X_deltas <- mk_mm_list(object$dm$deltas_formula, newdata)
-  X_om     <- mk_mm_list(object$dm$omega_formula,  newdata)
-  X_rho    <- mk_mm_list(object$dm$rho_formula,    newdata)
+  X_b0     <- .mk_mm_single(.parse_re(object$b0_formula)$fixed, newdata, object$data)
+  X_b1     <- .mk_mm_single(.parse_re(object$b1_formula)$fixed, newdata, object$data)
+  X_deltas <- mk_mm_list(object$deltas_formula, newdata)
+  X_om     <- mk_mm_list(object$omega_formula,  newdata)
+  X_rho    <- mk_mm_list(object$rho_formula,    newdata)
 
-  re_var <- .parse_re(object$dm$b0_formula)$re_group
+  re_var <- .parse_re(object$b0_formula)$re_group
   group_levels_b0 <- object$dm$group_levels_b0
   if (!is.null(re_var) && re_var %in% names(newdata)) {
     gfac <- factor(newdata[[re_var]], levels = group_levels_b0)

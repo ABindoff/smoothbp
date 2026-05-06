@@ -622,8 +622,8 @@ equivalent to `b1 + delta1` in smoothbp.
 
 ```{r mcp-compare, eval = have_mcp}
 sbp_sum_mcp <- posterior::summarise_draws(fit_sbp_mcp$draws) |>
-                                 "delta1_(Intercept)", "omega1_(Intercept)",
-                                 "rho1_(Intercept)", "sigma"))
+  dplyr::filter(variable %in% c("b1_(Intercept)", "delta1_(Intercept)", "omega1_(Intercept)",
+                               "rho1_(Intercept)", "sigma"))
 
 mcp_sum <- summary(fit_mcp) |>
   dplyr::filter(name %in% c("cp_1", "int_1", "tau_1", "tau_2", "sigma_1"))
@@ -640,19 +640,19 @@ comparison_mcp <- data.frame(
                           "sigma"),
   truth              = c(3.2, -0.4, -0.4 + 1.4, 0.4),
   sbp_mean           = c(
-    sbp_sum_mcp$mean[sbp_sum_mcp$variable == "omega_(Intercept)"],
+    sbp_sum_mcp$mean[sbp_sum_mcp$variable == "omega1_(Intercept)"],
     sbp_sum_mcp$mean[sbp_sum_mcp$variable == "b1_(Intercept)"],
     mean(post_slope),
     sbp_sum_mcp$mean[sbp_sum_mcp$variable == "sigma"]
   ),
   sbp_lo             = c(
-    sbp_sum_mcp$q2.5[sbp_sum_mcp$variable == "omega_(Intercept)"],
+    sbp_sum_mcp$q2.5[sbp_sum_mcp$variable == "omega1_(Intercept)"],
     sbp_sum_mcp$q2.5[sbp_sum_mcp$variable == "b1_(Intercept)"],
     quantile(post_slope, 0.025),
     sbp_sum_mcp$q2.5[sbp_sum_mcp$variable == "sigma"]
   ),
   sbp_hi             = c(
-    sbp_sum_mcp$q97.5[sbp_sum_mcp$variable == "omega_(Intercept)"],
+    sbp_sum_mcp$q97.5[sbp_sum_mcp$variable == "omega1_(Intercept)"],
     sbp_sum_mcp$q97.5[sbp_sum_mcp$variable == "b1_(Intercept)"],
     quantile(post_slope, 0.975),
     sbp_sum_mcp$q97.5[sbp_sum_mcp$variable == "sigma"]

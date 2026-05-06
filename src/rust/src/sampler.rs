@@ -527,11 +527,9 @@ fn hmc_step_rho(
         let delta_k = &cache.delta_vals[k];
         
         let mut mu = mu_base.clone();
-        if data.n_breakpoints > 0 {
+        if k == 0 && data.n_breakpoints > 0 {
              let om1 = state.omega_vec(0, &data.x_om[0]);
              for i in 0..data.n { mu[i] += cache.b1_vals[i] * (data.tau[i] - om1[i]); }
-        } else {
-             for i in 0..data.n { mu[i] += cache.b1_vals[i] * data.tau[i]; }
         }
 
         for i in 0..data.n {

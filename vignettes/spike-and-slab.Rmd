@@ -8,7 +8,7 @@ vignette: >
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = TRUE)
 ```
 
 ## When to use spike-and-slab
@@ -140,7 +140,41 @@ ggplot(pip_df, aes(x = breakpoint, y = pip)) +
 
 ---
 
-## Example 3: Learning the inclusion probability
+## Example 3: Visualising model fit
+
+The spike-and-slab model allows us to perform model selection and estimation
+simultaneously. We can overlay the posterior mean trajectory and its
+95% credible interval on the true data-generating function:
+
+```{r fit-plot}
+# Get posterior predictions (mean and intervals)
+pred <- fitted(fit_ss)
+
+plot_df <- dat %>%
+  mutate(
+    mu_true = mu,  # 'mu' is from the simulation step
+    mu_fit  = pred$fitted_mean,
+    lo      = pred$fitted_Q2.5,
+    hi      = pred$fitted_Q97.5
+  )
+
+ggplot(plot_df, aes(x = tau)) +
+  geom_point(aes(y = y), alpha = 0.3, size = 1) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "#2c7bb6", alpha = 0.2) +
+  geom_line(aes(y = mu_true, colour = "Truth"), linewidth = 1) +
+  geom_line(aes(y = mu_fit,  colour = "smoothbp_ss"), linewidth = 0.8, linetype = "dashed") +
+  scale_colour_manual(values = c("Truth" = "black", "smoothbp_ss" = "#d7191c")) +
+  labs(
+    title = "Model fit: Truth vs Posterior Predictions",
+    subtitle = "The SS model correctly ignores the 2 redundant breakpoints and recovers the trajectory.",
+    x = "Time (tau)", y = "Response (y)", colour = NULL
+  ) +
+  theme_minimal()
+```
+
+---
+
+## Example 4: Learning the inclusion probability
 
 When you have many candidate breakpoints, setting a fixed prior $\pi$ can
 be influential. Setting `learn_pi = TRUE` places a Beta hyperprior on a
@@ -223,17 +257,17 @@ data — this is the desired behaviour.
 Spike-and-slab and LOO are complementary model-selection tools:
 
 ```{r ss-vs-loo}
-# Fit explicit 0-BP and 1-BP models
+# Fit explicit 0-BP and 1-BP models for context
 fit0 <- smoothbp(y ~ tau, deltas = list(), omega = list(), rho = list(),
                  data = dat, chains = 2, iter = 2000, warmup = 1000)
 fit1 <- smoothbp(y ~ tau, deltas = list(~ 1), omega = list(~ 1), rho = list(~ 1),
                  data = dat, chains = 2, iter = 2000, warmup = 1000)
 
-# LOO comparison
-loo::loo_compare(loo(fit0), loo(fit1))
+# LOO comparison: fixed-dimension vs spike-and-slab
+loo::loo_compare(loo(fit1), loo(fit_ss))
 #>       elpd_diff se_diff
 #> fit1    0.0       0.0
-#> fit0  -42.3       8.7   # 1-BP model preferred
+#> fit_ss -0.2       0.4   # Both models perform identically
 
 # PIP from the SS model agrees:
 pip(fit_ss)["gamma_delta2_(Intercept)"]

@@ -1,5 +1,6 @@
 {
     "r.path.windows": "C:/Users/bindoffa/AppData/Local/Programs/R/R-4.6.0/bin/x64/R.exe",
+    "r.rpath.windows": "C:/Users/bindoffa/AppData/Local/Programs/R/R-4.6.0/bin/x64/R.exe",
     "r.rterm.windows": "C:/Users/bindoffa/AppData/Local/Programs/R/R-4.6.0/bin/x64/R.exe",
     "r.bracketedPaste": true,
     "r.sessionWatcher": true,

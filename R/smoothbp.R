@@ -36,7 +36,7 @@ smoothbp <- function(
     seed   = NULL,
     step_om  = 0.3,
     step_rho = 0.3,
-    target_accept = 0.65,
+    target_accept = 0.80,
     cores    = getOption("smoothbp.cores", 1L),
     .verbose = TRUE
 ) {
@@ -134,7 +134,8 @@ smoothbp <- function(
       rho_formula    = rho,
       chains        = as.integer(chains),
       iter          = as.integer(iter),
-      warmup        = as.integer(warmup)
+      warmup        = as.integer(warmup),
+      priors        = priors
     ),
     class = "smoothbp_fit"
   )
