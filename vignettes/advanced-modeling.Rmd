@@ -1,0 +1,234 @@
+---
+title: "Advanced Modeling with smoothbp"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Advanced Modeling with smoothbp}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = TRUE,
+  fig.width = 7,
+  fig.height = 4
+)
+```
+
+While `smoothbp` is efficient for standard piecewise regression, its real power lies in its ability to handle structural changes that are themselves functions of other variables. This vignette demonstrates "edge cases" where `smoothbp` offers flexibility that is difficult to achieve with other packages.
+
+```{r libs, message=FALSE, warning=FALSE}
+if (requireNamespace("pkgload", quietly = TRUE)) {
+  pkgload::load_all("..")
+} else {
+  library(smoothbp)
+}
+library(ggplot2)
+library(dplyr)
+library(posterior)
+```
+
+---
+
+## 1. Conditional Breakpoints (Emergent Behavior)
+
+A common challenge is when the **existence** of a breakpoint depends on a covariate or experimental group. Instead of fitting separate models, we can use interaction terms in the `deltas` sub-model paired with spike-and-slab priors.
+
+### Simulation: Group-specific structure
+* **Group A (Control)**: Simple linear trend (0 BP).
+* **Group B (Treatment)**: One smooth breakpoint at $\omega=5$.
+
+```{r sim-conditional}
+set.seed(123)
+n <- 150
+tau <- seq(0, 10, length.out = n)
+
+# Group A: Linear
+yA <- 2 + 0.5 * tau + rnorm(n, sd = 0.2)
+
+# Group B: 1 BP at 5
+om <- 5; rho <- 4; delta <- -1.5
+di <- tau - om; si <- plogis(di * rho)
+yB <- 2 + 0.5 * di + delta * di * si + rnorm(n, sd = 0.2)
+
+dat_cond <- data.frame(
+  y     = c(yA, yB),
+  tau   = rep(tau, 2),
+  group = rep(c("A", "B"), each = n)
+)
+```
+
+### Fitting with Spike-and-Slab Interactions
+By using `deltas = list(~ group)`, the model can learn different slope changes for each group.
+
+```{r fit-conditional}
+fit_cond <- smoothbp_ss(
+  formula = y ~ tau,
+  b0      = ~ group,
+  b1      = ~ group,
+  deltas  = list(~ group),
+  omega   = list(~ 1),
+  rho     = list(~ 1),
+  data    = dat_cond,
+  spike   = prior_spike_slab(pi = 0.2, learn_pi = TRUE),
+  chains  = 2, iter = 2000, warmup = 1000, seed = 42
+)
+
+# Visualize observed vs fitted
+pred_cond <- fitted(fit_cond)
+dat_cond$y_fit <- pred_cond$fitted_mean
+dat_cond$lo    <- pred_cond$fitted_Q2.5
+dat_cond$hi    <- pred_cond$fitted_Q97.5
+
+ggplot(dat_cond, aes(x = tau, y = y, color = group)) +
+  geom_point(alpha = 0.2) +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = group), alpha = 0.1, color = NA) +
+  geom_line(aes(y = y_fit), size = 1) +
+  facet_wrap(~group) +
+  theme_minimal() +
+  labs(title = "Conditional Breakpoint Selection", subtitle = "Control correctly identified as linear; Treatment captures the break.")
+```
+
+---
+
+## 2. Market Leader-Follower Dynamics (Real NASDAQ 2023 Data)
+
+In financial time series, assets often react to macro trends with varying lags. We use **real 2023 monthly closing prices** for Nvidia (NVDA), Microsoft (MSFT), and Apple (AAPL). 
+
+The 2023 market was characterized by two major shifts:
+1.  **The AI Pivot**: A structural trend shift in late spring/early summer.
+2.  **The Year-End Rally**: A sharp recovery starting in late autumn.
+
+### The Data: AI Boom and Year-End Recovery
+We use the actual monthly closing prices to model these two distinct shifts.
+
+```{r real-data}
+dat_market <- data.frame(
+  month  = rep(1:12, 3),
+  ticker = rep(c("NVDA", "MSFT", "AAPL"), each = 12),
+  price  = c(
+    # NVDA
+    19.52, 23.19, 27.75, 27.72, 37.80, 42.27, 46.69, 49.32, 43.47, 40.75, 46.74, 49.49,
+    # MSFT
+    241.47, 243.65, 281.63, 300.15, 321.49, 333.39, 328.87, 321.56, 309.77, 331.71, 372.49, 369.67,
+    # AAPL
+    142.01, 145.30, 162.55, 167.26, 174.96, 191.46, 193.91, 185.69, 169.23, 168.79, 188.00, 190.55
+  )
+)
+
+ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
+  geom_point() + geom_line() +
+  facet_wrap(~ticker, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Real 2023 Monthly Closing Prices", y = "Price (USD)", x = "Month")
+```
+
+### Modeling Two Structural Shifts with `smoothbp_ss()`
+We model **two candidate breakpoints**, each with its own location sub-model conditional on the security ticker.
+
+```{r fit-market}
+dat_market$ticker <- factor(dat_market$ticker, levels = c("AAPL", "MSFT", "NVDA"))
+
+fit_market <- smoothbp_ss(
+  formula = price ~ month,
+  b0      = ~ ticker,
+  deltas  = list(~ ticker, ~ ticker),
+  omega   = list(~ ticker, ~ ticker),
+  rho     = list(~ 1, ~ 1),
+  data    = dat_market,
+  spike   = prior_spike_slab(pi = 0.5),
+  priors  = smoothbp_priors(
+    omega = list(
+      prior_normal(5, 2, lb = 1, ub = 12), # Prior for AI Pivot
+      prior_normal(10, 2, lb = 1, ub = 12) # Prior for Year-End Rally
+    )
+  ),
+  chains = 2, iter = 4000, warmup = 2000
+)
+
+# Visualize the two-breakpoint fit
+pred_market <- fitted(fit_market)
+dat_market$y_fit <- pred_market$fitted_mean
+dat_market$lo    <- pred_market$fitted_Q2.5
+dat_market$hi    <- pred_market$fitted_Q97.5
+
+ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
+  geom_point() +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = ticker), alpha = 0.1, color = NA) +
+  geom_line(aes(y = y_fit), size = 1) +
+  facet_wrap(~ticker, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Two-Breakpoint smoothbp_ss Fit", subtitle = "Capturing both the spring AI pivot and the autumn recovery.")
+```
+
+### Analyzing Leadership Across Different Events
+By estimating independent lags for each breakpoint, we can see if the same security "led" both market movements.
+
+```{r market-prob}
+draws <- as_draws_matrix(fit_market$draws)
+
+# Event 1: AI Pivot
+# Prob NVDA led MSFT in the spring
+lag1_nvda_msft <- draws[, "omega1_tickerNVDA"] - draws[, "omega1_tickerMSFT"]
+p_lead1 <- mean(lag1_nvda_msft < 0)
+
+# Event 2: Year-End Rally
+# Prob NVDA led MSFT in the autumn
+lag2_nvda_msft <- draws[, "omega2_tickerNVDA"] - draws[, "omega2_tickerMSFT"]
+p_lead2 <- mean(lag2_nvda_msft < 0)
+
+message(sprintf("Prob NVDA led AI Pivot: %.2f", p_lead1))
+message(sprintf("Prob NVDA led Year-End Rally: %.2f", p_lead2))
+```
+
+---
+
+## 3. Shifting Change-Points (Non-stationary Locations)
+
+In many systems, the *location* of a change-point ($\omega$) is not constant but depends on individual characteristics. `smoothbp` allows the change-point itself to have a linear predictor.
+
+### Simulation: Age of onset depends on Covariate X
+Imagine a transition that happens earlier for individuals with higher values of $X$.
+
+```{r sim-shifting}
+set.seed(456)
+n_subj <- 40
+n_obs  <- 10
+tau    <- seq(0, 10, length.out = n_obs)
+x      <- runif(n_subj, 0, 1)
+
+rows <- list()
+for (i in 1:n_subj) {
+  # omega shifts from 7 down to 3 as x goes from 0 to 1
+  om_i <- 7 - 4 * x[i]
+  di   <- tau - om_i
+  yi   <- 5 + 0.3 * di - 1.2 * di * plogis(di * 5) + rnorm(n_obs, sd = 0.1)
+  rows[[i]] <- data.frame(subject = i, tau = tau, y = yi, x = x[i])
+}
+dat_shift <- do.call(rbind, rows)
+```
+
+### Fitting with `omega ~ x`
+We specify `omega = list(~ x)` to model this dependency.
+
+```{r fit-shifting}
+fit_shift <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),
+  omega   = list(~ x),
+  deltas  = list(~ 1),
+  data    = dat_shift,
+  priors  = smoothbp_priors(omega = list(prior_normal(5, 3, lb = 0))),
+  chains = 2, iter = 2000, warmup = 1000, seed = 42
+)
+
+summary(fit_shift, effects = "fixed") |> filter(grepl("^omega", variable))
+```
+
+---
+
+## Conclusion
+
+`smoothbp` provides a unified framework for modeling multiple structural changes that are themselves dependent on other factors. By modeling two breakpoints in financial data, we can reveal the evolving leadership dynamics of complex markets.

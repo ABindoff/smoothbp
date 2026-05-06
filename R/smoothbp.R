@@ -57,6 +57,13 @@ smoothbp <- function(
   y   <- as.double(data[[response_name]])
   tau <- as.double(data[[time_name]])
   
+  if (length(tau) == 0L) {
+    stop(sprintf("Time variable '%s' is empty or not found. A valid time/covariate column is required on the RHS of the formula.", time_name))
+  }
+  if (length(tau) != length(y)) {
+    stop("Length of time variable (tau) does not match length of response variable (y).")
+  }
+  
   if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1L)
 
   if (.verbose) message("Building design matrices...")
