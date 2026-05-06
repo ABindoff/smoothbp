@@ -12,8 +12,8 @@ knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>",
   eval = TRUE,
-  fig.width = 7,
-  fig.height = 5
+  fig.width = 8,
+  fig.height = 6
 )
 ```
 
@@ -28,6 +28,7 @@ if (requireNamespace("pkgload", quietly = TRUE)) {
 library(ggplot2)
 library(dplyr)
 library(posterior)
+library(tidyr)
 ```
 
 ---
@@ -37,7 +38,7 @@ library(posterior)
 In financial markets, structural shifts often reflect the transition between macro cycles. By including data from late 2022, we can model the transition from the bear market into the AI-driven recovery of 2023.
 
 ### The Data: Oct 2022 to Dec 2023
-We use monthly closing prices (15 months).
+We use monthly closing prices for Apple, Microsoft, and Nvidia.
 ```{r real-data}
 dat_market <- data.frame(
   month  = rep(1:15, 3),
@@ -54,66 +55,90 @@ dat_market <- data.frame(
 dat_market$ticker <- factor(dat_market$ticker, levels = c("AAPL", "MSFT", "NVDA"))
 ```
 
-### Regularized Discovery with `smoothbp_ss()`
-We use **five candidate breakpoints** with spike-and-slab priors (`pi = 0.5`). This allows the data to decide which transitions are structural and which are mere noise.
+### HMC Discovery with `smoothbp()`
+To ensure we capture the sharpest price movements, we use **five breakpoints** and the full HMC engine without spike-and-slab regularization.
 
-```{r fit-market-ss}
-fit_market <- smoothbp_ss(
+```{r fit-market-hmc}
+fit_market <- smoothbp(
   formula = price ~ month, b0 = ~ ticker,
   deltas = list(~ ticker, ~ ticker, ~ ticker, ~ ticker, ~ ticker), 
   omega  = list(~ ticker, ~ ticker, ~ ticker, ~ ticker, ~ ticker),
   rho    = list(~ 1, ~ 1, ~ 1, ~ 1, ~ 1), 
   data   = dat_market,
-  spike  = prior_spike_slab(pi = 0.5), 
   priors = smoothbp_priors(
     b0 = prior_normal(200, 500), b1 = prior_normal(0, 50), 
-    delta = prior_normal(0, 40), # Tightened to reduce noise-chasing
+    delta = prior_normal(0, 80), 
     omega = list(
       prior_normal(2, 1, lb=1, ub=15), prior_normal(5, 1, lb=1, ub=15),
       prior_normal(8, 1, lb=1, ub=15), prior_normal(12, 1, lb=1, ub=15),
       prior_normal(14, 1, lb=1, ub=15)
     ),
-    rho = list(prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1))
+    rho = list(prior_normal(20, 5, lb=1), prior_normal(20, 5, lb=1), prior_normal(20, 5, lb=1), prior_normal(20, 5, lb=1), prior_normal(20, 5, lb=1))
   ),
   chains = 4, iter = 5000, warmup = 3000
 )
 
-# Extract Breakpoint locations (Posterior Means)
+# Extract Ticker-Specific Breakpoints
 draws <- as_draws_matrix(fit_market$draws)
-oms <- colMeans(draws[, grepl("^omega[0-9]+_\\(Intercept\\)$", colnames(draws))])
+om_cols <- colnames(draws)[grepl("^omega", colnames(draws))]
+om_summary <- summarise_draws(draws[, om_cols]) |>
+  separate(variable, into = c("bp", "param"), sep = "_") |>
+  mutate(
+    event = case_when(
+      bp == "omega1" ~ "Bear Pivot",
+      bp == "omega2" ~ "March Dip",
+      bp == "omega3" ~ "AI Pivot",
+      bp == "omega4" ~ "Autumn Dip",
+      bp == "omega5" ~ "Year-End",
+      TRUE ~ bp
+    ),
+    ticker = gsub("ticker", "", param),
+    ticker = ifelse(ticker == "(Intercept)", "AAPL", ticker)
+  )
 
-# Visualize with Annotations
+# Calculate the actual omega for each ticker
+# (Base omega + offset)
+om_pivoted <- om_summary |>
+  select(event, ticker, mean) |>
+  pivot_wider(names_from = ticker, values_from = mean) |>
+  mutate(
+    MSFT = AAPL + MSFT,
+    NVDA = AAPL + NVDA
+  ) |>
+  pivot_longer(cols = -event, names_to = "ticker", values_to = "omega_val")
+
+# Merge with fitted values
 pred <- fitted(fit_market)
 dat_market$y_fit <- pred$fitted_mean
 dat_market$lo    <- pred$fitted_Q2.5
-dat_market$hi    <- pred_fitted_Q97.5 <- pred$fitted_Q97.5
+dat_market$hi    <- pred$fitted_Q97.5
 
-events <- data.frame(
-  x = as.numeric(oms),
-  label = c("Bear Pivot", "Bank Crisis", "AI Pivot", "Autumn Dip", "Year-End")
-)
+# Calculate y-position for the X markers (on the fitted line)
+dat_markers <- om_pivoted |>
+  rowwise() |>
+  mutate(y_val = approx(dat_market$month[dat_market$ticker == ticker], 
+                        dat_market$y_fit[dat_market$ticker == ticker], 
+                        xout = omega_val)$y)
 
 ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   geom_point(alpha = 0.5) +
   geom_ribbon(aes(ymin = lo, ymax = hi, fill = ticker), alpha = 0.1, color = NA) +
   geom_line(aes(y = y_fit), size = 1) +
-  geom_vline(data = events, aes(xintercept = x), linetype = "dashed", alpha = 0.3) +
-  geom_text(data = events, aes(x = x, y = 380, label = label), inherit.aes = FALSE, angle = 90, size = 3, vjust = -0.5, alpha = 0.6) +
+  # Red X for each breakpoint
+  geom_point(data = dat_markers, aes(x = omega_val, y = y_val), color = "red", shape = 4, size = 4, stroke = 1.5) +
   scale_x_continuous(breaks = 1:15, labels = c("Oct22", "Nov", "Dec", "Jan23", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
   facet_wrap(~ticker, scales = "free_y") +
   theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Structural Market Timeline (Regularized Spike-and-Slab)", subtitle = "Identifying and labeling the major macro pivots of 2023.")
+  labs(title = "High-Fidelity Market Narrative", subtitle = "Red 'X' marks the structural change-points discovered for each security.")
 ```
 
 ### Quantifying Market Leadership
-Using the posterior draws for the AI Pivot (Event 3), we can calculate the probability of leadership.
+Using the discovered pivot dates for Event 3 (The AI Pivot), we can see how the lead/lag relationship evolved.
 
 ```{r market-prob}
 p_nvda_lead <- mean((draws[, "omega3_tickerNVDA"] - draws[, "omega3_tickerMSFT"]) < 0)
 message(sprintf("Probability NVDA led the AI Pivot (Event 3): %.2f", p_nvda_lead))
 ```
-
-The low probability (0.07) correctly identifies that Microsoft, buoyed by early ChatGPT momentum, actually initiated its structural shift slightly ahead of Nvidia's hardware-driven rally in May.
 
 ---
 
