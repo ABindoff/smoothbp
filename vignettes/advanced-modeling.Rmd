@@ -136,32 +136,50 @@ dat_market$ticker <- factor(dat_market$ticker, levels = c("AAPL", "MSFT", "NVDA"
 
 fit_cons <- smoothbp_ss(
   formula = price ~ month, b0 = ~ ticker,
-  deltas = list(~ ticker, ~ ticker), omega = list(~ ticker, ~ ticker),
-  rho = list(~ 1, ~ 1), data = dat_market,
-  spike = prior_spike_slab(pi = 0.1), # CONSERVATIVE
+  deltas = list(~ ticker, ~ ticker, ~ ticker), 
+  omega  = list(~ ticker, ~ ticker, ~ ticker),
+  rho    = list(~ 1, ~ 1, ~ 1), 
+  data   = dat_market,
+  spike  = prior_spike_slab(pi = 0.5), # Standard model selection prior
   priors = smoothbp_priors(
-    b0 = prior_normal(200, 500), b1 = prior_normal(0, 50),
-    omega = list(prior_normal(5, 2, lb=1, ub=12), prior_normal(10, 2, lb=1, ub=12))
+    b0    = prior_normal(200, 500), 
+    b1    = prior_normal(0, 50),
+    delta = prior_normal(0, 100),
+    omega = list(
+      prior_normal(4, 2, lb=1, ub=12), 
+      prior_normal(8, 2, lb=1, ub=12),
+      prior_normal(10, 2, lb=1, ub=12)
+    ),
+    rho = list(prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1))
   ),
   chains = 2, iter = 2000, warmup = 1000
 )
 ```
 
-#### Option 2: The "Permissive" Model (Capturing the Dip)
-Here we use a higher inclusion probability (`pi = 0.8`), allowing the model to capture the finer-grained dip and recovery cycles.
+#### Option 2: The "Permissive" Model (HMC discovery)
+For complex structures like the "Rise -> Dip -> Rally" cycle, we use `smoothbp()`. By avoiding the binary selection of spike-and-slab, the HMC sampler can more efficiently explore the sharp likelihood peaks of the autumn dip.
 
 ```{r fit-market-perm}
-fit_perm <- smoothbp_ss(
+fit_perm <- smoothbp(
   formula = price ~ month, b0 = ~ ticker,
-  deltas = list(~ ticker, ~ ticker), omega = list(~ ticker, ~ ticker),
-  rho = list(~ 1, ~ 1), data = dat_market,
-  spike = prior_spike_slab(pi = 0.8), # PERMISSIVE
+  deltas = list(~ ticker, ~ ticker, ~ ticker), 
+  omega  = list(~ ticker, ~ ticker, ~ ticker),
+  rho    = list(~ 1, ~ 1, ~ 1), 
+  data   = dat_market,
   priors = smoothbp_priors(
-    b0 = prior_normal(200, 500), b1 = prior_normal(0, 50),
-    omega = list(prior_normal(5, 2, lb=1, ub=12), prior_normal(10, 2, lb=1, ub=12))
+    b0    = prior_normal(200, 500), 
+    b1    = prior_normal(0, 50),
+    delta = prior_normal(0, 100),
+    omega = list(
+      prior_normal(4, 2, lb=1, ub=12), 
+      prior_normal(8, 2, lb=1, ub=12),
+      prior_normal(10, 2, lb=1, ub=12)
+    ),
+    rho = list(prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1), prior_normal(15, 5, lb=1))
   ),
-  chains = 2, iter = 2000, warmup = 1000
+  chains = 4, iter = 4000, warmup = 2000
 )
+```
 
 # Visualize the permissive fit
 pred_perm <- fitted(fit_perm)
@@ -184,18 +202,21 @@ By using the permissive model, we can see if the same security "led" both the sp
 ```{r market-prob}
 draws <- as_draws_matrix(fit_perm$draws)
 
-# Event 1: AI Pivot
-# Prob NVDA led MSFT in the spring
-lag1_nvda_msft <- draws[, "omega1_tickerNVDA"] - draws[, "omega1_tickerMSFT"]
-p_lead1 <- mean(lag1_nvda_msft < 0)
+# Event 1: AI Pivot (Spring)
+lag1 <- draws[, "omega1_tickerNVDA"] - draws[, "omega1_tickerMSFT"]
+p_lead1 <- mean(lag1 < 0)
 
-# Event 2: Year-End Rally
-# Prob NVDA led MSFT in the autumn
-lag2_nvda_msft <- draws[, "omega2_tickerNVDA"] - draws[, "omega2_tickerMSFT"]
-p_lead2 <- mean(lag2_nvda_msft < 0)
+# Event 2: Autumn Dip (Sept/Oct)
+lag2 <- draws[, "omega2_tickerNVDA"] - draws[, "omega2_tickerMSFT"]
+p_lead2 <- mean(lag2 < 0)
+
+# Event 3: Year-End Rally (Nov/Dec)
+lag3 <- draws[, "omega3_tickerNVDA"] - draws[, "omega3_tickerMSFT"]
+p_lead3 <- mean(lag3 < 0)
 
 message(sprintf("Prob NVDA led AI Pivot: %.2f", p_lead1))
-message(sprintf("Prob NVDA led Year-End Rally: %.2f", p_lead2))
+message(sprintf("Prob NVDA led Autumn Dip: %.2f", p_lead2))
+message(sprintf("Prob NVDA led Year-End Rally: %.2f", p_lead3))
 ```
 
 ---
