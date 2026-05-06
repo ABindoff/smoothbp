@@ -154,6 +154,23 @@ fit_cons <- smoothbp_ss(
   ),
   chains = 2, iter = 2000, warmup = 1000
 )
+
+# Visualize the conservative fit
+pred_cons <- fitted(fit_cons)
+dat_market$y_fit_cons <- pred_cons$fitted_mean
+dat_market$lo_cons     <- pred_cons$fitted_Q2.5
+dat_market$hi_cons     <- pred_cons$fitted_Q97.5
+
+ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
+  geom_point() +
+  geom_ribbon(aes(ymin = lo_cons, ymax = hi_cons, fill = ticker), alpha = 0.1, color = NA) +
+  geom_line(aes(y = y_fit_cons), size = 1) +
+  facet_wrap(~ticker, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Conservative Model Selection (pi = 0.5)", subtitle = "Using spike-and-slab to identify significant structural changes.")
+
+# Inspect PIPs
+pip(fit_cons)
 ```
 
 #### Option 2: The "Permissive" Model (HMC discovery)
