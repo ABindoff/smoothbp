@@ -62,15 +62,16 @@ fit_market <- smoothbp(
   omega  = list(~ ticker, ~ ticker, ~ ticker, ~ ticker, ~ ticker),
   rho    = list(~ 1, ~ 1, ~ 1, ~ 1, ~ 1), 
   data   = dat_market,
-  priors = smoothbp_priors(
-    b0 = prior_normal(200, 500), b1 = prior_normal(0, 50), delta = prior_normal(0, 100),
-    omega = list(
-      prior_normal(2, 1, lb=1, ub=15), prior_normal(4, 1, lb=1, ub=15),
-      prior_normal(7, 1, lb=1, ub=15), prior_normal(10, 1, lb=1, ub=15),
-      prior_normal(13, 1, lb=1, ub=15)
+    priors = smoothbp_priors(
+      b0 = prior_normal(200, 500), b1 = prior_normal(0, 50), deltas = prior_normal(0, 80),
+      # Constrain omegas: intercepts centered on windows, narrow priors for ticker offsets
+      omega = lapply(list(3, 6, 9, 12, 14), function(m) {
+        list("(Intercept)" = prior_normal(m, 1, lb = 1, ub = 15),
+             "tickerMSFT"  = prior_normal(0, 1),
+             "tickerNVDA"  = prior_normal(0, 1))
+      }),
+      rho = prior_normal(20, 5, lb = 5)
     ),
-    rho = list(prior_normal(20, 5, lb=1), prior_normal(20, 5, lb=1), prior_normal(20, 5, lb=1), prior_normal(20, 5, lb=1), prior_normal(20, 5, lb=1))
-  ),
   chains = 4, iter = 4000, warmup = 2000
 )
 ```
@@ -200,13 +201,17 @@ rally_omegas <- data.frame(
   NVDA = sapply(idx_draws, function(i) get_ticker_rally_omega(draws[i,], "NVDA")),
   MSFT = sapply(idx_draws, function(i) get_ticker_rally_omega(draws[i,], "MSFT")),
   AAPL = sapply(idx_draws, function(i) get_ticker_rally_omega(draws[i,], "AAPL"))
-)
+) |> 
+  filter(NVDA >= 1, NVDA <= 15, MSFT >= 1, MSFT <= 15, AAPL >= 1, AAPL <= 15)
 
-p_nvda_msft <- mean(rally_omegas$NVDA < rally_omegas$MSFT)
-p_nvda_aapl <- mean(rally_omegas$NVDA < rally_omegas$AAPL)
-
-message(sprintf("P(NVDA led the rally before MSFT): %.2f", p_nvda_msft))
-message(sprintf("P(NVDA led the rally before AAPL): %.2f", p_nvda_aapl))
+if (nrow(rally_omegas) > 0) {
+  p_nvda_msft <- mean(rally_omegas$NVDA < rally_omegas$MSFT)
+  p_nvda_aapl <- mean(rally_omegas$NVDA < rally_omegas$AAPL)
+  message(sprintf("P(NVDA led the rally before MSFT): %.2f", p_nvda_msft))
+  message(sprintf("P(NVDA led the rally before AAPL): %.2f", p_nvda_aapl))
+} else {
+  message("No draws found where the rally event fell within the observed data range for all tickers.")
+}
 ```
 
 Note that these probabilities are over the *timing of maximum structural curvature* within the calendar window — not whether any slope ever changed sign. If the model finds NVIDIA's transition was fastest in February while Microsoft's was fastest in March, we conclude NVIDIA led the rally.
