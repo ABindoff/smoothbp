@@ -92,31 +92,34 @@ tickers <- levels(dat_market$ticker) # AAPL (baseline), MSFT, NVDA
 
 # Extract ticker-specific parameters for a single draw
 get_params <- function(d, tk) {
-  b1 <- d["b1_(Intercept)"]
-  offset <- if (tk == tickers[1]) 0 else d[paste0("b1_ticker", tk)]
-  # b1 formula is ~1 by default, so no ticker offset unless b1=~ticker
-  # Check if column exists
-  b1_col <- paste0("b1_ticker", tk)
-  if (b1_col %in% names(d)) b1 <- b1 + d[b1_col]
+  # Helper to safely extract a column value
+  val <- function(pat) {
+    v <- d[grep(paste0("^", pat, "$"), names(d))]
+    if (length(v) == 0) return(0)
+    unname(v[1])
+  }
+  
+  b1 <- val("b1_\\(Intercept\\)")
+  if (tk != tickers[1]) b1 <- b1 + val(paste0("b1_ticker", tk))
   
   deltas <- omegas <- rhos <- numeric(n_bp)
   for (k in 1:n_bp) {
-    deltas[k] <- d[paste0("delta", k, "_(Intercept)")]
-    omegas[k] <- d[paste0("omega", k, "_(Intercept)")]
-    rhos[k]   <- d[paste0("rho", k, "_(Intercept)")]
+    deltas[k] <- val(paste0("delta", k, "_\\(Intercept\\)"))
+    omegas[k] <- val(paste0("omega", k, "_\\(Intercept\\)"))
+    rhos[k]   <- val(paste0("rho", k, "_\\(Intercept\\)"))
+    
     if (tk != tickers[1]) {
-      dc <- paste0("delta", k, "_ticker", tk)
-      oc <- paste0("omega", k, "_ticker", tk)
-      if (dc %in% names(d)) deltas[k] <- deltas[k] + d[dc]
-      if (oc %in% names(d)) omegas[k] <- omegas[k] + d[oc]
+      deltas[k] <- deltas[k] + val(paste0("delta", k, "_ticker", tk))
+      omegas[k] <- omegas[k] + val(paste0("omega", k, "_ticker", tk))
+      rhos[k]   <- rhos[k]   + val(paste0("rho", k, "_ticker", tk))
     }
   }
-  list(b1 = unname(b1), deltas = unname(deltas), 
-       omegas = unname(omegas), rhos = unname(rhos))
+  list(b1 = b1, deltas = deltas, omegas = omegas, rhos = rhos)
 }
 
 # Analytical derivative
 fprime <- function(tau, p) {
+  if (is.na(tau)) return(NA)
   slope <- p$b1
   for (k in 1:n_bp) {
     dk <- tau - p$omegas[k]
@@ -130,16 +133,21 @@ fprime <- function(tau, p) {
 find_turning_near_omega <- function(p, window = 2) {
   out <- list()
   for (k in 1:n_bp) {
+    if (is.na(p$omegas[k])) next
     lo <- max(1, p$omegas[k] - window)
     hi <- min(15, p$omegas[k] + window)
     f_lo <- fprime(lo, p)
     f_hi <- fprime(hi, p)
+    
+    if (is.na(f_lo) || is.na(f_hi)) next
     if (f_lo * f_hi < 0) {
-      root <- uniroot(fprime, c(lo, hi), p = p)$root
-      out[[length(out) + 1]] <- data.frame(
-        bp = k, tau_star = root,
-        direction = ifelse(f_lo > 0, "peak", "trough")
-      )
+      root <- try(uniroot(fprime, c(lo, hi), p = p)$root, silent = TRUE)
+      if (!inherits(root, "try-error")) {
+        out[[length(out) + 1]] <- data.frame(
+          bp = k, tau_star = root,
+          direction = ifelse(f_lo > 0, "peak", "trough")
+        )
+      }
     }
   }
   if (length(out) == 0) return(NULL)
