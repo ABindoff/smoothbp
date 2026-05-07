@@ -212,7 +212,7 @@ For each draw, we solve $f'(\tau)=0$ near each $\omega_k$, giving a full posteri
 set.seed(42)
 idx <- sample(nrow(draws), min(500, nrow(draws)))
 
-tp_draws <- do.call(rbind, lapply(idx, function(i) {
+tp_draws_list <- lapply(idx, function(i) {
   d <- draws[i, ]
   do.call(rbind, lapply(tickers, function(tk) {
     p <- get_params(d, tk)
@@ -220,23 +220,34 @@ tp_draws <- do.call(rbind, lapply(idx, function(i) {
     if (!is.null(tp)) { tp$ticker <- tk; tp$draw <- i }
     tp
   }))
-}))
+})
+tp_draws <- do.call(rbind, tp_draws_list)
 
 # Compare the first peak (summer) across tickers
 # Use bp identity to ensure we compare the same structural event
-# Find which bp corresponds to the summer peak for each ticker
-summer_bp <- tp_mean |> filter(direction == "peak") |> 
-  group_by(ticker) |> slice_max(tau_star) |> pull(bp) |> unique()
-
-if (length(summer_bp) > 0) {
-  ref_bp <- summer_bp[1]
-  peak_nvda <- tp_draws |> filter(ticker == "NVDA", bp == ref_bp) |> pull(tau_star)
-  peak_msft <- tp_draws |> filter(ticker == "MSFT", bp == ref_bp) |> pull(tau_star)
-  n_common <- min(length(peak_nvda), length(peak_msft))
-  if (n_common > 0) {
-    p_lead <- mean(peak_nvda[1:n_common] < peak_msft[1:n_common])
-    message(sprintf("Prob NVDA summer peak before MSFT (BP %d): %.2f", ref_bp, p_lead))
+if (!is.null(tp_mean) && !is.null(tp_draws)) {
+  summer_bp_df <- tp_mean |> filter(direction == "peak")
+  if (nrow(summer_bp_df) > 0) {
+    summer_bp <- summer_bp_df |> 
+      group_by(ticker) |> slice_max(tau_star) |> pull(bp) |> unique()
+    
+    if (length(summer_bp) > 0) {
+      ref_bp <- summer_bp[1]
+      peak_nvda <- tp_draws |> filter(ticker == "NVDA", bp == ref_bp) |> pull(tau_star)
+      peak_msft <- tp_draws |> filter(ticker == "MSFT", bp == ref_bp) |> pull(tau_star)
+      n_common <- min(length(peak_nvda), length(peak_msft))
+      if (n_common > 10) { # Ensure we have enough draws for a stable estimate
+        p_lead <- mean(peak_nvda[1:n_common] < peak_msft[1:n_common])
+        message(sprintf("Prob NVDA summer peak before MSFT (BP %d): %.2f", ref_bp, p_lead))
+      } else {
+        message("Not enough posterior draws found a turning point for this event.")
+      }
+    }
+  } else {
+    message("No peaks found on the posterior mean curve.")
   }
+} else {
+  message("No turning points discovered in the posterior sample.")
 }
 ```
 
