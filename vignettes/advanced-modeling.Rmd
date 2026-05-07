@@ -167,36 +167,43 @@ ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   )
 ```
 
-### Leadership Analysis via Temporal Window Matching
+### Leadership Analysis: Timing the AI Rally
 
-Comparing $\omega_{k,\text{NVDA}}$ with $\omega_{k,\text{MSFT}}$ using a shared index $k$ is valid when the omega priors are centred at the same months for all tickers — which they are here. However, for extra robustness, we use **temporal window matching**: for each draw, we find the breakpoint whose $\omega$ falls within a known calendar window (the early 2023 AI rally), and compare its timing across tickers.
+Comparing $\omega_{k,\text{NVDA}}$ with $\omega_{k,\text{MSFT}}$ using a shared index $k$ is valid when the omega priors are centred at the same months for all tickers. To be extra robust, we identify which breakpoint index represents the "AI Rally" for each ticker by finding the one whose posterior mean is closest to June 2023 (Month 9).
 
 ```{r leadership-analysis}
-# Rally window: months 3-9 = Jan-Jun 2023
-rally_window <- c(3, 9)
+# Target month for the AI Rally (June 2023)
+target_month <- 9
 
-get_rally_omega <- function(d, tk, window) {
-  oms    <- get_omegas(d, tk)
-  in_win <- which(oms >= window[1] & oms <= window[2])
-  if (length(in_win) == 0) return(NA)
-  oms[in_win[1]]
+# Identify the BP index closest to the target for each ticker
+rally_bp_map <- omega_summary |>
+  mutate(dist = abs(mean - target_month)) |>
+  group_by(ticker) |>
+  slice_min(dist, n = 1) |>
+  select(ticker, bp) |>
+  ungroup()
+
+print(rally_bp_map)
+
+# For each draw, extract the omega for the identified BP for each ticker
+get_ticker_rally_omega <- function(d, tk) {
+  bp_idx <- rally_bp_map$bp[rally_bp_map$ticker == tk]
+  omegas <- get_omegas(d, tk)
+  omegas[bp_idx]
 }
 
 set.seed(42)
 idx_draws <- sample(nrow(draws), min(1000, nrow(draws)))
 
-rally_omegas <- do.call(rbind, lapply(idx_draws, function(i) {
-  d <- draws[i, ]
-  data.frame(
-    draw       = i,
-    omega_NVDA = get_rally_omega(d, "NVDA", rally_window),
-    omega_MSFT = get_rally_omega(d, "MSFT", rally_window),
-    omega_AAPL = get_rally_omega(d, "AAPL", rally_window)
-  )
-})) |> na.omit()
+rally_omegas <- data.frame(
+  draw = idx_draws,
+  NVDA = sapply(idx_draws, function(i) get_ticker_rally_omega(draws[i,], "NVDA")),
+  MSFT = sapply(idx_draws, function(i) get_ticker_rally_omega(draws[i,], "MSFT")),
+  AAPL = sapply(idx_draws, function(i) get_ticker_rally_omega(draws[i,], "AAPL"))
+)
 
-p_nvda_msft <- mean(rally_omegas$omega_NVDA < rally_omegas$omega_MSFT)
-p_nvda_aapl <- mean(rally_omegas$omega_NVDA < rally_omegas$omega_AAPL)
+p_nvda_msft <- mean(rally_omegas$NVDA < rally_omegas$MSFT)
+p_nvda_aapl <- mean(rally_omegas$NVDA < rally_omegas$AAPL)
 
 message(sprintf("P(NVDA led the rally before MSFT): %.2f", p_nvda_msft))
 message(sprintf("P(NVDA led the rally before AAPL): %.2f", p_nvda_aapl))
