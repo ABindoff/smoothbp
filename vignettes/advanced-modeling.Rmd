@@ -83,129 +83,153 @@ $$\mu(\tau) = b_0 + b_1(\tau - \omega_1) + \sum_{k=1}^K \delta_k (\tau - \omega_
 Applying the product rule to the $k$-th term, letting $d_k = \tau-\omega_k$ and $s_k=\sigma(\rho_k d_k)$:
 $$f'(\tau) = b_1 + \sum_{k=1}^K \delta_k \left[s_k + \rho_k d_k s_k(1 - s_k)\right]$$
 
-We solve $f'(\tau) = 0$ numerically: evaluate the fit on a fine grid, compute the slope via finite differences, and find sign-changes.
-
-### Step 1: Turning Points on the Posterior Mean Curve
-
-For **plotting**, we find turning points directly on the posterior mean curve. This avoids the problem of averaging extrema across draws (which produces nonsensical locations when multiple peaks/troughs exist).
+The equation $f'(\tau) = 0$ is transcendental (no closed form), but we can evaluate the derivative **analytically** and use `uniroot()` near each $\omega_k$ to find the associated turning point. This directly ties each turning point to its causal breakpoint.
 
 ```{r turning-points}
-grid_months <- seq(1, 15, length.out = 1000)
-h <- diff(grid_months)[1]
+n_bp <- 5
+draws <- as_draws_matrix(fit_market$draws)
+tickers <- levels(dat_market$ticker) # AAPL (baseline), MSFT, NVDA
 
-# Evaluate posterior mean curve on a fine grid, per ticker
-pred_fine <- do.call(rbind, lapply(levels(dat_market$ticker), function(tk) {
-  nd <- data.frame(month = grid_months, ticker = factor(tk, levels = levels(dat_market$ticker)))
-  pf <- fitted(fit_market, newdata = nd)
-  data.frame(ticker = tk, month = grid_months, y_fit = pf$fitted_mean)
-}))
-
-# Find sign-changes in f'(tau) on the mean curve
-find_extrema_on_curve <- function(months, y_fit) {
-  dy <- diff(y_fit) / diff(months)
-  sc <- which(diff(sign(dy)) != 0)
-  if (length(sc) == 0) return(NULL)
-  data.frame(
-    month     = months[sc + 1],
-    y_val     = y_fit[sc + 1],
-    direction = ifelse(diff(sign(dy))[sc] < 0, "peak", "trough")
-  )
+# Extract ticker-specific parameters for a single draw
+get_params <- function(d, tk) {
+  b1 <- d["b1_(Intercept)"]
+  offset <- if (tk == tickers[1]) 0 else d[paste0("b1_ticker", tk)]
+  # b1 formula is ~1 by default, so no ticker offset unless b1=~ticker
+  # Check if column exists
+  b1_col <- paste0("b1_ticker", tk)
+  if (b1_col %in% names(d)) b1 <- b1 + d[b1_col]
+  
+  deltas <- omegas <- rhos <- numeric(n_bp)
+  for (k in 1:n_bp) {
+    deltas[k] <- d[paste0("delta", k, "_(Intercept)")]
+    omegas[k] <- d[paste0("omega", k, "_(Intercept)")]
+    rhos[k]   <- d[paste0("rho", k, "_(Intercept)")]
+    if (tk != tickers[1]) {
+      dc <- paste0("delta", k, "_ticker", tk)
+      oc <- paste0("omega", k, "_ticker", tk)
+      if (dc %in% names(d)) deltas[k] <- deltas[k] + d[dc]
+      if (oc %in% names(d)) omegas[k] <- omegas[k] + d[oc]
+    }
+  }
+  list(b1 = unname(b1), deltas = unname(deltas), 
+       omegas = unname(omegas), rhos = unname(rhos))
 }
 
-extrema_mean <- pred_fine |>
-  group_by(ticker) |>
-  do(find_extrema_on_curve(.$month, .$y_fit)) |>
-  ungroup()
+# Analytical derivative
+fprime <- function(tau, p) {
+  slope <- p$b1
+  for (k in 1:n_bp) {
+    dk <- tau - p$omegas[k]
+    sk <- plogis(dk * p$rhos[k])
+    slope <- slope + p$deltas[k] * (sk + p$rhos[k] * dk * sk * (1 - sk))
+  }
+  slope
+}
 
-print(extrema_mean)
+# For each bp k, search for f'(tau)=0 near omega_k
+find_turning_near_omega <- function(p, window = 2) {
+  out <- list()
+  for (k in 1:n_bp) {
+    lo <- max(1, p$omegas[k] - window)
+    hi <- min(15, p$omegas[k] + window)
+    f_lo <- fprime(lo, p)
+    f_hi <- fprime(hi, p)
+    if (f_lo * f_hi < 0) {
+      root <- uniroot(fprime, c(lo, hi), p = p)$root
+      out[[length(out) + 1]] <- data.frame(
+        bp = k, tau_star = root,
+        direction = ifelse(f_lo > 0, "peak", "trough")
+      )
+    }
+  }
+  if (length(out) == 0) return(NULL)
+  do.call(rbind, out)
+}
 ```
 
-### Visualizing Turning Points
+### Turning Points on the Posterior Mean
 
-Red markers now sit at the **actual peaks and troughs** of the posterior mean curve — the points where the fitted trend physically reverses direction.
+```{r mean-turning-points}
+# Use posterior means of all parameters
+d_mean <- colMeans(draws)
 
-```{r plot-extrema}
+tp_mean <- do.call(rbind, lapply(tickers, function(tk) {
+  p <- get_params(d_mean, tk)
+  tp <- find_turning_near_omega(p)
+  if (!is.null(tp)) tp$ticker <- tk
+  tp
+}))
+
+# Get y-values from the fitted curve
 pred_orig <- fitted(fit_market)
 dat_market$y_fit <- pred_orig$fitted_mean
 dat_market$lo    <- pred_orig$fitted_Q2.5
 dat_market$hi    <- pred_orig$fitted_Q97.5
 
+tp_mean$y_val <- sapply(1:nrow(tp_mean), function(i) {
+  idx <- dat_market$ticker == tp_mean$ticker[i]
+  approx(dat_market$month[idx], dat_market$y_fit[idx], xout = tp_mean$tau_star[i])$y
+})
+
+print(tp_mean)
+```
+
+### Visualizing Turning Points
+
+```{r plot-extrema}
 ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   geom_point(alpha = 0.5) +
   geom_ribbon(aes(ymin = lo, ymax = hi, fill = ticker), alpha = 0.1, color = NA) +
   geom_line(aes(y = y_fit), size = 1) +
   geom_point(
-    data = extrema_mean,
-    aes(x = month, y = y_val, shape = direction),
+    data = tp_mean, aes(x = tau_star, y = y_val, shape = direction),
     color = "red", size = 4, stroke = 1.5, inherit.aes = FALSE
   ) +
   scale_shape_manual(values = c(peak = 4, trough = 3), name = "Turning point") +
-  scale_x_continuous(
-    breaks = 1:15,
-    labels = c("Oct22","Nov","Dec","Jan23","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
-  ) +
+  scale_x_continuous(breaks = 1:15, labels = c(
+    "Oct22","Nov","Dec","Jan23","Feb","Mar","Apr","May",
+    "Jun","Jul","Aug","Sep","Oct","Nov","Dec")) +
   facet_wrap(~ticker, scales = "free_y") +
   theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(
-    title    = "Market Turning Points: where f'(tau) = 0",
-    subtitle = "X = peak, + = trough. Located on the posterior mean curve."
-  )
+  labs(title = "Market Turning Points (semi-analytical)",
+       subtitle = "Solving f'(tau) = 0 near each omega_k. X = peak, + = trough.")
 ```
 
-### Step 2: Posterior Uncertainty Over Turning Points
+### Posterior Uncertainty and Leadership
 
-For **probabilities**, we find extrema on each posterior draw individually, then cluster by proximity to identify corresponding events across tickers.
+For each draw, we solve $f'(\tau)=0$ near each $\omega_k$, giving a full posterior over turning point timing.
 
 ```{r leadership-robust}
-# Per-draw extrema for uncertainty quantification
-get_extrema_per_draw <- function(fit, ticker_level, n_draws_use = 500) {
-  newdata_fine <- data.frame(
-    month  = grid_months,
-    ticker = factor(ticker_level, levels = levels(dat_market$ticker))
-  )
-  fit_raw <- fitted(fit, newdata = newdata_fine, summary = FALSE)
-  idx <- sample(nrow(fit_raw), min(n_draws_use, nrow(fit_raw)))
-  fit_raw <- fit_raw[idx, , drop = FALSE]
+# Sample draws for speed
+set.seed(42)
+idx <- sample(nrow(draws), min(500, nrow(draws)))
 
-  do.call(rbind, lapply(seq_len(nrow(fit_raw)), function(i) {
-    dy <- diff(fit_raw[i, ]) / h
-    sc <- which(diff(sign(dy)) != 0)
-    if (length(sc) == 0) return(NULL)
-    data.frame(
-      draw      = i,
-      tau_star  = grid_months[sc + 1],
-      direction = ifelse(diff(sign(dy))[sc] < 0, "peak", "trough")
-    )
+tp_draws <- do.call(rbind, lapply(idx, function(i) {
+  d <- draws[i, ]
+  do.call(rbind, lapply(tickers, function(tk) {
+    p <- get_params(d, tk)
+    tp <- find_turning_near_omega(p)
+    if (!is.null(tp)) { tp$ticker <- tk; tp$draw <- i }
+    tp
   }))
+}))
+
+# Compare the first peak (summer) across tickers
+# Use bp identity to ensure we compare the same structural event
+# Find which bp corresponds to the summer peak for each ticker
+summer_bp <- tp_mean |> filter(direction == "peak") |> 
+  group_by(ticker) |> slice_max(tau_star) |> pull(bp) |> unique()
+
+if (length(summer_bp) > 0) {
+  ref_bp <- summer_bp[1]
+  peak_nvda <- tp_draws |> filter(ticker == "NVDA", bp == ref_bp) |> pull(tau_star)
+  peak_msft <- tp_draws |> filter(ticker == "MSFT", bp == ref_bp) |> pull(tau_star)
+  n_common <- min(length(peak_nvda), length(peak_msft))
+  if (n_common > 0) {
+    p_lead <- mean(peak_nvda[1:n_common] < peak_msft[1:n_common])
+    message(sprintf("Prob NVDA summer peak before MSFT (BP %d): %.2f", ref_bp, p_lead))
+  }
 }
-
-extrema_list <- lapply(levels(dat_market$ticker), function(tk) {
-  ex <- get_extrema_per_draw(fit_market, tk)
-  if (!is.null(ex)) ex$ticker <- tk
-  ex
-})
-extrema_all <- do.call(rbind, extrema_list)
-
-# Cluster peaks by proximity to the mean-curve peaks
-# For each draw, find the peak closest to the summer peak (Jul-Aug region)
-summer_peak_ref <- extrema_mean |> filter(direction == "peak") |> pull(month) |> max(na.rm = TRUE)
-
-get_nearest_peak <- function(tk, ref) {
-  peaks <- extrema_all |> filter(ticker == tk, direction == "peak")
-  peaks |>
-    mutate(dist = abs(tau_star - ref)) |>
-    group_by(draw) |>
-    slice_min(dist, n = 1) |>
-    ungroup() |>
-    pull(tau_star)
-}
-
-peak_nvda <- get_nearest_peak("NVDA", summer_peak_ref)
-peak_msft <- get_nearest_peak("MSFT", summer_peak_ref)
-
-n_common <- min(length(peak_nvda), length(peak_msft))
-p_nvda_first <- mean(peak_nvda[1:n_common] < peak_msft[1:n_common])
-message(sprintf("Prob NVDA summer peak occurred before MSFT: %.2f", p_nvda_first))
 ```
 
 ---
