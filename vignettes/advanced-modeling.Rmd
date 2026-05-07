@@ -110,6 +110,26 @@ get_omegas <- function(d, tk) {
   })
 }
 
+# Extract all ticker-specific parameters for a single draw row
+get_params <- function(d, tk) {
+  b1 <- val(d, "b1_\\(Intercept\\)")
+  if (tk != tickers[1]) b1 <- b1 + val(d, paste0("b1_ticker", tk))
+  
+  deltas <- omegas <- rhos <- numeric(n_bp)
+  for (k in 1:n_bp) {
+    deltas[k] <- val(d, paste0("delta", k, "_\\(Intercept\\)"))
+    omegas[k] <- val(d, paste0("omega", k, "_\\(Intercept\\)"))
+    rhos[k]   <- val(d, paste0("rho", k, "_\\(Intercept\\)"))
+    
+    if (tk != tickers[1]) {
+      deltas[k] <- deltas[k] + val(d, paste0("delta", k, "_ticker", tk))
+      omegas[k] <- omegas[k] + val(d, paste0("omega", k, "_ticker", tk))
+      rhos[k]   <- rhos[k]   + val(d, paste0("rho", k, "_ticker", tk))
+    }
+  }
+  list(b1 = b1, deltas = deltas, omegas = omegas, rhos = rhos)
+}
+
 # Posterior summary of omega_k per ticker
 omega_summary <- do.call(rbind, lapply(tickers, function(tk) {
   om_mat <- t(apply(draws, 1, get_omegas, tk = tk))
