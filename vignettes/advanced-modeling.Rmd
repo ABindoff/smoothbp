@@ -188,42 +188,40 @@ ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   )
 ```
 
-### Leadership Analysis: Timing the AI Rally
+### Targeted Leadership Analysis
 
-To compare the "AI Rally" across tickers, we identify the specific breakpoint that represents the **primary upward shift** in early 2023. We define this as the breakpoint with the largest positive slope change ($\delta_k > 0$) occurring within the first 10 months.
+Having identified the structural events visually, we can now perform targeted hypothesis testing on the posterior distribution. We focus on three key questions:
+1.  **The Early Pivot**: Who turned first in late 2022 (BP 1)?
+2.  **The Autumn Shift**: Who reacted first to the late-2023 market dip (BP 4)?
+3.  **Cross-Event Dynamics**: Did NVIDIA's primary surge (BP 2) happen before Apple's initial recovery (BP 1)?
 
 ```{r leadership-analysis}
-# Helper to extract both omega and delta for each ticker per draw
-get_ticker_event_data <- function(d, tk) {
-  # Extract all parameters for this ticker
-  p <- get_params(d, tk)
-  # Identify the 'Rally' BP: largest positive delta in first 10 months
-  valid_idx <- which(p$omegas <= 10 & p$deltas > 0)
-  if (length(valid_idx) == 0) return(NA)
-  
-  rally_idx <- valid_idx[which.max(p$deltas[valid_idx])]
-  return(p$omegas[rally_idx])
-}
+# Extract omegas for all draws for the targeted indices
+om_nvda <- t(apply(draws, 1, get_omegas, tk = "NVDA"))
+om_msft <- t(apply(draws, 1, get_omegas, tk = "MSFT"))
+om_aapl <- t(apply(draws, 1, get_omegas, tk = "AAPL"))
 
-set.seed(42)
-idx_draws <- sample(nrow(draws), min(1000, nrow(draws)))
+# 1. Early Pivot (BP 1)
+p1_nvda_msft <- mean(om_nvda[, 1] < om_msft[, 1])
+p1_nvda_aapl <- mean(om_nvda[, 1] < om_aapl[, 1])
 
-rally_omegas <- data.frame(
-  draw = idx_draws,
-  NVDA = sapply(idx_draws, function(i) get_ticker_event_data(draws[i,], "NVDA")),
-  MSFT = sapply(idx_draws, function(i) get_ticker_event_data(draws[i,], "MSFT")),
-  AAPL = sapply(idx_draws, function(i) get_ticker_event_data(draws[i,], "AAPL"))
-) |> 
-  na.omit() # Drop draws where a ticker didn't show a clear upward pivot
+# 2. Autumn Shift (BP 4)
+p4_nvda_msft <- mean(om_nvda[, 4] < om_msft[, 4])
+p4_msft_aapl <- mean(om_msft[, 4] < om_aapl[, 4])
 
-if (nrow(rally_omegas) > 50) {
-  p_nvda_msft <- mean(rally_omegas$NVDA < rally_omegas$MSFT)
-  p_nvda_aapl <- mean(rally_omegas$NVDA < rally_omegas$AAPL)
-  message(sprintf("P(NVDA led the rally before MSFT): %.2f", p_nvda_msft))
-  message(sprintf("P(NVDA led the rally before AAPL): %.2f", p_nvda_aapl))
-} else {
-  message("Insufficient draws identified a clear upward rally pivot for all tickers.")
-}
+# 3. Cross-Event: NVDA Surge (BP 2) vs AAPL Recovery (BP 1)
+p_cross <- mean(om_nvda[, 2] < om_aapl[, 1])
+
+cat("--- Event 1: Early Pivot (BP 1) ---\n")
+message(sprintf("Prob NVDA led MSFT: %.2f", p1_nvda_msft))
+message(sprintf("Prob NVDA led AAPL: %.2f", p1_nvda_aapl))
+
+cat("\n--- Event 2: Autumn Shift (BP 4) ---\n")
+message(sprintf("Prob NVDA led MSFT: %.2f", p4_nvda_msft))
+message(sprintf("Prob MSFT led AAPL: %.2f", p4_msft_aapl))
+
+cat("\n--- Cross-Event Dynamics ---\n")
+message(sprintf("Prob NVDA AI Surge (BP 2) led AAPL Recovery (BP 1): %.2f", p_cross))
 ```
 
 
