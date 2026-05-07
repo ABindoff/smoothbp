@@ -75,184 +75,138 @@ fit_market <- smoothbp(
 )
 ```
 
-### Finding Turning Points via the Analytical Derivative
+### The Point of Maximum Structural Curvature
 
-The `smoothbp` mean function is (from the source of `fitted.smoothbp_fit`):
+The `smoothbp` mean function is:
 $$\mu(\tau) = b_0 + b_1(\tau - \omega_1) + \sum_{k=1}^K \delta_k (\tau - \omega_k)\, \sigma(\rho_k(\tau - \omega_k))$$
 
-Applying the product rule to the $k$-th term, letting $d_k = \tau-\omega_k$ and $s_k=\sigma(\rho_k d_k)$:
-$$f'(\tau) = b_1 + \sum_{k=1}^K \delta_k \left[s_k + \rho_k d_k s_k(1 - s_k)\right]$$
+The $k$-th breakpoint contributes a smooth, S-shaped transition in slope centred on $\omega_k$. The second derivative $f''(\tau)$ — measuring the *rate of bending* — has its maximum **exactly at $\tau = \omega_k$** by the symmetry of the logistic function. This holds regardless of the sign of $\delta_k$: a breakpoint that accelerates a rally and one that decelerates it both have their maximum curvature at $\omega_k$.
 
-The equation $f'(\tau) = 0$ is transcendental (no closed form), but we can evaluate the derivative **analytically** and use `uniroot()` near each $\omega_k$ to find the associated turning point. This directly ties each turning point to its causal breakpoint.
+This means **$\omega_k$ directly answers "when did the structural change happen most rapidly?"** — no root-finding required.
 
-```{r turning-points}
-n_bp <- 5
-draws <- as_draws_matrix(fit_market$draws)
-tickers <- levels(dat_market$ticker) # AAPL (baseline), MSFT, NVDA
+### Extracting Omega per Ticker
 
-# Extract ticker-specific parameters for a single draw
-get_params <- function(d, tk) {
-  # Helper to safely extract a column value
-  val <- function(pat) {
-    v <- d[grep(paste0("^", pat, "$"), names(d))]
-    if (length(v) == 0) return(0)
-    unname(v[1])
-  }
-  
-  b1 <- val("b1_\\(Intercept\\)")
-  if (tk != tickers[1]) b1 <- b1 + val(paste0("b1_ticker", tk))
-  
-  deltas <- omegas <- rhos <- numeric(n_bp)
-  for (k in 1:n_bp) {
-    deltas[k] <- val(paste0("delta", k, "_\\(Intercept\\)"))
-    omegas[k] <- val(paste0("omega", k, "_\\(Intercept\\)"))
-    rhos[k]   <- val(paste0("rho", k, "_\\(Intercept\\)"))
-    
-    if (tk != tickers[1]) {
-      deltas[k] <- deltas[k] + val(paste0("delta", k, "_ticker", tk))
-      omegas[k] <- omegas[k] + val(paste0("omega", k, "_ticker", tk))
-      rhos[k]   <- rhos[k]   + val(paste0("rho", k, "_ticker", tk))
-    }
-  }
-  list(b1 = b1, deltas = deltas, omegas = omegas, rhos = rhos)
+Because `omega` is modelled as `~ ticker`, each ticker has its own posterior over $\omega_k$, representing when *its* structural transition was fastest.
+
+```{r event-omegas}
+n_bp    <- 5
+draws   <- as_draws_matrix(fit_market$draws)
+tickers <- levels(dat_market$ticker)
+
+# Helper to safely extract a named draw column (handles special chars via grep)
+val <- function(d, pat) {
+  v <- d[grep(paste0("^", pat, "$"), names(d))]
+  if (length(v) == 0) return(0)
+  unname(v[1])
 }
 
-# Analytical derivative
-fprime <- function(tau, p) {
-  if (is.na(tau)) return(NA)
-  slope <- p$b1
-  for (k in 1:n_bp) {
-    dk <- tau - p$omegas[k]
-    sk <- plogis(dk * p$rhos[k])
-    slope <- slope + p$deltas[k] * (sk + p$rhos[k] * dk * sk * (1 - sk))
-  }
-  slope
+# Extract omega_k for each ticker from a single draw row
+get_omegas <- function(d, tk) {
+  sapply(1:n_bp, function(k) {
+    base <- val(d, paste0("omega", k, "_\\(Intercept\\)"))
+    off  <- if (tk == tickers[1]) 0 else val(d, paste0("omega", k, "_ticker", tk))
+    base + off
+  })
 }
 
-# For each bp k, search for f'(tau)=0 near omega_k
-find_turning_near_omega <- function(p, window = 2) {
-  out <- list()
-  for (k in 1:n_bp) {
-    if (is.na(p$omegas[k])) next
-    lo <- max(1, p$omegas[k] - window)
-    hi <- min(15, p$omegas[k] + window)
-    f_lo <- fprime(lo, p)
-    f_hi <- fprime(hi, p)
-    
-    if (is.na(f_lo) || is.na(f_hi)) next
-    if (f_lo * f_hi < 0) {
-      root <- try(uniroot(fprime, c(lo, hi), p = p)$root, silent = TRUE)
-      if (!inherits(root, "try-error")) {
-        out[[length(out) + 1]] <- data.frame(
-          bp = k, tau_star = root,
-          direction = ifelse(f_lo > 0, "peak", "trough")
-        )
-      }
-    }
-  }
-  if (length(out) == 0) return(NULL)
-  do.call(rbind, out)
-}
+# Posterior summary of omega_k per ticker
+omega_summary <- do.call(rbind, lapply(tickers, function(tk) {
+  om_mat <- t(apply(draws, 1, get_omegas, tk = tk))
+  do.call(rbind, lapply(1:n_bp, function(k) {
+    data.frame(
+      ticker = tk, bp = k,
+      mean  = mean(om_mat[, k]),
+      Q2.5  = quantile(om_mat[, k], 0.025),
+      Q97.5 = quantile(om_mat[, k], 0.975)
+    )
+  }))
+})) |> mutate(ticker = factor(ticker, levels = levels(dat_market$ticker)))
+print(omega_summary)
 ```
 
-### Turning Points on the Posterior Mean
+### Visualising Structural Events
 
-```{r mean-turning-points}
-# Use posterior means of all parameters
-d_mean <- colMeans(draws)
+We mark each $\omega_k$ on the fitted curve — the point of maximum curvature — for every ticker. Horizontal bars show the 95% credible interval.
 
-tp_mean <- do.call(rbind, lapply(tickers, function(tk) {
-  p <- get_params(d_mean, tk)
-  tp <- find_turning_near_omega(p)
-  if (!is.null(tp)) tp$ticker <- tk
-  tp
-}))
-
-# Get y-values from the fitted curve
-pred_orig <- fitted(fit_market)
+```{r plot-events}
+pred_orig        <- fitted(fit_market)
 dat_market$y_fit <- pred_orig$fitted_mean
 dat_market$lo    <- pred_orig$fitted_Q2.5
 dat_market$hi    <- pred_orig$fitted_Q97.5
 
-tp_mean$y_val <- sapply(1:nrow(tp_mean), function(i) {
-  idx <- dat_market$ticker == tp_mean$ticker[i]
-  approx(dat_market$month[idx], dat_market$y_fit[idx], xout = tp_mean$tau_star[i])$y
-})
+# Compute y-position on the mean curve at each omega
+omega_plot <- omega_summary |>
+  rowwise() |>
+  mutate(y_val = approx(
+    dat_market$month[dat_market$ticker == ticker],
+    dat_market$y_fit[dat_market$ticker  == ticker],
+    xout = mean)$y) |>
+  ungroup()
 
-print(tp_mean)
-```
+month_labels <- c("Oct22","Nov","Dec","Jan23","Feb","Mar","Apr","May",
+                  "Jun","Jul","Aug","Sep","Oct","Nov","Dec")
 
-### Visualizing Turning Points
-
-```{r plot-extrema}
 ggplot(dat_market, aes(x = month, y = price, color = ticker)) +
   geom_point(alpha = 0.5) +
   geom_ribbon(aes(ymin = lo, ymax = hi, fill = ticker), alpha = 0.1, color = NA) +
   geom_line(aes(y = y_fit), size = 1) +
   geom_point(
-    data = tp_mean, aes(x = tau_star, y = y_val, shape = direction),
-    color = "red", size = 4, stroke = 1.5, inherit.aes = FALSE
+    data = omega_plot, aes(x = mean, y = y_val),
+    color = "red", shape = 4, size = 4, stroke = 1.5, inherit.aes = FALSE
   ) +
-  scale_shape_manual(values = c(peak = 4, trough = 3), name = "Turning point") +
-  scale_x_continuous(breaks = 1:15, labels = c(
-    "Oct22","Nov","Dec","Jan23","Feb","Mar","Apr","May",
-    "Jun","Jul","Aug","Sep","Oct","Nov","Dec")) +
+  geom_errorbarh(
+    data = omega_plot, aes(xmin = Q2.5, xmax = Q97.5, y = y_val),
+    color = "red", height = 0, alpha = 0.4, inherit.aes = FALSE
+  ) +
+  scale_x_continuous(breaks = 1:15, labels = month_labels) +
   facet_wrap(~ticker, scales = "free_y") +
   theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Market Turning Points (semi-analytical)",
-       subtitle = "Solving f'(tau) = 0 near each omega_k. X = peak, + = trough.")
+  labs(
+    title    = "Structural Events: Point of Maximum Curvature (omega_k)",
+    subtitle = "Red X = posterior mean omega_k; bars = 95% CI."
+  )
 ```
 
-### Posterior Uncertainty and Leadership
+### Leadership Analysis via Temporal Window Matching
 
-For each draw, we solve $f'(\tau)=0$ near each $\omega_k$, giving a full posterior over turning point timing.
+Comparing $\omega_{k,\text{NVDA}}$ with $\omega_{k,\text{MSFT}}$ using a shared index $k$ is valid when the omega priors are centred at the same months for all tickers — which they are here. However, for extra robustness, we use **temporal window matching**: for each draw, we find the breakpoint whose $\omega$ falls within a known calendar window (the early 2023 AI rally), and compare its timing across tickers.
 
-```{r leadership-robust}
-# Sample draws for speed
-set.seed(42)
-idx <- sample(nrow(draws), min(500, nrow(draws)))
+```{r leadership-analysis}
+# Rally window: months 3-9 = Jan-Jun 2023
+rally_window <- c(3, 9)
 
-tp_draws_list <- lapply(idx, function(i) {
-  d <- draws[i, ]
-  do.call(rbind, lapply(tickers, function(tk) {
-    p <- get_params(d, tk)
-    tp <- find_turning_near_omega(p)
-    if (!is.null(tp)) { tp$ticker <- tk; tp$draw <- i }
-    tp
-  }))
-})
-tp_draws <- do.call(rbind, tp_draws_list)
-
-# Compare the first peak (summer) across tickers
-# Use bp identity to ensure we compare the same structural event
-if (!is.null(tp_mean) && !is.null(tp_draws)) {
-  summer_bp_df <- tp_mean |> filter(direction == "peak")
-  if (nrow(summer_bp_df) > 0) {
-    summer_bp <- summer_bp_df |> 
-      group_by(ticker) |> slice_max(tau_star) |> pull(bp) |> unique()
-    
-    if (length(summer_bp) > 0) {
-      ref_bp <- summer_bp[1]
-      peak_nvda <- tp_draws |> filter(ticker == "NVDA", bp == ref_bp) |> pull(tau_star)
-      peak_msft <- tp_draws |> filter(ticker == "MSFT", bp == ref_bp) |> pull(tau_star)
-      n_common <- min(length(peak_nvda), length(peak_msft))
-      if (n_common > 10) { # Ensure we have enough draws for a stable estimate
-        p_lead <- mean(peak_nvda[1:n_common] < peak_msft[1:n_common])
-        message(sprintf("Prob NVDA summer peak before MSFT (BP %d): %.2f", ref_bp, p_lead))
-      } else {
-        message("Not enough posterior draws found a turning point for this event.")
-      }
-    }
-  } else {
-    message("No peaks found on the posterior mean curve.")
-  }
-} else {
-  message("No turning points discovered in the posterior sample.")
+get_rally_omega <- function(d, tk, window) {
+  oms    <- get_omegas(d, tk)
+  in_win <- which(oms >= window[1] & oms <= window[2])
+  if (length(in_win) == 0) return(NA)
+  oms[in_win[1]]
 }
+
+set.seed(42)
+idx_draws <- sample(nrow(draws), min(1000, nrow(draws)))
+
+rally_omegas <- do.call(rbind, lapply(idx_draws, function(i) {
+  d <- draws[i, ]
+  data.frame(
+    draw       = i,
+    omega_NVDA = get_rally_omega(d, "NVDA", rally_window),
+    omega_MSFT = get_rally_omega(d, "MSFT", rally_window),
+    omega_AAPL = get_rally_omega(d, "AAPL", rally_window)
+  )
+})) |> na.omit()
+
+p_nvda_msft <- mean(rally_omegas$omega_NVDA < rally_omegas$omega_MSFT)
+p_nvda_aapl <- mean(rally_omegas$omega_NVDA < rally_omegas$omega_AAPL)
+
+message(sprintf("P(NVDA led the rally before MSFT): %.2f", p_nvda_msft))
+message(sprintf("P(NVDA led the rally before AAPL): %.2f", p_nvda_aapl))
 ```
+
+Note that these probabilities are over the *timing of maximum structural curvature* within the calendar window — not whether any slope ever changed sign. If the model finds NVIDIA's transition was fastest in February while Microsoft's was fastest in March, we conclude NVIDIA led the rally.
 
 ---
 
 ## Conclusion
 
-By analyzing the analytical derivative of the `smoothbp` model, we can distinguish between the timing of structural transitions ($\omega$) and the timing of actual market reversals ($f'(\tau)=0$). This provides a mathematically rigorous foundation for lead/lag analysis in non-linear systems.
+By recognising that $\omega_k$ is analytically the point of maximum structural curvature, `smoothbp` gives us a principled, closed-form basis for lead/lag analysis. The key challenge in multi-ticker models is not estimation but *identification*: ensuring we compare the same calendar event across tickers. Temporal-window matching, informed by domain knowledge of when events occurred, is the robust solution to this identification problem.
+
