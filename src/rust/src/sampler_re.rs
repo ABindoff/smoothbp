@@ -197,6 +197,26 @@ fn sample_sigma_u(priors: &Priors, state: &mut State, rng: &mut StdRng) {
     state.sigma_u = 1.0 / gamma_dist.sample(rng).sqrt();
 }
 
+fn sample_sigma_re_om(data: &ModelData, priors: &Priors, state: &mut State, rng: &mut StdRng) {
+    for k in 0..data.n_breakpoints {
+        let mut ss = 0.0;
+        let mut count = 0.0;
+        for j in 0..state.beta_om[k].len() {
+            if data.re_mask_om[k][j] {
+                let val = state.beta_om[k][j];
+                ss += val * val;
+                count += 1.0;
+            }
+        }
+        if count > 0.0 {
+            let shape = priors.sigma_re_om_shape + count * 0.5;
+            let scale = priors.sigma_re_om_scale + ss * 0.5;
+            let gamma_dist = Gamma::new(shape, 1.0 / scale).unwrap();
+            state.sigma_re_om[k] = 1.0 / gamma_dist.sample(rng).sqrt();
+        }
+    }
+}
+
 fn sample_pi(ss: &SpikeSlabConfig, state: &mut State, rng: &mut StdRng) {
     let mut n1 = 0.0;
     let mut n0 = 0.0;
@@ -477,7 +497,16 @@ fn hmc_step_om(
         
         let r = &data.y - &mu;
         let ll = -0.5 * r.dot(&r) / (sigma * sigma);
-        let lp = log_truncated_normal_prior(q.as_slice(), &priors.om_mean[k], &priors.om_sd[k], &priors.om_lb[k], &priors.om_ub[k]);
+        
+        let mut lp = 0.0;
+        let log_sqrt2pi = 0.5 * std::f64::consts::TAU.ln();
+        for j in 0..p {
+            let v = q[j];
+            if v < priors.om_lb[k][j] || v > priors.om_ub[k][j] { return (f64::INFINITY, DVector::<f64>::zeros(p)); }
+            let sd = if data.re_mask_om[k][j] { state.sigma_re_om[k] } else { priors.om_sd[k][j] };
+            let z = (v - priors.om_mean[k][j]) / sd;
+            lp -= 0.5 * z * z + sd.ln() + log_sqrt2pi;
+        }
         
         // Gradient
         let inv_s2 = 1.0 / (sigma * sigma);
@@ -497,7 +526,8 @@ fn hmc_step_om(
         
         // Prior gradient
         for j in 0..p {
-            grad[j] += (q[j] - priors.om_mean[k][j]) / (priors.om_sd[k][j] * priors.om_sd[k][j]);
+            let sd = if data.re_mask_om[k][j] { state.sigma_re_om[k] } else { priors.om_sd[k][j] };
+            grad[j] += (q[j] - priors.om_mean[k][j]) / (sd * sd);
         }
         
         (-ll - lp, grad)
@@ -616,22 +646,21 @@ where F: FnMut(&DVector<f64>) -> (f64, DVector<f64>)
 // Main Chain Loops
 // ---------------------------------------------------------------------------
 
-pub fn run_chain(
+pub fn run_chain_re(
     data: &ModelData, priors: &Priors, n_iter: usize, n_warmup: usize,
     step_om_init: f64, step_rho_init: f64, target_accept: f64,
     seed: u64, verbose: bool, chain_id: usize, n_chains: usize,
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
 ) -> (DMatrix<f64>, usize) {
     let mut rng = StdRng::seed_from_u64(seed);
-    let mut state = init_state(data, priors, &mut rng);
+    let mut state = init_state_re(data, priors, &mut rng);
     let n_post = n_iter - n_warmup;
-    let n_params = state.n_params(false, false, false);
+    let n_params = state.n_params(false, false, true);
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
     let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept, 5, 15)).collect();
     let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept, 5, 15)).collect();
 
-        // let tune_window = 100usize;
     let report_every = (n_iter / 10).max(1);
 
     for iter in 0..n_iter {
@@ -649,6 +678,9 @@ pub fn run_chain(
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         sample_sigma(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_sigma_u(priors, &mut state, &mut rng); }
+        
+        // Hierarchical update for omega variances
+        sample_sigma_re_om(data, priors, &mut state, &mut rng);
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
@@ -668,26 +700,25 @@ pub fn run_chain(
 
         if iter >= n_warmup {
             let row = iter - n_warmup;
-            let draw = state.to_vec(false, false, false);
+            let draw = state.to_vec(false, false, true);
             for (col, &val) in draw.iter().enumerate() { draws[(row, col)] = val; }
         }
     }
     let n_div = adapt_om.iter().map(|h| h.n_divergent).sum::<usize>() + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
     (draws, n_div)
 }
-
-pub fn run_chain_ss(
+pub fn run_chain_re_ss(
     data: &ModelData, priors: &Priors, ss: &SpikeSlabConfig, n_iter: usize, n_warmup: usize,
     step_om_init: f64, step_rho_init: f64, target_accept: f64,
     seed: u64, verbose: bool, chain_id: usize, n_chains: usize,
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
 ) -> (DMatrix<f64>, usize) {
     let mut rng = StdRng::seed_from_u64(seed);
-    let mut state = init_state(data, priors, &mut rng);
+    let mut state = init_state_re(data, priors, &mut rng);
     state.pi = ss.pi_init;
     let n_post = n_iter - n_warmup;
     let learn_pi = ss.beta_a > 0.0;
-    let n_params = state.n_params(true, learn_pi, false);
+    let n_params = state.n_params(true, learn_pi, true);
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
     let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept, 5, 15)).collect();
@@ -712,6 +743,9 @@ pub fn run_chain_ss(
         if learn_pi { sample_pi(ss, &mut state, &mut rng); }
         sample_sigma(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_sigma_u(priors, &mut state, &mut rng); }
+        
+        // Hierarchical update for omega variances
+        sample_sigma_re_om(data, priors, &mut state, &mut rng);
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
@@ -731,7 +765,7 @@ pub fn run_chain_ss(
 
         if iter >= n_warmup {
             let row = iter - n_warmup;
-            let draw = state.to_vec(true, learn_pi, false);
+            let draw = state.to_vec(true, learn_pi, true);
             for (col, &val) in draw.iter().enumerate() { draws[(row, col)] = val; }
         }
     }
@@ -739,7 +773,8 @@ pub fn run_chain_ss(
     (draws, n_div)
 }
 
-fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
+
+pub fn init_state_re(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
     let jitter = Normal::new(0.0, 0.01).unwrap();
     let beta_b0 = DVector::from_iterator(data.x_b0.ncols(), (0..data.x_b0.ncols()).map(|i| priors.b0_mean[i] + jitter.sample(rng)));
     let u_b0 = DVector::zeros(data.n_groups_b0);

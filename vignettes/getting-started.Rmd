@@ -50,6 +50,17 @@ Posterior inference uses a **Metropolis-within-Gibbs sampler written in Rust**:
 
 ---
 
+## Real-World Applications
+
+While `smoothbp` is a general-purpose statistical tool, it is uniquely powerful for modeling structural changes across various scientific domains:
+
+- **Pharmacokinetics / Medicine**: Modeling the delayed onset of a drug's effect and identifying the precise time threshold where clearance rates exponentially shift.
+- **Ecology / Climate Science**: Identifying "tipping points" where species population growth trajectories abruptly change in response to accumulated temperature variations.
+- **Epidemiology**: Tracking structural shifts in infection rates ($R_0$) to pinpoint exactly when a public health intervention successfully flattened the curve.
+- **Finance**: Discovering the exact timing of market regime shifts and measuring how individual assets respond differently to global economic shocks.
+
+---
+
 ## Simulating data
 
 `simulate_smoothbp()` generates synthetic data from the model. It is
@@ -128,6 +139,9 @@ summary(fit1)
 Pass lists of equal length to `deltas`, `omega`, and `rho`. Each list element
 is a formula for that change-point's sub-model.
 
+Instead of writing out priors manually, we can use the `space_omega_priors()`
+helper to intelligently blanked our time domain with candidate breakpoints:
+
 ```{r fit-multi-bp}
 fit3 <- smoothbp(
   formula = y ~ tau,
@@ -138,11 +152,8 @@ fit3 <- smoothbp(
   rho     = list(~ 1, ~ 1, ~ 1),
   data    = dat,
   priors  = smoothbp_priors(
-    omega = list(
-      prior_normal(2, 1, lb = 0),
-      prior_normal(4, 1, lb = 0),
-      prior_normal(5, 1, lb = 0)
-    )
+    # Automatically generate 3 evenly-spaced priors from tau=0 to tau=6
+    omega = space_omega_priors(K = 3, tau_min = 0, tau_max = 6)
   ),
   chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
 )

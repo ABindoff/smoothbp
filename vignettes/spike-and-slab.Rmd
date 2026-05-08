@@ -81,11 +81,7 @@ fit_ss <- smoothbp_ss(
   data    = dat,
   spike   = prior_spike_slab(pi = 0.1, learn_pi = TRUE),
   priors  = smoothbp_priors(
-    omega = list(
-      prior_normal(2, 2, lb = 0),
-      prior_normal(5, 2, lb = 0),
-      prior_normal(8, 2, lb = 0)
-    )
+    omega = space_omega_priors(K = 3, tau_min = 0, tau_max = 10)
   ),
   chains = 2, iter = 2000, warmup = 1000, seed = 42
 )
@@ -117,25 +113,8 @@ when using spike-and-slab priors.
 ### Visualise posterior inclusion probabilities
 
 ```{r pip-plot}
-# Extract gamma draws
-dm <- as_draws_matrix(fit_ss$draws)
-gamma_cols <- grep("^gamma_delta", colnames(dm), value = TRUE)
-
-pip_df <- data.frame(
-  breakpoint = c("BP1 (pos ~2)", "BP2 (pos ~5)", "BP3 (pos ~8)"),
-  pip        = colMeans(dm[, gamma_cols])
-)
-
-ggplot(pip_df, aes(x = breakpoint, y = pip)) +
-  geom_col(fill = "#2c7bb6", width = 0.5) +
-  geom_hline(yintercept = 0.5, linetype = "dashed", colour = "grey40") +
-  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
-  labs(
-    title    = "Posterior Inclusion Probabilities",
-    subtitle = "One true breakpoint (at ~5) — others correctly regularized to near zero",
-    x = NULL, y = "PIP"
-  ) +
-  theme_minimal()
+# The plot method automatically computes and plots the PIPs along with their 95% HDI
+plot(pip(fit_ss))
 ```
 
 ---
@@ -270,7 +249,7 @@ loo::loo_compare(loo(fit1), loo(fit_ss))
 #> fit_ss -0.2       0.4   # Both models perform identically
 
 # PIP from the SS model agrees:
-pip(fit_ss)["gamma_delta2_(Intercept)"]
+pip(fit_ss)["gamma_delta2_(Intercept)",]
 #> 0.98
 ```
 

@@ -20,6 +20,56 @@ plot.smoothbp_fit <- function(x, type = "trace", pars = NULL, ...) {
   trace_plot(x, pars = pars, type = type, ...)
 }
 
+#' Plot posterior inclusion probabilities
+#'
+#' @param x A `smoothbp_pip` object.
+#' @param ... Unused.
+#'
+#' @return A `ggplot` object.
+#' @export
+plot.smoothbp_pip <- function(x, ...) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for plotting PIPs.")
+  }
+  
+  # Try to extract breakpoint index for coloring/grouping
+  # Parameter names are like delta1_var, delta2_var
+  x$breakpoint <- NA_integer_
+  idx <- grepl("^delta([0-9]+)_", x$parameter)
+  if (any(idx)) {
+    x$breakpoint[idx] <- as.integer(sub("^delta([0-9]+)_.*", "\\1", x$parameter[idx]))
+  }
+  
+  x$type <- ifelse(is.na(x$breakpoint), "Baseline Slope (b1)", paste("Breakpoint", x$breakpoint))
+  
+  p <- ggplot2::ggplot(x, ggplot2::aes(x = pip, y = stats::reorder(parameter, pip), 
+                                      xmin = lower, xmax = upper, color = type)) +
+    ggplot2::geom_vline(xintercept = 0.5, linetype = "dashed", alpha = 0.3) +
+    ggplot2::geom_errorbarh(height = 0.2) +
+    ggplot2::geom_point(size = 2.5) +
+    ggplot2::scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+    ggplot2::labs(
+      title    = "Posterior Inclusion Probabilities (PIP)",
+      subtitle = "Points show mean; bars show 95% HDI (Beta posterior)",
+      x        = "Probability of Inclusion",
+      y        = "Parameter",
+      color    = "Model Component"
+    ) +
+    ggplot2::theme_minimal() +
+    ggplot2::theme(
+      panel.grid.minor = ggplot2::element_blank(),
+      legend.position  = "bottom"
+    )
+
+  # If we have multiple breakpoints, facetting makes it easier to read
+  n_bp <- length(unique(x$breakpoint[!is.na(x$breakpoint)]))
+  if (n_bp > 1) {
+    p <- p + ggplot2::facet_wrap(~ type, scales = "free_y", ncol = 1)
+  }
+  
+  p
+}
+
 # ---------------------------------------------------------------------------
 # Internal helper: draws_df -> long data frame
 # ---------------------------------------------------------------------------

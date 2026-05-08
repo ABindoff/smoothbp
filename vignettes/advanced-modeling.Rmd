@@ -224,12 +224,267 @@ cat("\n--- Cross-Event Dynamics ---\n")
 message(sprintf("Prob NVDA AI Surge (BP 2) led AAPL Recovery (BP 1): %.2f", p_cross))
 ```
 
+## 2. Hierarchical Discovery (Simulated Market Trend)
 
-Note that these probabilities are over the *timing of maximum structural curvature* within the calendar window — not whether any slope ever changed sign. If the model finds NVIDIA's transition was fastest in February while Microsoft's was fastest in March, we conclude NVIDIA led the rally.
+When modeling multiple entities (e.g., a basket of 10 stocks), we often expect them to respond to global market events at roughly the same time. However, due to individual dynamics, the exact timing of a transition might vary slightly.
+
+### How `hierarchical = "omega"` works
+
+In `smoothbp`, hierarchical shrinkage is applied to the **timing** ($\omega$) of structural changes. When you specify `hierarchical = "omega"`:
+
+1.  The model looks at your `omega` formula (e.g., `omega = ~ ticker`).
+2.  It identifies the **intercept** as the "Market Mean" timing.
+3.  It treats all other coefficients (e.g., ticker-specific offsets) as **random effects** centered on zero.
+4.  It estimates a shared precision (shrinkage variance) $\sigma_{re\_om}$ that pulls individual timings toward the market mean.
+
+### Simulation: 10 Tickers, 2 Global Events
+
+We simulate 10 tickers over 25 months. All tickers share two major market transitions:
+a **rally** at month 7 and a **correction** at month 18. Each ticker has a random timing
+offset (±0.8 months) and a random response magnitude. We test 8 candidate breakpoints
+to see if the model correctly identifies just the two real ones.
+
+```{r sim-hier}
+set.seed(42)
+n_tickers <- 10
+n_months  <- 25
+dat_sim   <- expand.grid(
+  month  = 1:n_months,
+  ticker = paste0("T", formatC(1:n_tickers, width = 2, flag = "0"))
+)
+
+# True shared market events: rally at month 7, correction at month 18
+om_true <- c(7, 18)
+
+# Ticker-specific timing offsets (mean 0, SD 0.8 months)
+timing_offsets <- matrix(rnorm(n_tickers * 2, 0, 0.8), n_tickers, 2)
+
+# Rally magnitude varies by ticker (all positive = same direction)
+rally_mag      <- runif(n_tickers, 1.5, 3.5)
+# Correction magnitude (all negative = same direction)
+correction_mag <- runif(n_tickers, 1.0, 2.5)
+
+# Simulate using smooth logistic transitions (matches the model)
+# Event 2 REVERSES the rally: delta_2 cancels delta_1 and adds a negative slope
+# so prices genuinely fall after month 18, creating a clear inverted-U shape.
+rho_true <- 3
+dat_sim$price <- unlist(lapply(1:n_tickers, function(i) {
+  t     <- 1:n_months
+  om1_k <- om_true[1] + timing_offsets[i, 1]
+  om2_k <- om_true[2] + timing_offsets[i, 2]
+  y <- 10 +
+    rally_mag[i]                       * (t - om1_k) * plogis(rho_true * (t - om1_k)) -
+    (rally_mag[i] + correction_mag[i]) * (t - om2_k) * plogis(rho_true * (t - om2_k)) +
+    rnorm(n_months, 0, 0.5)
+  y
+}))
+
+ggplot(dat_sim, aes(x = month, y = price, color = ticker)) +
+  geom_line(linewidth = 0.7) +
+  geom_vline(xintercept = om_true, linetype = "dashed", alpha = 0.4) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  labs(
+    title    = "Simulated Market Data: 10 Tickers, 2 Shared Events",
+    subtitle = "Dashed lines = true event times (month 7 and 18). Individual timing varies slightly."
+  )
+```
+
+### Fitting the Hierarchical Spike-and-Slab Model
+
+We place **8 candidate breakpoints** and let the model learn both the inclusion
+probability $\pi$ and the market-mean timing. Using `~ (1 | ticker)` for `omega`
+(and `deltas`) tells `smoothbp` to estimate a **market mean** (the intercept, fixed)
+plus a **random timing offset** per ticker that is shrunk toward zero — a proper
+linear mixed model structure.
+
+```{r fit-sim-hier}
+my_spike <- prior_spike_slab(
+  pi = 2/8
+)
+
+t_min <- min(dat_sim$month)
+t_max <- max(dat_sim$month)
+K <- 8
+
+# 1. Create K evenly spaced means, trimming the absolute edges
+#    (Using K + 2 and dropping the first and last keeps them inside the window)
+om_means <- seq(t_min, t_max, length.out = K + 2)[2:(K + 1)]
+
+# 2. Set a standard deviation that allows adjacent priors to loosely overlap
+#    (Width of the domain divided by K is a great heuristic)
+om_sd <- (t_max - t_min) / K
+
+# 3. Generate the list of priors
+omega_priors <- lapply(om_means, function(m) {
+  prior_normal(mean = m, sd = om_sd, lb = t_min, ub = t_max)
+})
+
+# Or, if you are using a hierarchical formula like ~ (1 | ticker):
+omega_priors_hier <- lapply(om_means, function(m) {
+  list(
+    # The intercept represents the global market mean
+    "(Intercept)" = prior_normal(mean = m, sd = om_sd, lb = t_min, ub = t_max)
+    # Note: You don't need to specify priors for the ticker deviations 
+    # here because `sigma_re_om` automatically handles their shrinkage
+  )
+})
+
+
+fit_hier <- smoothbp_ss(
+  formula = price ~ month,
+  b0      = ~ (1 | ticker),
+  # (1 | ticker): intercept = market mean, ticker columns = random deviations
+  deltas  = replicate(8, ~ ticker, simplify = FALSE),
+  omega   = replicate(8, ~ (1 | ticker), simplify = FALSE),
+  rho     = replicate(8, ~ 1,            simplify = FALSE),
+  data    = dat_sim,
+  spike   = my_spike,
+  priors  = smoothbp_priors(
+    sigma_re_om = prior_invgamma(2, 1),
+    omega       = omega_priors_hier),
+  chains  = 2L, iter = 4000, warmup = 2000, cores = 4L
+)
+```
+
+### Posterior Inclusion Probabilities
+
+```{r pip-sim-hier}
+draws_hier  <- as_draws_df(fit_hier$draws)
+
+# PIP = P(market-level delta is non-zero) = mean of the (Intercept) gamma.
+# Using 'any ticker active' would inflate PIPs due to 10-ticker multiplicity.
+pip_summary <- data.frame(
+  bp  = 1:8,
+  pip = sapply(1:8, function(k) {
+    col <- paste0("gamma_delta", k, "_(Intercept)")
+    if (!col %in% names(draws_hier)) return(0)
+    mean(draws_hier[[col]])
+  })
+)
+
+ggplot(pip_summary, aes(x = factor(bp), y = pip)) +
+  geom_col(aes(fill = pip > 0.5), show.legend = FALSE) +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  scale_fill_manual(values = c("FALSE" = "grey70", "TRUE" = "#2166ac")) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  theme_minimal() +
+  labs(
+    x        = "Candidate breakpoint",
+    y        = "PIP",
+    title    = "Posterior Inclusion Probabilities (market-level intercept gamma)",
+    subtitle = "Blue = selected (PIP > 0.5). Prior: Beta(1,9) ≈ 10% expected inclusion."
+  )
+```
+
+### Visualizing the Fit
+
+```{r plot-sim-hier}
+pred_hier        <- fitted(fit_hier)
+dat_sim$y_fit    <- pred_hier$fitted_mean
+dat_sim$lo       <- pred_hier$fitted_Q2.5
+dat_sim$hi       <- pred_hier$fitted_Q97.5
+
+active_bps  <- pip_summary$bp[pip_summary$pip > 0.5]
+tickers_sim <- levels(factor(dat_sim$ticker))
+ref_ticker  <- tickers_sim[1]   # reference level in design matrix
+
+if (length(active_bps) > 0) {
+  # With (1 | ticker), the design matrix has:
+  #   column "(Intercept)"  = market mean (fixed)
+  #   columns "tickerT01", "tickerT02", ... = per-ticker RE deviations
+  # Ticker-specific omega = market mean + that ticker's RE column
+  tickers_sim <- levels(factor(dat_sim$ticker))
+
+  omega_summary_sim <- do.call(rbind, lapply(tickers_sim, function(tk) {
+    om_vals <- as.matrix(sapply(active_bps, function(k) {
+      mu  <- draws_hier[[paste0("omega", k, "_(Intercept)")]]
+      u_k <- draws_hier[[paste0("omega", k, "_ticker", tk)]]
+      if (is.null(u_k)) mu else mu + u_k
+    }))
+    do.call(rbind, lapply(seq_along(active_bps), function(j) {
+      data.frame(
+        ticker = tk, bp = active_bps[j],
+        mean  = mean(om_vals[, j]),
+        Q2.5  = quantile(om_vals[, j], 0.025),
+        Q97.5 = quantile(om_vals[, j], 0.975)
+      )
+    }))
+  }))
+
+  omega_plot_sim <- omega_summary_sim |>
+    rowwise() |>
+    mutate(y_val = approx(
+      dat_sim$month[dat_sim$ticker == ticker],
+      dat_sim$y_fit[dat_sim$ticker == ticker],
+      xout = mean)$y) |>
+    ungroup()
+} else {
+  omega_plot_sim <- data.frame()
+}
+
+ggplot(dat_sim, aes(x = month, color = ticker, fill = ticker)) +
+  geom_point(aes(y = price), alpha = 0.25, size = 0.8) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.1, color = NA) +
+  geom_line(aes(y = y_fit), linewidth = 0.8) +
+  {if (nrow(omega_plot_sim) > 0)
+    geom_point(
+      data = omega_plot_sim, aes(x = mean, y = y_val),
+      color = "black", shape = 18, size = 3.5, inherit.aes = FALSE
+    )
+  } +
+  {if (nrow(omega_plot_sim) > 0)
+    geom_errorbarh(
+      data = omega_plot_sim,
+      aes(xmin = Q2.5, xmax = Q97.5, y = y_val),
+      height = 0, color = "black", alpha = 0.4, inherit.aes = FALSE
+    )
+  } +
+  facet_wrap(~ ticker, ncol = 5) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  labs(
+    x        = "Month",
+    y        = "Price",
+    title    = "Hierarchical Event Discovery: Fitted Curves",
+    subtitle = "Black diamonds = discovered market events (PIP > 0.5); bars = 95% CI."
+  )
+```
+
+---
+
+## 3. Model Selection: PIPs, Bayes Factors, and WAIC
+
+When using Spike-and-Slab regularization, the model performs Bayesian Model Averaging across all $2^K$ possible combinations of breakpoints in a single run. You have several choices for how to interpret and use these results.
+
+### The "Don't Choose" Approach (Bayesian Model Averaging)
+
+The most mathematically pure approach is to **not select a single sparse model at all**. If you use the `smoothbp_ss` fit directly to make predictions, you are averaging over the uncertainty of the structural breaks. If a breakpoint has a Posterior Inclusion Probability (PIP) of 0.2, the model inherently down-weights its impact on predictions by 80%. This provides beautifully regularized, highly accurate out-of-sample predictions.
+
+### The Median Probability Model (PIP > 0.5)
+
+If you need to report a single discrete model (e.g., to definitively claim "two events occurred"), the standard approach is to include all parameters with **PIP > 0.5**. This is not an arbitrary heuristic; it is the **Median Probability Model** (Barbieri & Berger, 2004), which is mathematically proven to be the optimal predictive model under squared-error loss in many settings.
+
+### Inclusion Bayes Factors
+
+If you want a stricter statistical threshold, you can convert the PIPs into **Inclusion Bayes Factors** ($\text{BF}_{10}$). If your prior probability of inclusion ($\pi$) is 0.5 (meaning prior odds = 1), the Bayes Factor is simply the posterior odds:
+
+$$ \text{BF}_{10} = \frac{\text{PIP}}{1 - \text{PIP}} $$
+
+- **PIP = 0.50** $\rightarrow$ $\text{BF}_{10} = 1$ (No evidence)
+- **PIP = 0.75** $\rightarrow$ $\text{BF}_{10} = 3$ (Positive evidence)
+- **PIP = 0.91** $\rightarrow$ $\text{BF}_{10} = 10$ (Strong evidence)
+
+### The "Best of Both Worlds" Workflow (Using LOO/WAIC)
+
+While you could theoretically compute WAIC/LOO for all $2^K$ combinations of breakpoints, doing so is computationally explosive. If you want to use information criteria to rigorously justify your final model choice, you can use a two-step workflow:
+
+1. **Screening**: Run the highly efficient `smoothbp_ss` model to compute the PIPs and identify plausible candidate breakpoints (e.g., those with PIP > 0.4).
+2. **Refinement**: Fit the standard `smoothbp` model (without spike-and-slab) for a few distinct, competing combinations of these top candidates (e.g., Model A with 1 breakpoint, Model B with 2 breakpoints).
+3. **Validation**: Use `waic(fit_A)` and `waic(fit_B)` to compare the out-of-sample predictive accuracy of those specific models for your final reporting.
 
 ---
 
 ## Conclusion
 
-By recognising that $\omega_k$ is analytically the point of maximum structural curvature, `smoothbp` gives us a principled, closed-form basis for lead/lag analysis. The key challenge in multi-ticker models is not estimation but *identification*: ensuring we compare the same calendar event across tickers. Temporal-window matching, informed by domain knowledge of when events occurred, is the robust solution to this identification problem.
-
+By recognizing that $\omega_k$ is analytically the point of maximum structural curvature, `smoothbp` gives us a principled, closed-form basis for lead/lag analysis. The addition of hierarchical shrinkage and spike-and-slab selection allows the model to scale to complex discovery tasks where the number and timing of events are unknown, yet likely shared across a population.

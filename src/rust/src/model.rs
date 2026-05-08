@@ -20,6 +20,8 @@ pub struct ModelData {
     pub n_groups_b0: usize,
     pub n: usize,
     pub n_breakpoints: usize,
+    /// Indicates if a coefficient in x_om[k] is a random effect (hierarchical)
+    pub re_mask_om: Vec<Vec<bool>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,9 @@ pub struct Priors {
     pub sigma_scale: f64,
     pub sigma_u_shape: f64,
     pub sigma_u_scale: f64,
+
+    pub sigma_re_om_shape: f64,
+    pub sigma_re_om_scale: f64,
 
     pub p_b0: usize,
     pub p_b1: usize,
@@ -103,10 +108,12 @@ pub struct State {
     pub gamma_deltas: Vec<Vec<bool>>,
     /// Current inclusion probability
     pub pi: f64,
+    /// Learned standard deviation for omega random effects at each breakpoint
+    pub sigma_re_om: Vec<f64>,
 }
 
 impl State {
-    pub fn n_params(&self, include_gammas: bool, learn_pi: bool) -> usize {
+    pub fn n_params(&self, include_gammas: bool, learn_pi: bool, hierarchical: bool) -> usize {
         let mut n = self.beta_b0.len() + self.u_b0.len() + self.beta_b1.len() + 2;
         for i in 0..self.beta_deltas.len() {
             n += self.beta_deltas[i].len();
@@ -121,11 +128,15 @@ impl State {
             }
         }
         if learn_pi { n += 1; }
+        // One sigma_re_om per breakpoint
+        if hierarchical {
+            n += self.sigma_re_om.len();
+        }
         n
     }
 
-    pub fn to_vec(&self, include_gammas: bool, learn_pi: bool) -> Vec<f64> {
-        let mut v = Vec::with_capacity(self.n_params(include_gammas, learn_pi));
+    pub fn to_vec(&self, include_gammas: bool, learn_pi: bool, hierarchical: bool) -> Vec<f64> {
+        let mut v = Vec::with_capacity(self.n_params(include_gammas, learn_pi, hierarchical));
         v.extend_from_slice(self.beta_b0.as_slice());
         v.extend_from_slice(self.u_b0.as_slice());
         v.extend_from_slice(self.beta_b1.as_slice());
@@ -145,6 +156,9 @@ impl State {
         
         if learn_pi {
             v.push(self.pi);
+        }
+        if hierarchical {
+            for &s in &self.sigma_re_om { v.push(s); }
         }
         v
     }

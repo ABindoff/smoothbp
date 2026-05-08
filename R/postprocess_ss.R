@@ -13,10 +13,38 @@ pip <- function(object, ...) UseMethod("pip")
 pip.smoothbp_ss_fit <- function(object, ...) {
   dm <- posterior::as_draws_matrix(object$draws)
   gamma_cols <- object$gamma_names
-  pips <- colMeans(as.matrix(dm[, gamma_cols, drop = FALSE]))
-  # Clean up names: remove "gamma_" prefix
-  names(pips) <- sub("^gamma_", "", names(pips))
-  pips
+  
+  # Count 1s and total draws
+  gamma_mat <- as.matrix(dm[, gamma_cols, drop = FALSE])
+  K <- colSums(gamma_mat)
+  N <- nrow(gamma_mat)
+  
+  # Compute PIPs
+  pips <- K / N
+  
+  # Compute HDI for the probability (assuming Beta(1,1) prior -> Beta(1+K, 1+N-K) posterior)
+  # This provides an estimate of the uncertainty in the PIP due to finite MCMC sampling.
+  lower <- stats::qbeta(0.025, 1 + K, 1 + N - K)
+  upper <- stats::qbeta(0.975, 1 + K, 1 + N - K)
+  
+  res <- data.frame(
+    parameter = sub("^gamma_", "", gamma_cols),
+    pip       = as.numeric(pips),
+    lower     = lower,
+    upper     = upper,
+    stringsAsFactors = FALSE
+  )
+  
+  class(res) <- c("smoothbp_pip", "data.frame")
+  res
+}
+
+#' @export
+print.smoothbp_pip <- function(x, digits = 3, ...) {
+  out <- as.data.frame(x)
+  names(out) <- c("Parameter", "PIP", "Lower 95%", "Upper 95%")
+  print(round_df(out, digits = digits), row.names = FALSE)
+  invisible(x)
 }
 
 #' @export
@@ -29,11 +57,9 @@ print.smoothbp_ss_fit <- function(x, digits = 3, effects = "fixed", ...) {
     cat(sprintf("  WARNING: %d divergent transitions\n", x$n_divergent))
   }
 
-  cat("\nPosterior inclusion probabilities (spike-and-slab b2 coefficients):\n")
+  cat("\nPosterior inclusion probabilities (spike-and-slab parameters):\n")
   pips <- pip(x)
-  for (i in seq_along(pips)) {
-    cat(sprintf("  %-20s  PIP = %.3f\n", names(pips)[i], pips[i]))
-  }
+  print(pips, digits = digits)
 
   cat("\nParameter summary:\n")
   s <- summary(x, effects = effects, digits = digits)

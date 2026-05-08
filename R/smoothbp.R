@@ -38,6 +38,7 @@ smoothbp <- function(
     step_rho = 0.3,
     target_accept = 0.80,
     cores    = getOption("smoothbp.cores", 1L),
+    hierarchical = NULL,
     .verbose = TRUE
 ) {
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -70,51 +71,116 @@ smoothbp <- function(
   dm <- .build_design_matrices(b0, b1, deltas, omega, rho, data)
   pv <- .build_prior_vectors(priors, dm)
 
+  # Auto-detect RE from formula: (1|group) in omega formula triggers the
+  # hierarchical sampler. The 'hierarchical' argument is kept for back-compat
+  # but is no longer required when (1|group) syntax is used.
+  has_re_om <- .has_re(dm$X_om) || "omega" %in% hierarchical
+  dm$has_re_om <- has_re_om
+
   if (.verbose) message("Running sampler...")
-  raw <- run_mcmc(
-    y             = y,
-    tau           = tau,
-    x_b0          = as.double(dm$X_b0),  p_b0  = ncol(dm$X_b0),
-    x_b1          = as.double(dm$X_b1),  p_b1  = ncol(dm$X_b1),
-    x_deltas      = lapply(dm$X_deltas, as.double),
-    p_deltas      = as.integer(sapply(dm$X_deltas, ncol)),
-    x_om          = lapply(dm$X_om, as.double),
-    p_om          = as.integer(sapply(dm$X_om, ncol)),
-    x_rho         = lapply(dm$X_rho, as.double),
-    p_rho         = as.integer(sapply(dm$X_rho, ncol)),
-    group_b0      = dm$group_b0,
-    n_groups_b0   = dm$n_groups_b0,
-    prior_mean_b0 = pv$b0$mean, prior_sd_b0 = pv$b0$sd, prior_lb_b0 = pv$b0$lb, prior_ub_b0 = pv$b0$ub,
-    prior_mean_b1 = pv$b1$mean, prior_sd_b1 = pv$b1$sd, prior_lb_b1 = pv$b1$lb, prior_ub_b1 = pv$b1$ub,
-    prior_mean_deltas = lapply(pv$deltas, `[[`, "mean"),
-    prior_sd_deltas   = lapply(pv$deltas, `[[`, "sd"),
-    prior_lb_deltas   = lapply(pv$deltas, `[[`, "lb"),
-    prior_ub_deltas   = lapply(pv$deltas, `[[`, "ub"),
-    prior_mean_om     = lapply(pv$om, `[[`, "mean"),
-    prior_sd_om       = lapply(pv$om, `[[`, "sd"),
-    prior_lb_om       = lapply(pv$om, `[[`, "lb"),
-    prior_ub_om       = lapply(pv$om, `[[`, "ub"),
-    prior_mean_rho    = lapply(pv$rho, `[[`, "mean"),
-    prior_sd_rho      = lapply(pv$rho, `[[`, "sd"),
-    prior_lb_rho      = lapply(pv$rho, `[[`, "lb"),
-    prior_ub_rho      = lapply(pv$rho, `[[`, "ub"),
-    sigma_shape   = priors$sigma$shape,
-    sigma_scale   = priors$sigma$scale,
-    sigma_u_shape = priors$sigma_u$shape,
-    sigma_u_scale = priors$sigma_u$scale,
-    step_om  = step_om,
-    step_rho = step_rho,
-    target_accept = as.double(target_accept),
-    chains   = as.integer(chains),
-    iter     = as.integer(iter),
-    warmup   = as.integer(warmup),
-    seed     = as.integer(seed),
-    verbose  = isTRUE(.verbose),
-    n_cores  = as.integer(max(1L, cores))
-  )
+
+  .safe_int <- function(x) if (length(x) == 0) -1L else as.integer(x)
+  p_deltas_safe <- .safe_int(sapply(dm$X_deltas, ncol))
+  p_om_safe     <- .safe_int(sapply(dm$X_om, ncol))
+  p_rho_safe    <- .safe_int(sapply(dm$X_rho, ncol))
+  group_b0_safe <- .safe_int(dm$group_b0)
+
+  if (has_re_om) {
+    re_mask_om <- .get_re_masks(dm$X_om)
+    if (length(re_mask_om) == 0) re_mask_om <- list(as.integer(-1))
+    
+    raw <- run_mcmc_re(
+      y             = y,
+      tau           = tau,
+      x_b0          = as.double(dm$X_b0),  p_b0  = ncol(dm$X_b0),
+      x_b1          = as.double(dm$X_b1),  p_b1  = ncol(dm$X_b1),
+      x_deltas      = lapply(dm$X_deltas, as.double),
+      p_deltas      = p_deltas_safe,
+      x_om          = lapply(dm$X_om, as.double),
+      p_om          = p_om_safe,
+      x_rho         = lapply(dm$X_rho, as.double),
+      p_rho         = p_rho_safe,
+      group_b0      = group_b0_safe,
+      n_groups_b0   = dm$n_groups_b0,
+      re_mask_om    = re_mask_om,
+      prior_mean_b0 = pv$b0$mean, prior_sd_b0 = pv$b0$sd, prior_lb_b0 = pv$b0$lb, prior_ub_b0 = pv$b0$ub,
+      prior_mean_b1 = pv$b1$mean, prior_sd_b1 = pv$b1$sd, prior_lb_b1 = pv$b1$lb, prior_ub_b1 = pv$b1$ub,
+      prior_mean_deltas = lapply(pv$deltas, `[[`, "mean"),
+      prior_sd_deltas   = lapply(pv$deltas, `[[`, "sd"),
+      prior_lb_deltas   = lapply(pv$deltas, `[[`, "lb"),
+      prior_ub_deltas   = lapply(pv$deltas, `[[`, "ub"),
+      prior_mean_om     = lapply(pv$om, `[[`, "mean"),
+      prior_sd_om       = lapply(pv$om, `[[`, "sd"),
+      prior_lb_om       = lapply(pv$om, `[[`, "lb"),
+      prior_ub_om       = lapply(pv$om, `[[`, "ub"),
+      prior_mean_rho    = lapply(pv$rho, `[[`, "mean"),
+      prior_sd_rho      = lapply(pv$rho, `[[`, "sd"),
+      prior_lb_rho      = lapply(pv$rho, `[[`, "lb"),
+      prior_ub_rho      = lapply(pv$rho, `[[`, "ub"),
+      sigma_shape   = priors$sigma$shape,
+      sigma_scale   = priors$sigma$scale,
+      sigma_u_shape = priors$sigma_u$shape,
+      sigma_u_scale = priors$sigma_u$scale,
+      sigma_re_om_shape = priors$sigma_re_om$shape,
+      sigma_re_om_scale = priors$sigma_re_om$scale,
+      step_om  = step_om,
+      step_rho = step_rho,
+      target_accept = as.double(target_accept),
+      chains   = as.integer(chains),
+      iter     = as.integer(iter),
+      warmup   = as.integer(warmup),
+      seed     = as.integer(seed),
+      verbose  = isTRUE(.verbose),
+      n_cores  = as.integer(max(1L, cores))
+    )
+  } else {
+    raw <- run_mcmc(
+      y             = y,
+      tau           = tau,
+      x_b0          = as.double(dm$X_b0),  p_b0  = ncol(dm$X_b0),
+      x_b1          = as.double(dm$X_b1),  p_b1  = ncol(dm$X_b1),
+      x_deltas      = lapply(dm$X_deltas, as.double),
+      p_deltas      = p_deltas_safe,
+      x_om          = lapply(dm$X_om, as.double),
+      p_om          = p_om_safe,
+      x_rho         = lapply(dm$X_rho, as.double),
+      p_rho         = p_rho_safe,
+      group_b0      = group_b0_safe,
+      n_groups_b0   = dm$n_groups_b0,
+      prior_mean_b0 = pv$b0$mean, prior_sd_b0 = pv$b0$sd, prior_lb_b0 = pv$b0$lb, prior_ub_b0 = pv$b0$ub,
+      prior_mean_b1 = pv$b1$mean, prior_sd_b1 = pv$b1$sd, prior_lb_b1 = pv$b1$lb, prior_ub_b1 = pv$b1$ub,
+      prior_mean_deltas = lapply(pv$deltas, `[[`, "mean"),
+      prior_sd_deltas   = lapply(pv$deltas, `[[`, "sd"),
+      prior_lb_deltas   = lapply(pv$deltas, `[[`, "lb"),
+      prior_ub_deltas   = lapply(pv$deltas, `[[`, "ub"),
+      prior_mean_om     = lapply(pv$om, `[[`, "mean"),
+      prior_sd_om       = lapply(pv$om, `[[`, "sd"),
+      prior_lb_om       = lapply(pv$om, `[[`, "lb"),
+      prior_ub_om       = lapply(pv$om, `[[`, "ub"),
+      prior_mean_rho    = lapply(pv$rho, `[[`, "mean"),
+      prior_sd_rho      = lapply(pv$rho, `[[`, "sd"),
+      prior_lb_rho      = lapply(pv$rho, `[[`, "lb"),
+      prior_ub_rho      = lapply(pv$rho, `[[`, "ub"),
+      sigma_shape   = priors$sigma$shape,
+      sigma_scale   = priors$sigma$scale,
+      sigma_u_shape = priors$sigma_u$shape,
+      sigma_u_scale = priors$sigma_u$scale,
+      step_om  = step_om,
+      step_rho = step_rho,
+      target_accept = as.double(target_accept),
+      chains   = as.integer(chains),
+      iter     = as.integer(iter),
+      warmup   = as.integer(warmup),
+      seed     = as.integer(seed),
+      verbose  = isTRUE(.verbose),
+      n_cores  = as.integer(max(1L, cores))
+    )
+  }
 
   pnames <- .param_names(dm, pv)
-
+  if (has_re_om) {
+    pnames <- c(pnames, paste0("sigma_re_omega", seq_along(dm$X_om)))
+  }
   # Assemble fit object
   n_post <- nrow(raw$draws[[1]])
   n_params <- ncol(raw$draws[[1]])
@@ -155,7 +221,7 @@ smoothbp <- function(
 #' unspecified.
 #'
 #' @param object A \code{smoothbp_fit} object.
-#' @param formula,b0,b1,b2,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
+#' @param formula,b0,b1,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
 #'   Replacements for the corresponding arguments of \code{\link{smoothbp}}.
 #'   Any argument not supplied is taken from \code{object}.
 #' @param ... Ignored.
@@ -165,7 +231,7 @@ smoothbp <- function(
 update.smoothbp_fit <- function(
     object,
     formula,
-    b0, b1, b2, omega, rho,
+    b0, b1, omega, rho,
     data,
     priors,
     chains, iter, warmup, seed,
@@ -177,7 +243,6 @@ update.smoothbp_fit <- function(
   if (missing(formula))      formula      <- object$formula
   if (missing(b0))           b0           <- object$b0_formula
   if (missing(b1))           b1           <- object$b1_formula
-  if (missing(b2))           b2           <- object$b2_formula
   if (missing(omega))        omega        <- object$omega_formula
   if (missing(rho))          rho          <- object$rho_formula
   if (missing(data))         data         <- object$data
@@ -196,7 +261,6 @@ update.smoothbp_fit <- function(
     formula       = formula,
     b0            = b0,
     b1            = b1,
-    b2            = b2,
     omega         = omega,
     rho           = rho,
     data          = data,
