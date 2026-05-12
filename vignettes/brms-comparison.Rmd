@@ -512,7 +512,7 @@ the sharpness parameter `rho` controlling how abrupt it is. As
 on data generated with large `rho` the two approaches should give
 consistent estimates of the change-point location and slopes.
 
-A second structural difference: `mcp` supports **varying (random) change-points** by group, while `smoothbp` supports both **random intercepts** on the response level AND **random change-points** (via the `omega = ~ (1 | group)` formula syntax). This makes `smoothbp` highly flexible for complex hierarchical designs. For this comparison, we use a fixed-effects dataset to focus on the core change-point estimation.
+A second structural difference: Both packages support complex hierarchical designs including **random intercepts** and **varying change-points**. For this comparison, we use a fixed-effects dataset to focus on the core change-point estimation.
 
 ## Parameterisation note
 
@@ -759,7 +759,7 @@ data.frame(
   lead to a slightly overconfident change-point posterior when
   transitions are genuinely gradual.
 
-- **Random effects**: `mcp` supports varying (random) *change-points* by group. `smoothbp` supports both random *intercepts* on the response level AND random *change-points*. This dual support allows `smoothbp` to handle complex nested structures (e.g. subjects within groups) where both the baseline and the timing vary.
+- **Random effects**: Both `mcp` and `smoothbp` support hierarchical models with random intercepts and varying change-points. `smoothbp`'s conjugate Gibbs updates for random intercepts often lead to more efficient sampling of the population mean and group-level deviations compared to general-purpose MCMC.
 
 - **Speed**: smoothbp's compiled Rust back-end is substantially faster
   per iteration than mcp's JAGS back-end, and does not require JAGS to
