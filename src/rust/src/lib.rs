@@ -25,7 +25,8 @@ fn list_to_vec_dmatrix(list: List, nrow: usize, p_vec: &[i32]) -> Vec<DMatrix<f6
         .collect()
 }
 
-/// Run Metropolis-within-Gibbs sampler for the multi-breakpoint model.
+/// @noRd
+/// @keywords internal
 #[extendr]
 fn run_mcmc(
     y: &[f64],
@@ -149,6 +150,8 @@ fn run_mcmc(
     list!(draws = chain_results)
 }
 
+/// @noRd
+/// @keywords internal
 #[extendr]
 fn run_mcmc_ss(
     y: &[f64],
@@ -287,6 +290,8 @@ fn run_mcmc_ss(
     list!(draws = chain_results)
 }
 
+/// @noRd
+/// @keywords internal
 #[extendr]
 fn run_mcmc_re(
     y: &[f64],
@@ -413,6 +418,8 @@ fn run_mcmc_re(
     list!(draws = chain_results)
 }
 
+/// @noRd
+/// @keywords internal
 #[extendr]
 fn run_mcmc_re_ss(
     y: &[f64],

@@ -3,40 +3,19 @@
 
 #' Pointwise log-likelihood matrix
 #'
-#' Generic function. See \code{\link{log_lik.smoothbp_fit}} for the
-#' \code{smoothbp_fit} method.
-#'
 #' @param object A fitted model object.
 #' @param ... Additional arguments passed to methods.
 #' @export
 log_lik <- function(object, ...) UseMethod("log_lik")
 
-#' Leave-one-out cross-validation
-#'
-#' Generic function. See \code{\link{loo.smoothbp_fit}} for the
-#' \code{smoothbp_fit} method.
-#'
-#' @param x A fitted model object.
-#' @param ... Additional arguments passed to methods.
+#' @importFrom loo loo
 #' @export
-loo <- function(x, ...) UseMethod("loo")
+loo::loo
 
-#' Widely applicable information criterion (WAIC)
-#'
-#' Generic function. See \code{\link{waic.smoothbp_fit}} for the
-#' \code{smoothbp_fit} method.
-#'
-#' @param x A fitted model object.
-#' @param ... Additional arguments passed to methods.
+#' @importFrom loo waic
 #' @export
-waic <- function(x, ...) UseMethod("waic")
+loo::waic
 
-#' Posterior predictive check
-#'
-#' Generic function. See \code{\link{pp_check.smoothbp_fit}} for the
-#' \code{smoothbp_fit} method.
-#'
-#' @param object A fitted model object.
-#' @param ... Additional arguments passed to methods.
+#' @importFrom bayesplot pp_check
 #' @export
-pp_check <- function(object, ...) UseMethod("pp_check")
+bayesplot::pp_check

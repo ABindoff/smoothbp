@@ -6,6 +6,15 @@
 \usage{
 \method{print}{smoothbp_fit}(x, digits = 3, effects = "all", ...)
 }
+\arguments{
+\item{x}{A \code{smoothbp_fit} object.}
+
+\item{digits}{Number of decimal places to print.}
+
+\item{effects}{Which effects to show: \code{"fixed"}, \code{"ran_pars"}, \code{"ran_vals"}, or \code{"all"}.}
+
+\item{...}{Unused.}
+}
 \description{
 Print a smoothbp_fit
 }

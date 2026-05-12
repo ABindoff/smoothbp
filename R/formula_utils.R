@@ -46,6 +46,23 @@
 # For plain ~ x (no RE terms): standard model.matrix, all mask=0.
 # ---------------------------------------------------------------------------
 .build_mm <- function(formula, data) {
+  if (inherits(formula, "smoothbp_fixed")) {
+    X <- matrix(as.numeric(formula), nrow = nrow(data), ncol = 1)
+    colnames(X) <- "(Intercept)"
+    attr(X, "re_mask") <- 0L
+    # If it's a vector, we fix the coefficient at 1.0. 
+    # If it's a scalar, we fix it at the scalar value and use a column of 1s.
+    # Actually, it's simpler to always treat it as a column in the design matrix
+    # and fix the coefficient at 1.0 if it's a vector, OR keep it as a column of 1s
+    # and fix the coefficient at the scalar value.
+    if (length(formula) > 1) {
+      attr(X, "fixed_value") <- 1.0
+    } else {
+      X[] <- 1.0
+      attr(X, "fixed_value") <- as.numeric(formula)
+    }
+    return(X)
+  }
   parsed <- .parse_re(formula)
 
   if (is.null(parsed$re_group)) {
@@ -164,8 +181,25 @@
   p_b1 <- .expand_prior(priors$b1, dm$col_names_b1)
 
   p_deltas <- expand_list(priors$deltas, dm$col_names_deltas)
-  p_om     <- expand_list(priors$omega,  dm$col_names_om)
-  p_rho    <- expand_list(priors$rho,    dm$col_names_rho)
+  
+  # Handle fixed omega/rho by overriding priors if needed
+  expand_segment_priors <- function(spec_list, dm_list, names_list) {
+    if (!is.list(spec_list) || inherits(spec_list, "smoothbp_prior")) {
+      spec_list <- rep(list(spec_list), length(names_list))
+    }
+    lapply(seq_along(names_list), function(i) {
+      if (!is.null(attr(dm_list[[i]], "fixed_value"))) {
+        # This segment is fixed!
+        val <- attr(dm_list[[i]], "fixed_value")
+        .expand_prior(prior_normal(mean = val, sd = 0), names_list[[i]])
+      } else {
+        .expand_prior(spec_list[[i]], names_list[[i]])
+      }
+    })
+  }
+
+  p_om     <- expand_segment_priors(priors$omega,  dm$X_om,  dm$col_names_om)
+  p_rho    <- expand_segment_priors(priors$rho,    dm$X_rho, dm$col_names_rho)
 
   list(
     b0 = p_b0,

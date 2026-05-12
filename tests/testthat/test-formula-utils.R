@@ -33,15 +33,15 @@ test_that(".build_design_matrices returns correct dimensions", {
   dm <- smoothbp:::.build_design_matrices(
     b0_fml    = ~ 1 + grp + (1 | sub),
     b1_fml    = ~ 1 + grp,
-    b2_fml    = ~ 1,
-    omega_fml = ~ 1,
-    rho_fml   = ~ 1,
+    deltas_fml = list(~ 1),
+    omega_fml = list(~ 1),
+    rho_fml   = list(~ 1),
     data = dat
   )
   expect_equal(nrow(dm$X_b0), n)
   expect_equal(ncol(dm$X_b0), 2)   # intercept + grpB
   expect_equal(ncol(dm$X_b1), 2)
-  expect_equal(ncol(dm$X_b2), 1)
+  expect_equal(ncol(dm$X_deltas[[1]]), 1)
   expect_equal(dm$n_groups_b0, 10)
   expect_length(dm$group_b0, n)
   expect_true(all(dm$group_b0 >= 0L & dm$group_b0 < 10L))

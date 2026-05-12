@@ -23,9 +23,9 @@ test_that("smoothbp recovers parameters on simulated data", {
     formula = y ~ tau,
     b0      = ~ 1 + (1 | subject),
     b1      = ~ 1,
-    b2      = ~ 1,
-    omega   = ~ 1,
-    rho     = ~ 1,
+    deltas  = list(~ 1),
+    omega   = list(~ 1),
+    rho     = list(~ 1),
     data    = dat,
     priors  = smoothbp_priors(omega = prior_normal(3, 2, lb = 0)),
     chains  = 2L,
@@ -41,9 +41,9 @@ test_that("smoothbp recovers parameters on simulated data", {
   param_map <- c(
     b0      = "b0_(Intercept)",
     b1      = "b1_(Intercept)",
-    b2      = "b2_(Intercept)",
-    omega   = "omega_(Intercept)",
-    rho     = "rho_(Intercept)",
+    b2      = "delta1_(Intercept)",
+    omega   = "omega1_(Intercept)",
+    rho     = "rho1_(Intercept)",
     sigma   = "sigma",
     sigma_u = "sigma_u"
   )

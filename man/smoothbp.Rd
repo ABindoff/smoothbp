@@ -19,8 +19,9 @@ smoothbp(
   seed = NULL,
   step_om = 0.3,
   step_rho = 0.3,
-  target_accept = 0.65,
+  target_accept = 0.8,
   cores = getOption("smoothbp.cores", 1L),
+  hierarchical = NULL,
   .verbose = TRUE
 )
 }
@@ -57,6 +58,9 @@ e.g. \code{value ~ tau}.}
 \item{target_accept}{Target HMC acceptance probability.}
 
 \item{cores}{Number of CPU cores.}
+
+\item{hierarchical}{Character vector; which parameters should be treated as hierarchical.
+Legacy argument, now mostly auto-detected from \code{(1|group)} formula syntax.}
 
 \item{.verbose}{Print progress.}
 }

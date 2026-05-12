@@ -24,15 +24,21 @@ Imports:
     posterior,
     ggplot2,
     stats,
-    bridgesampling
+    bridgesampling,
+    loo,
+    bayesplot
 Suggests:
     testthat (>= 3.0.0),
     withr,
     knitr,
     rmarkdown,
-    loo,
     brms,
-    mcp
+    mcp,
+    dplyr,
+    gt,
+    tidyr,
+    scales,
+    rjags
 Config/testthat/edition: 3
 VignetteBuilder: knitr
 URL: https://github.com/ABindoff/smoothbp

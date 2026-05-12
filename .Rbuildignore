@@ -8,3 +8,9 @@
 ^LICENSE\.md$
 ^\.positai$
 ^\.claude$
+^\.vscode$
+^Rplots\.pdf$
+^build_log\.txt$
+^cran-comments\.md$
+^pip_plot\.png$
+^scratch$

@@ -6,7 +6,9 @@
 #' @param b1 One-sided formula for \eqn{b1}. Default \code{~ 1}.
 #' @param deltas List of one-sided formulas for slope changes. Default \code{list(~ 1)}.
 #' @param omega List of one-sided formulas for change-point locations. Default \code{list(~ 1)}.
+#'   Can also contain \code{\link{fixed}()} values for known change-points.
 #' @param rho List of one-sided formulas for transition sharpness. Default \code{list(~ 1)}.
+#'   Can also contain \code{\link{fixed}()} values for fixed sharpness.
 #' @param data A data frame.
 #' @param priors A \code{\link{smoothbp_priors}} object.
 #' @param chains Number of chains. Default 4.
@@ -16,7 +18,9 @@
 #' @param step_om Initial HMC/MH step size for omega.
 #' @param step_rho Initial HMC/MH step size for rho.
 #' @param target_accept Target HMC acceptance probability.
-#' @param cores Number of CPU cores.
+#' @param cores    Number of CPU cores.
+#' @param hierarchical Character vector; which parameters should be treated as hierarchical.
+#'   Legacy argument, now mostly auto-detected from `(1|group)` formula syntax.
 #' @param .verbose Print progress.
 #'
 #' @return A \code{smoothbp_fit} object.

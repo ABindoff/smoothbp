@@ -1,6 +1,12 @@
 # Post-processing utilities and S3 methods for smoothbp_fit
 
 #' Print a smoothbp_fit
+#'
+#' @param x A `smoothbp_fit` object.
+#' @param digits Number of decimal places to print.
+#' @param effects Which effects to show: `"fixed"`, `"ran_pars"`, `"ran_vals"`, or `"all"`.
+#' @param ... Unused.
+#'
 #' @export
 print.smoothbp_fit <- function(x, digits = 3, effects = "all", ...) {
   cat("Smooth Change-Point Model (smoothbp)\n")
@@ -19,6 +25,12 @@ print.smoothbp_fit <- function(x, digits = 3, effects = "all", ...) {
 }
 
 #' Summarise a smoothbp_fit
+#'
+#' @param object A `smoothbp_fit` object.
+#' @param effects Which effects to summarise: `"fixed"`, `"ran_pars"`, `"ran_vals"`, or `"all"`.
+#' @param digits Number of decimal places for rounding.
+#' @param ... Unused.
+#'
 #' @export
 summary.smoothbp_fit <- function(object, effects = "all", digits = 3, ...) {
   show <- .resolve_effects(effects)
@@ -62,11 +74,23 @@ summary.smoothbp_fit <- function(object, effects = "all", digits = 3, ...) {
   effects
 }
 
+#' Convert draws to a data frame
+#'
+#' @param x A `smoothbp_fit` object.
+#' @param ... Passed to `as.data.frame.draws_df`.
+#'
 #' @export
 as.data.frame.smoothbp_fit <- function(x, ...) {
   as.data.frame(posterior::as_draws_df(x$draws))
 }
 
+#' Fitted values for smoothbp_fit objects
+#'
+#' @param object A `smoothbp_fit` object.
+#' @param newdata Optional data frame for prediction.
+#' @param summary Logical; if `TRUE` (default), returns the mean and 95% CI of the fitted values.
+#' @param ... Unused.
+#'
 #' @export
 fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
   if (is.null(newdata)) {
@@ -169,6 +193,9 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
   stats::model.matrix(fml, data = dat)
 }
 
+#' @rdname log_lik
+#' @param object A `smoothbp_fit` object.
+#' @param ... Unused.
 #' @export
 log_lik.smoothbp_fit <- function(object, ...) {
   y_obs <- as.double(object$data[[object$response]])
@@ -181,6 +208,7 @@ log_lik.smoothbp_fit <- function(object, ...) {
   ll_matrix
 }
 
+#' @importFrom loo loo waic
 #' @export
 loo.smoothbp_fit <- function(x, ...) {
   loo::loo(log_lik(x), ...)
@@ -191,6 +219,7 @@ waic.smoothbp_fit <- function(x, ...) {
   loo::waic(log_lik(x), ...)
 }
 
+#' @importFrom bayesplot pp_check
 #' @export
 pp_check.smoothbp_fit <- function(object, n_draws = 50, ...) {
   y_obs <- as.double(object$data[[object$response]])

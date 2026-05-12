@@ -30,6 +30,8 @@ probability (PIP)** — the Bayesian probability that change-point $k$ is
 real. A PIP near 1 means strong evidence for that breakpoint; a PIP near 0
 means the data are consistent with no structural break there.
 
+> **Tip**: If you already know where a breakpoint occurred (e.g., a policy change or an intervention), you don't need to estimate its location. Use the `fixed()` helper to test the intervention effect — see `vignette("intervention-analysis")`.
+
 ---
 
 ## Example 1: Identifying the number of real breakpoints
@@ -37,11 +39,7 @@ means the data are consistent with no structural break there.
 ### Simulate data with one true breakpoint
 
 ```{r sim-one-bp}
-if (requireNamespace("pkgload", quietly = TRUE)) {
-  pkgload::load_all("..")
-} else {
-  library(smoothbp)
-}
+library(smoothbp)
 library(posterior)
 library(ggplot2)
 library(dplyr)

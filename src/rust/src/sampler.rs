@@ -392,17 +392,43 @@ fn sample_linear_coefs(data: &ModelData, priors: &Priors, state: &mut State, rng
     // To sample from N(mean, P^-1) where P = L*L^T:
     // x = mean + (L^T)^-1 * z  =>  L^T * (x - mean) = z
     let y = cholesky.l().transpose().solve_upper_triangular(&z).expect("Failed to solve upper triangular system");
-    let theta = mean + y;
+    let theta_new = mean + y;
 
-    // Export back to state
-    state.beta_b0.copy_from(&theta.rows(0, p_b0));
-    state.beta_b1.copy_from(&theta.rows(p_b0, p_b1));
-    offset = p_b0 + p_b1;
-    for k in 0..data.n_breakpoints {
-        let pk = data.x_deltas[k].ncols();
-        state.beta_deltas[k].copy_from(&theta.rows(offset, pk));
-        offset += pk;
+    // Check bounds for rejection
+    let mut ok = true;
+    let mut idx = 0;
+    for j in 0..p_b0 {
+        if theta_new[idx] < priors.b0_lb[j] || theta_new[idx] > priors.b0_ub[j] { ok = false; break; }
+        idx += 1;
     }
+    if ok {
+        for j in 0..p_b1 {
+            if theta_new[idx] < priors.b1_lb[j] || theta_new[idx] > priors.b1_ub[j] { ok = false; break; }
+            idx += 1;
+        }
+    }
+    if ok {
+        for k in 0..data.n_breakpoints {
+            for j in 0..data.x_deltas[k].ncols() {
+                if theta_new[idx] < priors.delta_lb[k][j] || theta_new[idx] > priors.delta_ub[k][j] { ok = false; break; }
+                idx += 1;
+            }
+            if !ok { break; }
+        }
+    }
+
+    if ok {
+        // Export back to state
+        state.beta_b0.copy_from(&theta_new.rows(0, p_b0));
+        state.beta_b1.copy_from(&theta_new.rows(p_b0, p_b1));
+        let mut offset = p_b0 + p_b1;
+        for k in 0..data.n_breakpoints {
+            let pk = data.x_deltas[k].ncols();
+            state.beta_deltas[k].copy_from(&theta_new.rows(offset, pk));
+            offset += pk;
+        }
+    }
+    // Else: keep old values (MH rejection step)
 }
 
 fn sample_random_effects(data: &ModelData, _priors: &Priors, state: &mut State, rng: &mut StdRng) {
@@ -449,6 +475,14 @@ fn hmc_step_om(
     rng: &mut StdRng,
 ) {
     let p = adapt.p;
+    
+    // If all prior SDs are 0, this parameter block is fixed.
+    let mut all_fixed = true;
+    for j in 0..p {
+        if priors.om_sd[k][j] > 0.0 { all_fixed = false; break; }
+    }
+    if all_fixed { return; }
+
     let sigma = state.sigma;
     let mu_base = cache.mu_without_segment(data, state, k);
     
@@ -518,6 +552,14 @@ fn hmc_step_rho(
     rng: &mut StdRng,
 ) {
     let p = adapt.p;
+
+    // If all prior SDs are 0, this parameter block is fixed.
+    let mut all_fixed = true;
+    for j in 0..p {
+        if priors.rho_sd[k][j] > 0.0 { all_fixed = false; break; }
+    }
+    if all_fixed { return; }
+
     let sigma = state.sigma;
     let mu_base = cache.mu_without_segment(data, state, k);
     
@@ -741,18 +783,33 @@ pub fn run_chain_ss(
 
 fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
     let jitter = Normal::new(0.0, 0.01).unwrap();
-    let beta_b0 = DVector::from_iterator(data.x_b0.ncols(), (0..data.x_b0.ncols()).map(|i| priors.b0_mean[i] + jitter.sample(rng)));
+    let beta_b0 = DVector::from_iterator(data.x_b0.ncols(), (0..data.x_b0.ncols()).map(|i| {
+        let m = priors.b0_mean[i];
+        if priors.b0_sd[i] > 0.0 { m + jitter.sample(rng) } else { m }
+    }));
     let u_b0 = DVector::zeros(data.n_groups_b0);
-    let beta_b1 = DVector::from_iterator(data.x_b1.ncols(), (0..data.x_b1.ncols()).map(|i| priors.b1_mean[i] + jitter.sample(rng)));
+    let beta_b1 = DVector::from_iterator(data.x_b1.ncols(), (0..data.x_b1.ncols()).map(|i| {
+        let m = priors.b1_mean[i];
+        if priors.b1_sd[i] > 0.0 { m + jitter.sample(rng) } else { m }
+    }));
     let mut beta_deltas = Vec::new();
     let mut beta_om = Vec::new();
     let mut beta_rho = Vec::new();
     let mut gamma_deltas = Vec::new();
 
     for k in 0..data.n_breakpoints {
-        beta_deltas.push(DVector::from_iterator(data.x_deltas[k].ncols(), (0..data.x_deltas[k].ncols()).map(|i| priors.delta_mean[k][i] + jitter.sample(rng))));
-        beta_om.push(DVector::from_iterator(data.x_om[k].ncols(), (0..data.x_om[k].ncols()).map(|i| priors.om_mean[k][i] + jitter.sample(rng))));
-        beta_rho.push(DVector::from_iterator(data.x_rho[k].ncols(), (0..data.x_rho[k].ncols()).map(|i| priors.rho_mean[k][i] + jitter.sample(rng))));
+        beta_deltas.push(DVector::from_iterator(data.x_deltas[k].ncols(), (0..data.x_deltas[k].ncols()).map(|i| {
+            let m = priors.delta_mean[k][i];
+            if priors.delta_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+        })));
+        beta_om.push(DVector::from_iterator(data.x_om[k].ncols(), (0..data.x_om[k].ncols()).map(|i| {
+            let m = priors.om_mean[k][i];
+            if priors.om_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+        })));
+        beta_rho.push(DVector::from_iterator(data.x_rho[k].ncols(), (0..data.x_rho[k].ncols()).map(|i| {
+            let m = priors.rho_mean[k][i];
+            if priors.rho_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+        })));
         gamma_deltas.push(vec![true; data.x_deltas[k].ncols()]);
     }
 

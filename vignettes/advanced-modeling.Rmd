@@ -20,11 +20,7 @@ knitr::opts_chunk$set(
 While `smoothbp` is efficient for standard piecewise regression, its real power lies in its ability to handle structural changes that are themselves functions of other variables. This vignette demonstrates "edge cases" where `smoothbp` offers flexibility that is difficult to achieve with other packages.
 
 ```{r libs, message=FALSE, warning=FALSE}
-if (requireNamespace("pkgload", quietly = TRUE)) {
-  pkgload::load_all("..")
-} else {
-  library(smoothbp)
-}
+library(smoothbp)
 library(ggplot2)
 library(dplyr)
 library(posterior)

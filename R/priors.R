@@ -8,11 +8,25 @@
 #' @return A `smoothbp_prior` object.
 #' @export
 prior_normal <- function(mean = 0, sd = 1, lb = -Inf, ub = Inf) {
-  stopifnot(sd > 0, lb < ub)
+  stopifnot(sd >= 0, lb < ub)
   structure(
     list(family = "normal", mean = mean, sd = sd, lb = lb, ub = ub),
     class = "smoothbp_prior"
   )
+}
+
+#' Fix a parameter at a specific value
+#'
+#' Used within `omega` or `rho` lists in [smoothbp()] to specify that a
+#' parameter is fixed and should not be estimated.
+#'
+#' @param value The fixed value(s) (numeric scalar or vector).
+#'
+#' @return A `smoothbp_fixed` object.
+#' @export
+fixed <- function(value) {
+  stopifnot(is.numeric(value))
+  structure(value, class = "smoothbp_fixed")
 }
 
 #' Specify an inverse-gamma prior for a variance component
@@ -79,6 +93,7 @@ print.smoothbp_prior <- function(x, ...) {
 #' @param rho     Prior(s) for `rho` coefficients (one list per segment).
 #' @param sigma   `prior_invgamma()` for residual SD.
 #' @param sigma_u `prior_invgamma()` for random-effect SD.
+#' @param sigma_re_om `prior_invgamma()` for random-effect SD on omega.
 #'
 #' @return A `smoothbp_priors` list.
 #' @export

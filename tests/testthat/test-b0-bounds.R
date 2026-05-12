@@ -21,9 +21,9 @@ test_that("b0 bounds are respected in posterior draws", {
     formula = y ~ tau,
     b0      = ~ 1 + (1 | subject),
     b1      = ~ 1,
-    b2      = ~ 1,
-    omega   = ~ 1,
-    rho     = ~ 1,
+    deltas  = list(~ 1),
+    omega   = list(~ 1),
+    rho     = list(~ 1),
     data    = dat,
     priors  = smoothbp_priors(
       b0    = prior_normal(5, 10, lb = b0_lb, ub = b0_ub),

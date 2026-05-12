@@ -52,11 +52,7 @@ the prior mean (which is what smoothbp does internally). Both fixes
 applied below.
 
 ```{r setup, message = FALSE, warning = FALSE}
-if (requireNamespace("pkgload", quietly = TRUE)) {
-  pkgload::load_all("..")
-} else {
-  library(smoothbp)
-}
+library(smoothbp)
 library(posterior)
 library(ggplot2)
 library(dplyr)

@@ -4,8 +4,8 @@
 #' @param b0 One-sided formula for b0.
 #' @param b1 One-sided formula for b1.
 #' @param deltas List of formulas for slope changes.
-#' @param omega List of formulas for change-points.
-#' @param rho List of formulas for sharpness.
+#' @param omega List of formulas for change-points. Can also contain \code{\link{fixed}()} values.
+#' @param rho List of formulas for sharpness. Can also contain \code{\link{fixed}()} values.
 #' @param data A data frame.
 #' @param priors A \code{\link{smoothbp_priors}} object.
 #' @param spike A [prior_spike_slab()] object.

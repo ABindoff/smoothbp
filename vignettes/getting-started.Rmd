@@ -68,11 +68,7 @@ useful for testing and for understanding how the parameters relate to the
 observable trajectory shape.
 
 ```{r simulate}
-if (requireNamespace("pkgload", quietly = TRUE)) {
-  pkgload::load_all("..")
-} else {
-  library(smoothbp)
-}
+library(smoothbp)
 
 dat <- simulate_smoothbp(
   n_subj    = 20,
@@ -110,7 +106,7 @@ fit0 <- smoothbp(
   omega   = list(),
   rho     = list(),
   data    = dat,
-  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
+  chains  = 2L, iter = 1000L, warmup = 500L, seed = 42L, .verbose = FALSE
 )
 summary(fit0)
 ```
@@ -134,30 +130,48 @@ fit1 <- smoothbp(
 summary(fit1)
 ```
 
-### Multiple change-points
+### Multiple change-points (The List-of-Formulas API)
 
-Pass lists of equal length to `deltas`, `omega`, and `rho`. Each list element
-is a formula for that change-point's sub-model.
-
-Instead of writing out priors manually, we can use the `space_omega_priors()`
-helper to intelligently blanked our time domain with candidate breakpoints:
+For models with multiple structural breaks, `smoothbp` uses a "List-of-Formulas" API. You pass lists of equal length to `deltas`, `omega`, and `rho`. Each element in the list corresponds to the sub-model for that specific breakpoint.
 
 ```{r fit-multi-bp}
+# Fit a model with 3 candidate breakpoints
 fit3 <- smoothbp(
   formula = y ~ tau,
   b0      = ~ 1 + (1 | subject),
   b1      = ~ 1,
-  deltas  = list(~ 1, ~ 1, ~ 1),   # three possible slope changes
+  # Each segment gets its own formula (here, just an intercept)
+  deltas  = list(~ 1, ~ 1, ~ 1), 
   omega   = list(~ 1, ~ 1, ~ 1),
   rho     = list(~ 1, ~ 1, ~ 1),
   data    = dat,
   priors  = smoothbp_priors(
-    # Automatically generate 3 evenly-spaced priors from tau=0 to tau=6
+    # Use the space_omega_priors helper to initialize the search
     omega = space_omega_priors(K = 3, tau_min = 0, tau_max = 6)
-  ),
-  chains  = 4L, iter = 2000L, warmup = 1000L, seed = 42L
+  )
 )
 ```
+
+### Known Change-Points with `fixed()`
+
+If you are performing an intervention analysis (e.g., a Regression Discontinuity Design or a Stepped-Wedge trial), you may already know exactly where the change points should be. 
+
+By using the `fixed()` helper, you tell the model **not** to estimate the location or sharpness, but only the magnitude of the change ($\delta$). This is much faster and allows for direct hypothesis testing of the intervention effect.
+
+```{r fit-fixed}
+# Test for a hard kink at exactly tau = 3.0
+fit_fixed <- smoothbp_ss(
+  formula = y ~ tau,
+  omega   = list(fixed(3.0)),   # Location is known
+  rho     = list(fixed(100)),   # Sharpness is fixed (hard kink)
+  data    = dat
+)
+
+# The PIP tells us the probability that the intervention had an effect
+pip(fit_fixed)
+```
+
+> **Note**: `fixed()` can also accept a vector of the same length as your data, allowing for observation-specific change points (e.g., different intervention times per cluster).
 
 > **Tip**: If you are unsure how many change-points are present, use
 > `smoothbp_ss()` with spike-and-slab regularization — see
@@ -299,10 +313,13 @@ See `vignette("spike-and-slab")` for a full tutorial.
 
 ```{r hypothesis-directional}
 # Is the slope change at breakpoint 1 positive?
-hypothesis(fit1, "delta1_(Intercept) > 0")
+smoothbp::hypothesis(fit1, "delta1_(Intercept) > 0")
+
+# Complex linear hypothesis: is the final slope (b1 + delta1) negative?
+smoothbp::hypothesis(fit1, "b1_(Intercept) + delta1_(Intercept) < 0")
 
 # Does the change-point fall before time 4?
-hypothesis(fit1, "omega1_(Intercept) < 4")
+smoothbp::hypothesis(fit1, "omega1_(Intercept) < 4")
 ```
 
 | Stars | ER | $P(H)$ |
@@ -347,6 +364,23 @@ fitted(fit1)
 
 # Full posterior draws matrix (n_draws × n_obs)
 draws_mat <- fitted(fit1, summary = FALSE)
+```
+
+### Working with `posterior` draws
+
+The `$draws` component of a `smoothbp` fit is a standard `draws_array` object from the `posterior` package. You can use any of the `posterior` tools to manipulate and summarize the draws.
+
+```{r draws-manip}
+library(posterior)
+
+# Convert to a data frame for use with ggplot2
+draws_df <- as_draws_df(fit1$draws)
+
+# Extract a specific parameter
+b1_draws <- draws_df$`b1_(Intercept)`
+
+# Compute custom summaries
+summarise_draws(fit1$draws, "mean", "sd", ~quantile(.x, c(0.1, 0.9)))
 ```
 
 ### Marginal predictions

@@ -15,6 +15,7 @@ smoothbp_ss(
   priors = smoothbp_priors(),
   spike = prior_spike_slab(),
   b1_spike = FALSE,
+  hierarchical = NULL,
   chains = 4L,
   iter = 2000L,
   warmup = 1000L,
@@ -46,6 +47,8 @@ smoothbp_ss(
 \item{spike}{A \code{\link[=prior_spike_slab]{prior_spike_slab()}} object.}
 
 \item{b1_spike}{Logical; should b1 coefficients be eligible for spike-and-slab?}
+
+\item{hierarchical}{Character vector specifying which parameters should be hierarchical. Currently only "omega" is supported.}
 
 \item{chains}{Number of chains.}
 

@@ -270,9 +270,9 @@ test_that("compiled HMC sampler produces non-degenerate acceptance on covariate 
     formula = y ~ tau,
     b0    = ~ 1 + (1 | subject),
     b1    = ~ 1,
-    b2    = ~ 1,
-    omega = ~ 1 + group,
-    rho   = ~ 1,
+    deltas = list(~ 1),
+    omega = list(~ 1 + group),
+    rho   = list(~ 1),
     data  = dat,
     priors = smoothbp_priors(omega = prior_normal(3, 2, lb = 0, ub = 6)),
     chains = 2L, iter = 500L, warmup = 250L,
@@ -281,7 +281,7 @@ test_that("compiled HMC sampler produces non-degenerate acceptance on covariate 
 
   # Extract omega draws and check they are not stuck (ESS > 0).
   om_draws <- posterior::subset_draws(
-    fit$draws, variable = c("omega_(Intercept)", "omega_groupB")
+    fit$draws, variable = c("omega1_(Intercept)", "omega1_groupB")
   )
   ess <- posterior::summarise_draws(om_draws, "ess_bulk")$ess_bulk
 

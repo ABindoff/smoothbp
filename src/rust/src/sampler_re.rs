@@ -469,6 +469,15 @@ fn hmc_step_om(
     rng: &mut StdRng,
 ) {
     let p = adapt.p;
+
+    // If all prior SDs are 0, this parameter block is fixed.
+    let mut all_fixed = true;
+    for j in 0..p {
+        if !data.re_mask_om[k][j] && priors.om_sd[k][j] > 0.0 { all_fixed = false; break; }
+        if data.re_mask_om[k][j] { all_fixed = false; break; } // REs are never fixed by prior SD
+    }
+    if all_fixed { return; }
+
     let sigma = state.sigma;
     let mu_base = cache.mu_without_segment(data, state, k);
     
@@ -548,6 +557,14 @@ fn hmc_step_rho(
     rng: &mut StdRng,
 ) {
     let p = adapt.p;
+
+    // If all prior SDs are 0, this parameter block is fixed.
+    let mut all_fixed = true;
+    for j in 0..p {
+        if priors.rho_sd[k][j] > 0.0 { all_fixed = false; break; }
+    }
+    if all_fixed { return; }
+
     let sigma = state.sigma;
     let mu_base = cache.mu_without_segment(data, state, k);
     
@@ -776,18 +793,33 @@ pub fn run_chain_re_ss(
 
 pub fn init_state_re(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
     let jitter = Normal::new(0.0, 0.01).unwrap();
-    let beta_b0 = DVector::from_iterator(data.x_b0.ncols(), (0..data.x_b0.ncols()).map(|i| priors.b0_mean[i] + jitter.sample(rng)));
+    let beta_b0 = DVector::from_iterator(data.x_b0.ncols(), (0..data.x_b0.ncols()).map(|i| {
+        let m = priors.b0_mean[i];
+        if priors.b0_sd[i] > 0.0 { m + jitter.sample(rng) } else { m }
+    }));
     let u_b0 = DVector::zeros(data.n_groups_b0);
-    let beta_b1 = DVector::from_iterator(data.x_b1.ncols(), (0..data.x_b1.ncols()).map(|i| priors.b1_mean[i] + jitter.sample(rng)));
+    let beta_b1 = DVector::from_iterator(data.x_b1.ncols(), (0..data.x_b1.ncols()).map(|i| {
+        let m = priors.b1_mean[i];
+        if priors.b1_sd[i] > 0.0 { m + jitter.sample(rng) } else { m }
+    }));
     let mut beta_deltas = Vec::new();
     let mut beta_om = Vec::new();
     let mut beta_rho = Vec::new();
     let mut gamma_deltas = Vec::new();
 
     for k in 0..data.n_breakpoints {
-        beta_deltas.push(DVector::from_iterator(data.x_deltas[k].ncols(), (0..data.x_deltas[k].ncols()).map(|i| priors.delta_mean[k][i] + jitter.sample(rng))));
-        beta_om.push(DVector::from_iterator(data.x_om[k].ncols(), (0..data.x_om[k].ncols()).map(|i| priors.om_mean[k][i] + jitter.sample(rng))));
-        beta_rho.push(DVector::from_iterator(data.x_rho[k].ncols(), (0..data.x_rho[k].ncols()).map(|i| priors.rho_mean[k][i] + jitter.sample(rng))));
+        beta_deltas.push(DVector::from_iterator(data.x_deltas[k].ncols(), (0..data.x_deltas[k].ncols()).map(|i| {
+            let m = priors.delta_mean[k][i];
+            if priors.delta_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+        })));
+        beta_om.push(DVector::from_iterator(data.x_om[k].ncols(), (0..data.x_om[k].ncols()).map(|i| {
+            let m = priors.om_mean[k][i];
+            if priors.om_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+        })));
+        beta_rho.push(DVector::from_iterator(data.x_rho[k].ncols(), (0..data.x_rho[k].ncols()).map(|i| {
+            let m = priors.rho_mean[k][i];
+            if priors.rho_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+        })));
         gamma_deltas.push(vec![true; data.x_deltas[k].ncols()]);
     }
 

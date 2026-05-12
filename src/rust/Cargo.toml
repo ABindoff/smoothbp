@@ -14,7 +14,7 @@ name = 'document'
 path = 'document.rs'
 
 [dependencies]
-extendr-api = "0.7.1"
+extendr-api = "0.9.0"
 nalgebra = "0.33"
 rand = "0.8"
 rand_distr = "0.4"

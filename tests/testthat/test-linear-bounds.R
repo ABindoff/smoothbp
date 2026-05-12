@@ -32,15 +32,15 @@ test_that("b1 bounds are respected (no random effects)", {
     formula = y ~ tau,
     b0      = ~ 1,
     b1      = ~ 1,
-    b2      = ~ 1,
-    omega   = ~ 1,
-    rho     = ~ 1,
+    deltas  = list(~ 1),
+    omega   = list(~ 1),
+    rho     = list(~ 1),
     data    = dat,
     priors  = smoothbp_priors(
       b1    = prior_normal(0, 2, lb = b1_lb, ub = b1_ub),
       omega = prior_normal(3, 2, lb = 0)
     ),
-    chains  = 2L, iter = 1500L, warmup = 750L,
+    chains  = 2L, iter = 3000L, warmup = 1000L,
     seed    = 1101L, .verbose = FALSE
   )
 
@@ -76,20 +76,20 @@ test_that("b2 bounds are respected (no random effects)", {
     formula = y ~ tau,
     b0      = ~ 1,
     b1      = ~ 1,
-    b2      = ~ 1,
-    omega   = ~ 1,
-    rho     = ~ 1,
+    deltas  = list(~ 1),
+    omega   = list(~ 1),
+    rho     = list(~ 1),
     data    = dat,
     priors  = smoothbp_priors(
-      b2    = prior_normal(1, 2, lb = b2_lb, ub = b2_ub),
+      deltas = prior_normal(1, 2, lb = b2_lb, ub = b2_ub),
       omega = prior_normal(3, 2, lb = 0)
     ),
-    chains  = 2L, iter = 1500L, warmup = 750L,
+    chains  = 2L, iter = 3000L, warmup = 1000L,
     seed    = 2202L, .verbose = FALSE
   )
 
   b2_draws <- as.numeric(
-    posterior::as_draws_matrix(fit$draws)[, "b2_(Intercept)"]
+    posterior::as_draws_matrix(fit$draws)[, "delta1_(Intercept)"]
   )
 
   expect_true(all(b2_draws >= b2_lb),
@@ -120,22 +120,22 @@ test_that("b1 and b2 bounds are respected with random intercepts", {
     formula = y ~ tau,
     b0      = ~ 1 + (1 | subject),
     b1      = ~ 1,
-    b2      = ~ 1,
-    omega   = ~ 1,
-    rho     = ~ 1,
+    deltas  = list(~ 1),
+    omega   = list(~ 1),
+    rho     = list(~ 1),
     data    = dat,
     priors  = smoothbp_priors(
       b1    = prior_normal(0, 2, lb = b1_lb, ub = b1_ub),
-      b2    = prior_normal(1, 2, lb = b2_lb, ub = b2_ub),
+      deltas = prior_normal(1, 2, lb = b2_lb, ub = b2_ub),
       omega = prior_normal(3, 2, lb = 0)
     ),
-    chains  = 2L, iter = 1500L, warmup = 750L,
+    chains  = 2L, iter = 3000L, warmup = 1000L,
     seed    = 3303L, .verbose = FALSE
   )
 
   dm <- posterior::as_draws_matrix(fit$draws)
   b1_draws <- as.numeric(dm[, "b1_(Intercept)"])
-  b2_draws <- as.numeric(dm[, "b2_(Intercept)"])
+  b2_draws <- as.numeric(dm[, "delta1_(Intercept)"])
 
   expect_true(all(b1_draws >= b1_lb),
     label = sprintf("b1 lb (RE): min = %.4f", min(b1_draws)))
@@ -167,23 +167,23 @@ test_that("b1/b2 bounds do not degenerate the posterior when truth is interior",
     formula = y ~ tau,
     b0      = ~ 1 + (1 | subject),
     b1      = ~ 1,
-    b2      = ~ 1,
-    omega   = ~ 1,
-    rho     = ~ 1,
+    deltas  = list(~ 1),
+    omega   = list(~ 1),
+    rho     = list(~ 1),
     data    = dat,
     priors  = smoothbp_priors(
       b1    = prior_normal(0, 2, lb = -5, ub = 5),
-      b2    = prior_normal(1, 2, lb = -5, ub = 5),
+      deltas = prior_normal(1, 2, lb = -5, ub = 5),
       omega = prior_normal(3, 2, lb = 0)
     ),
-    chains  = 2L, iter = 1500L, warmup = 750L,
+    chains  = 2L, iter = 3000L, warmup = 1000L,
     seed    = 4404L, .verbose = FALSE
   )
 
   s <- summary(fit)
 
   b1_row <- s[s$variable == "b1_(Intercept)", ]
-  b2_row <- s[s$variable == "b2_(Intercept)", ]
+  b2_row <- s[s$variable == "delta1_(Intercept)", ]
 
   # 95% CI should contain the true value
   expect_true(-0.4 >= b1_row$Q2.5 & -0.4 <= b1_row$Q97.5,

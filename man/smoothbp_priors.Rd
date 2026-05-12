@@ -11,7 +11,8 @@ smoothbp_priors(
   omega = prior_normal(3, 2, lb = 0),
   rho = prior_normal(3, 2, lb = 0),
   sigma = prior_invgamma(1, 1),
-  sigma_u = prior_invgamma(1, 1)
+  sigma_u = prior_invgamma(1, 1),
+  sigma_re_om = prior_invgamma(1, 1)
 )
 }
 \arguments{
@@ -28,6 +29,8 @@ smoothbp_priors(
 \item{sigma}{\code{prior_invgamma()} for residual SD.}
 
 \item{sigma_u}{\code{prior_invgamma()} for random-effect SD.}
+
+\item{sigma_re_om}{\code{prior_invgamma()} for random-effect SD on omega.}
 }
 \value{
 A \code{smoothbp_priors} list.

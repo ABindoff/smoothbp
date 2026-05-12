@@ -1,0 +1,137 @@
+---
+title: "Intervention Analysis: RDD and Stepped-Wedge Designs"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Intervention Analysis: RDD and Stepped-Wedge Designs}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = TRUE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+In many research settings, we are not interested in *estimating* where a change occurred, but rather in *testing* whether a change occurred at a known time or threshold. Common examples include:
+
+1. **Regression Discontinuity Designs (RDD)**: Testing for a jump or slope change at a specific policy threshold.
+2. **Intervention Studies**: Testing for an effect after a specific event (e.g., a medical intervention or marketing campaign).
+3. **Stepped-Wedge Trials**: Testing for effects across multiple clusters that receive an intervention at different, pre-determined time points.
+
+`smoothbp` provides the `fixed()` helper to handle these cases efficiently within the spike-and-slab framework.
+
+```{r libs, message=FALSE, warning=FALSE}
+library(smoothbp)
+library(ggplot2)
+library(dplyr)
+```
+
+## 1. Regression Discontinuity Design (RDD)
+
+In an RDD, we assume that the treatment is assigned based on a "running variable" crossing a threshold. We want to know if there is a discontinuity at that threshold.
+
+Traditionally, RDD models use simple piecewise linear regression. `smoothbp` allows for a **smooth** transition if the effect is not instantaneous, or a sharp transition if it is.
+
+### Simulated RDD Data
+Let's simulate a scenario where a policy change at $x = 0$ leads to a change in the slope of the outcome.
+
+```{r rdd-data}
+set.seed(123)
+n <- 200
+x <- runif(n, -5, 5)
+# True effect: slope increases by 2 after x=0
+y <- 5 + 1 * x + 2 * (x - 0) * (x > 0) + rnorm(n, 0, 1)
+
+dat_rdd <- data.frame(x = x, y = y)
+
+ggplot(dat_rdd, aes(x, y)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Simulated RDD Data", subtitle = "Red line marks the known threshold at x = 0")
+```
+
+### Testing the Discontinuity
+We use `smoothbp_ss()` to estimate the probability that a slope change exists at $x = 0$. By using `fixed(0)` for `omega`, we tell the model exactly where the potential break is.
+
+```{r rdd-fit}
+fit_rdd <- smoothbp_ss(
+  formula = y ~ x,
+  omega   = list(fixed(0)),
+  rho     = list(fixed(100)), # Sharp transition
+  data    = dat_rdd,
+  iter    = 2000,
+  warmup  = 1000
+)
+
+# Posterior Inclusion Probability (PIP)
+pip(fit_rdd)
+```
+
+The PIP close to 1.0 indicates very strong evidence for a structural break at the threshold.
+
+## 2. Stepped-Wedge Design
+
+In a stepped-wedge design, different clusters (e.g., hospitals, schools) cross over from control to intervention at different points in time. The timing for each cluster is known.
+
+### Simulated Stepped-Wedge Data
+We'll simulate 5 clusters. Each cluster receives the intervention at a different month.
+
+```{r sw-data}
+n_clusters <- 5
+n_time     <- 24
+dat_sw <- expand.grid(
+  time    = 1:n_time,
+  cluster = paste0("Cluster_", 1:n_clusters)
+)
+
+# Pre-determined intervention times
+switch_times <- setNames(c(6, 10, 14, 18, 22), paste0("Cluster_", 1:n_clusters))
+dat_sw$interv_t <- switch_times[dat_sw$cluster]
+
+# Simulate data: intervention adds +1.5 to the slope
+dat_sw$y <- unlist(lapply(1:nrow(dat_sw), function(i) {
+  t      <- dat_sw$time[i]
+  switch <- dat_sw$interv_t[i]
+  # Base slope = 0.5, Intervention effect = +1.5
+  5 + 0.5 * t + 1.5 * (t - switch) * (t > switch) + rnorm(1, 0, 1)
+}))
+
+ggplot(dat_sw, aes(x = time, y = y, color = cluster)) +
+  geom_line() +
+  geom_point(aes(shape = time >= interv_t), size = 2) +
+  theme_minimal() +
+  labs(title = "Simulated Stepped-Wedge Trial", shape = "Intervention Active")
+```
+
+### Modeling the Shared Effect with Varying Breakpoints
+We want to estimate a single "treatment effect" ($\delta$) that applies to all clusters, but occurs at different times ($\omega$) for each cluster.
+
+Using `fixed(dat_sw$interv_t)` allows us to specify observation-specific breakpoints.
+
+```{r sw-fit}
+fit_sw <- smoothbp_ss(
+  formula = y ~ time,
+  b0      = ~ cluster, # Cluster-specific intercepts
+  omega   = list(fixed(dat_sw$interv_t)),
+  rho     = list(fixed(100)),
+  data    = dat_sw
+)
+
+# Probability of intervention effect
+pip(fit_sw)
+```
+
+The model correctly identifies the shared intervention effect across all clusters, even though they switched at different times.
+
+## Summary
+
+By using the `fixed()` helper, you can:
+- **Simplify the model**: If the location of a break is known, the sampler is faster and more stable.
+- **Perform Hypothesis Testing**: The PIP provides a direct Bayesian measure of evidence for an intervention effect.
+- **Handle Complex Designs**: Observation-specific fixed points enable the analysis of stepped-wedge and other group-sequential designs.

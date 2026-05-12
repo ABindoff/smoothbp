@@ -6,6 +6,15 @@
 \usage{
 \method{summary}{smoothbp_fit}(object, effects = "all", digits = 3, ...)
 }
+\arguments{
+\item{object}{A \code{smoothbp_fit} object.}
+
+\item{effects}{Which effects to summarise: \code{"fixed"}, \code{"ran_pars"}, \code{"ran_vals"}, or \code{"all"}.}
+
+\item{digits}{Number of decimal places for rounding.}
+
+\item{...}{Unused.}
+}
 \description{
 Summarise a smoothbp_fit
 }

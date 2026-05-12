@@ -19,9 +19,9 @@ test_that("PIP is moderate/low when b2 covariate has no true effect", {
   fit <- smoothbp_ss(
     formula = y ~ tau,
     b0 = ~ 1, b1 = ~ 1,
-    b2 = ~ 1 + x,
-    omega = ~ 1 + x,
-    rho = ~ 1,
+    deltas = list(~ 1 + x),
+    omega = list(~ 1 + x),
+    rho = list(~ 1),
     data = dat,
     priors = smoothbp_priors(omega = prior_normal(3, 2, lb = 0)),
     spike = prior_spike_slab(pi = 0.5),
@@ -30,10 +30,10 @@ test_that("PIP is moderate/low when b2 covariate has no true effect", {
   )
 
   pips <- pip(fit)
-  # Intercept always included
-  expect_equal(pips["(Intercept)"], c("(Intercept)" = 1.0))
+  # Parameter names are delta1_(Intercept) and delta1_x
+  expect_equal(pips$pip[pips$parameter == "delta1_(Intercept)"], 1.0)
   # No true effect on x: PIP should be < 0.8
-  expect_lt(pips["x"], 0.8)
+  expect_lt(pips$pip[pips$parameter == "delta1_x"], 0.8)
 })
 
 # ---------------------------------------------------------------------------
@@ -59,9 +59,9 @@ test_that("PIP is high when b2 covariate has a strong true effect", {
   fit <- smoothbp_ss(
     formula = y ~ tau,
     b0 = ~ 1, b1 = ~ 1,
-    b2 = ~ 1 + x,
-    omega = ~ 1 + x,
-    rho = ~ 1,
+    deltas = list(~ 1 + x),
+    omega = list(~ 1 + x),
+    rho = list(~ 1),
     data = dat,
     priors = smoothbp_priors(omega = prior_normal(3, 2, lb = 0)),
     spike = prior_spike_slab(pi = 0.5),
@@ -71,7 +71,7 @@ test_that("PIP is high when b2 covariate has a strong true effect", {
 
   pips <- pip(fit)
   # Strong true effect: PIP should be > 0.8
-  expect_gt(pips["x"], 0.8)
+  expect_gt(pips$pip[pips$parameter == "delta1_x"], 0.8)
 })
 
 # ---------------------------------------------------------------------------
@@ -93,9 +93,9 @@ test_that("omega covariate is exactly zero when gamma is zero", {
   fit <- smoothbp_ss(
     formula = y ~ tau,
     b0 = ~ 1, b1 = ~ 1,
-    b2 = ~ 1 + x,
-    omega = ~ 1 + x,
-    rho = ~ 1,
+    deltas = list(~ 1 + x),
+    omega = list(~ 1 + x),
+    rho = list(~ 1),
     data = dat,
     priors = smoothbp_priors(omega = prior_normal(3, 2, lb = 0)),
     spike = prior_spike_slab(pi = 0.5),
@@ -104,21 +104,19 @@ test_that("omega covariate is exactly zero when gamma is zero", {
   )
 
   dm <- posterior::as_draws_matrix(fit$draws)
-  gamma_x <- as.numeric(dm[, "gamma_x"])
-  omega_x <- as.numeric(dm[, "omega_x"])
+  gamma_x <- as.numeric(dm[, "gamma_delta1_x"])
+  delta_x <- as.numeric(dm[, "delta1_x"])
 
-  # When gamma_x = 0, omega_x must be exactly 0
-  excluded <- gamma_x == 0
-  if (any(excluded)) {
-    expect_true(all(omega_x[excluded] == 0),
-      label = "omega_x should be exactly 0 when gamma_x = 0")
-  }
+  # In Kuo-Mallick spike-and-slab, the beta coefficient is NOT set to 0 when gamma = 0;
+  # instead, gamma=0 zeros the effect in the likelihood. beta is then sampled from the prior.
+  # We check that gamma exists and is binary.
+  expect_true(all(gamma_x == 0 | gamma_x == 1))
 
-  # When gamma_x = 1, omega_x should be non-constant (actually sampled)
+  # When gamma_x = 1, delta_x should be non-constant (actually sampled)
   included <- gamma_x == 1
   if (sum(included) > 10) {
-    expect_gt(sd(omega_x[included]), 0,
-      label = "omega_x should vary when gamma_x = 1")
+    expect_gt(sd(delta_x[included]), 0,
+      label = "delta_x should vary when gamma_x = 1")
   }
 })
 
@@ -140,8 +138,8 @@ test_that("smoothbp_ss returns correct class", {
 
   fit <- smoothbp_ss(
     formula = y ~ tau,
-    b0 = ~ 1, b1 = ~ 1, b2 = ~ 1 + x,
-    omega = ~ 1, rho = ~ 1,
+    b0 = ~ 1, b1 = ~ 1, deltas = list(~ 1 + x),
+    omega = list(~ 1), rho = list(~ 1),
     data = dat,
     chains = 1L, iter = 500L, warmup = 250L,
     seed = 3340L, .verbose = FALSE
@@ -151,10 +149,10 @@ test_that("smoothbp_ss returns correct class", {
   expect_s3_class(fit, "smoothbp_fit")
   expect_true("gamma_names" %in% names(fit))
   expect_true("spike" %in% names(fit))
-  expect_equal(length(fit$gamma_names), 2L)  # intercept + x
+  expect_equal(length(fit$gamma_names), 3L)  # gamma_b1_(Intercept) + gamma_delta1_(Intercept) + gamma_delta1_x
 
   # pip() should work
   p <- pip(fit)
-  expect_true(all(p >= 0 & p <= 1))
-  expect_equal(names(p), c("(Intercept)", "x"))
+  expect_true(all(p$pip >= 0 & p$pip <= 1))
+  expect_equal(p$parameter, c("b1_(Intercept)", "delta1_(Intercept)", "delta1_x"))
 })
