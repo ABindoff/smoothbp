@@ -258,8 +258,8 @@ smoothbp_priors(
   b0    = prior_normal(0, 10),
   b1    = prior_normal(0, 5),
   omega = list(
-    prior_normal(2, 1, lb = 0, ub = 4),   # change-point 1
-    prior_normal(5, 1, lb = 2)             # change-point 2
+    prior_normal(2, 1),   # change-point 1
+    prior_normal(5, 1)    # change-point 2
   ),
   rho   = list(
     prior_normal(4, 2, lb = 0),
@@ -269,8 +269,11 @@ smoothbp_priors(
 )
 ```
 
-The `lb` and `ub` arguments impose hard bounds. `omega` should always have
-`lb = 0`. `rho` should have `lb = 0` (sharpness must be positive).
+The `lb` and `ub` arguments impose hard bounds. `rho` should typically have `lb = 0` (sharpness must be positive). For `omega` and `deltas`, it is often better to **avoid hard bounds** unless they are physically necessary for your domain.
+
+> **Performance Tip**: `smoothbp` is significantly faster when `b1`, `deltas`, and `omega` are unconstrained. Without bounds, the sampler can use exact conjugate Gibbs updates for `b1` and `deltas`, and standard HMC for `omega`. Truncated priors require additional checks and rejection sampling steps.
+
+If you do use bounds for `omega`, ensure they cover the actual range of your time variable (e.g. if your time starts at -10, do not use `lb = 0`).
 
 ---
 
