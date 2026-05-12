@@ -765,11 +765,7 @@ data.frame(
   per iteration than mcp's JAGS back-end, and does not require JAGS to
   be installed separately.
 
-- **Flexibility**: mcp supports multiple change-points, non-Gaussian
-  families, variance and autoregressive terms, and quadratic/trig
-  segments — features smoothbp does not offer. smoothbp supports
-  covariates on all five structural parameters (b0, b1, delta, omega, rho)
-  in a single model, which is not directly available in mcp.
+- **Flexibility**: Both packages support **multiple change-points**. `mcp` offers a wider range of likelihood families (non-Gaussian), variance/autoregressive terms, and non-linear segments. `smoothbp` offers unique strengths including **spike-and-slab variable selection** for structural break discovery and the ability to include **covariates on all five structural parameters** (b0, b1, delta, omega, rho) in a single model.
 
 ---
 
