@@ -224,14 +224,13 @@ message(sprintf("Prob NVDA AI Surge (BP 2) led AAPL Recovery (BP 1): %.2f", p_cr
 
 When modeling multiple entities (e.g., a basket of 10 stocks), we often expect them to respond to global market events at roughly the same time. However, due to individual dynamics, the exact timing of a transition might vary slightly.
 
-### How `hierarchical = "omega"` works
+### How Hierarchical Timing Works
 
-In `smoothbp`, hierarchical shrinkage is applied to the **timing** ($\omega$) of structural changes. When you specify `hierarchical = "omega"`:
+In `smoothbp`, hierarchical shrinkage is applied to the **timing** ($\omega$) of structural changes using standard formula syntax. When you specify a formula like `omega = ~ (1 | group)`:
 
-1.  The model looks at your `omega` formula (e.g., `omega = ~ ticker`).
-2.  It identifies the **intercept** as the "Market Mean" timing.
-3.  It treats all other coefficients (e.g., ticker-specific offsets) as **random effects** centered on zero.
-4.  It estimates a shared precision (shrinkage variance) $\sigma_{re\_om}$ that pulls individual timings toward the market mean.
+1.  The model identifies the **intercept** as the "Population Mean" timing.
+2.  It treats the group-level offsets as **random effects** centered on zero.
+3.  It automatically estimates a shared precision (shrinkage variance) $\sigma_{re\_om}$ that pulls individual group timings toward the population mean.
 
 ### Simulation: 10 Tickers, 2 Global Events
 
@@ -301,30 +300,16 @@ my_spike <- prior_spike_slab(
 
 t_min <- min(dat_sim$month)
 t_max <- max(dat_sim$month)
-K <- 8
 
-# 1. Create K evenly spaced means, trimming the absolute edges
-#    (Using K + 2 and dropping the first and last keeps them inside the window)
-om_means <- seq(t_min, t_max, length.out = K + 2)[2:(K + 1)]
-
-# 2. Set a standard deviation that allows adjacent priors to loosely overlap
-#    (Width of the domain divided by K is a great heuristic)
-om_sd <- (t_max - t_min) / K
-
-# 3. Generate the list of priors
-omega_priors <- lapply(om_means, function(m) {
-  prior_normal(mean = m, sd = om_sd, lb = t_min, ub = t_max)
-})
-
-# Or, if you are using a hierarchical formula like ~ (1 | ticker):
-omega_priors_hier <- lapply(om_means, function(m) {
-  list(
-    # The intercept represents the global market mean
-    "(Intercept)" = prior_normal(mean = m, sd = om_sd, lb = t_min, ub = t_max)
-    # Note: You don't need to specify priors for the ticker deviations 
-    # here because `sigma_re_om` automatically handles their shrinkage
-  )
-})
+# Use the space_omega_priors helper to initialize 8 candidate breakpoints.
+# By passing a formula with an intercept, we specify that the intercept (the global 
+# mean) should have the spaced priors, while random effects are handled automatically.
+omega_priors_hier <- space_omega_priors(
+  K       = 8, 
+  tau_min = t_min, 
+  tau_max = t_max,
+  formula = ~ (1 | ticker)
+)
 
 
 fit_hier <- smoothbp_ss(
