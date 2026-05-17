@@ -84,6 +84,19 @@ fit_naive <- smoothbp(
 
 # 2. Apply the Bayesian Sandwich
 fit_robust <- robustify(fit_naive, cluster = "Subject_ID")
+
+# 3. Fit the full Mixed-Effects Model (Random Intercepts)
+fit_mixed <- smoothbp(
+  score ~ time,
+  b0 = ~ 1 + (1|Subject_ID),       # Add random intercept for baseline
+  b1 = ~ 1,                        # Shared pre-breakpoint slope
+  deltas = list(~ Treatment),      # Post-breakpoint slope change depends on Treatment
+  omega = list(~ 1),               # Shared breakpoint location
+  data = clinical_data,
+  iter = 1000, 
+  chains = 2,
+  .verbose = FALSE
+)
 ```
 
 ### Hypothesis Testing with Bayes Factors
@@ -92,42 +105,48 @@ Because `robustify()` structurally transforms the underlying MCMC draws, the pos
 
 ```{r bf}
 # Test if the Treatment alters the slope post-breakpoint
-test_result <- hypothesis(fit_robust, "delta1_TreatmentTreatment < 0")
+bf_robust <- hypothesis(fit_robust, "delta1_TreatmentTreatment < 0")
+bf_mixed  <- hypothesis(fit_mixed, "delta1_TreatmentTreatment < 0")
 
-print(test_result)
+cat("--- Robust Marginal Model ---\n")
+print(bf_robust)
+
+cat("\n--- Full Mixed-Effects Model ---\n")
+print(bf_mixed)
+
 # The Evidence Ratio (Bayes Factor) will be appropriately penalized 
-# for the within-subject correlation.
+# in the robust model, yielding similar inferential strength to the mixed model.
 ```
 
 ### Visualizing the Robust HDI (Tufte Style)
 
 A core tenet of Edward Tufte's design philosophy is maximizing the data-ink ratio. We can visualize the robustified Highest Density Intervals (HDIs) cleanly without chartjunk using `ggthemes::theme_tufte()`.
 
-```{r tufte_plot, fig.width=7, fig.height=5}
-# Extract predicted trajectories with 95% HDIs
-preds <- fitted(fit_robust, newdata = clinical_data)
-plot_data <- bind_cols(clinical_data, preds) %>%
-  group_by(Treatment, time) %>%
-  summarise(
-    mean = mean(fitted_mean),
-    lower = mean(fitted_Q2.5),
-    upper = mean(fitted_Q97.5),
-    .groups = "drop"
-  )
+```{r tufte_plot, fig.width=8, fig.height=5}
+# Create a dummy population dataset (no Subject_ID) to predict average trajectories
+newdata_pop <- expand.grid(Treatment = factor(c("Control", "Treatment")), time = seq(0, 2, by = 0.1))
 
-ggplot(plot_data, aes(x = time, y = mean, color = Treatment)) +
-  # Tufte-style range frames (minimalist error bars)
-  geom_linerange(aes(ymin = lower, ymax = upper), linewidth = 1.2, alpha = 0.8) +
-  geom_point(size = 3) +
-  geom_line(aes(group = Treatment), linetype = "dotted") +
-  # Apply Tufte theme
+# Extract predicted population trajectories with 95% HDIs for both models
+preds_robust <- fitted(fit_robust, newdata = newdata_pop)
+plot_data_robust <- bind_cols(newdata_pop, preds_robust) %>% mutate(Model = "Marginal (Robust)")
+
+preds_mixed <- fitted(fit_mixed, newdata = newdata_pop)
+plot_data_mixed <- bind_cols(newdata_pop, preds_mixed) %>% mutate(Model = "Mixed Effects")
+
+plot_data <- bind_rows(plot_data_robust, plot_data_mixed)
+
+ggplot(plot_data, aes(x = time, y = fitted_mean, color = Treatment, linetype = Model)) +
+  # Tufte-style minimalist presentation
+  geom_ribbon(aes(ymin = fitted_Q2.5, ymax = fitted_Q97.5, fill = Treatment), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1.2) +
   theme_tufte(base_size = 14, ticks = FALSE) +
-  geom_rangeframe() +
   scale_color_manual(values = c("Control" = "#7f8c8d", "Treatment" = "#c0392b")) +
+  scale_fill_manual(values = c("Control" = "#7f8c8d", "Treatment" = "#c0392b")) +
   labs(
     x = "Time Point",
     y = "Clinical Score",
-    title = "Treatment Trajectories with Robust 95% HDIs"
+    title = "Comparison of Population Trajectories and HDIs",
+    subtitle = "Robust Marginal vs. Mixed-Effects Model"
   ) +
-  theme(legend.position = "top")
+  theme(legend.position = "right")
 ```
