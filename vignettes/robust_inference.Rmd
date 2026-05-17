@@ -46,9 +46,9 @@ While the Bayesian Sandwich estimator provides a powerful, computationally cheap
 *   **Small Number of Clusters**: If your dataset only contains a small handful of clusters (e.g., 4 hospital sites), the empirical score variance will be highly unstable, leading to a severely biased (often too narrow) robust covariance estimate.
 *   **Strong Subject-Level Non-Linear Heterogeneity**: In highly non-linear models (like logistic/Poisson piecewise models with massive unmodeled random slopes), the marginal mean mathematically differs from the conditional mean. In these cases, fitting a naive marginal model yields structurally biased point estimates that no variance adjustment can fix. You must fit the full hierarchical model.
 
-## Example: 2 Groups, 3 Time Points
+## Example: Stepped-Wedge Design
 
-Let's assume a basic clinical trial where the `Treatment` group experiences a shift in trajectory after Baseline.
+Let's assume a multi-center stepped-wedge clinical trial where centers are randomized to receive an intervention either "Early" (between t0 and t1) or "Late" (between t1 and t2). We want to estimate the Bayesian Average Treatment Effect (ATE) while rigorously accounting for the clustering of subjects within centers.
 
 ```{r setup}
 library(smoothbp)
@@ -59,27 +59,36 @@ library(ggthemes) # For Tufte styling
 if(!exists("robustify")) source("../R/robustify.R")
 
 set.seed(42)
-n_subjects <- 60
-# Subject random intercepts (unmodeled by smoothbp, causing within-subject correlation)
-subjects <- data.frame(
-  Subject_ID = factor(1:n_subjects),
-  Treatment = factor(rep(c("Control", "Treatment"), each = n_subjects/2)),
-  u_i = rnorm(n_subjects, mean = 0, sd = 10)
+n_centers <- 6
+n_subjects_per_center <- 50
+
+# 1. Randomize Centers to Early vs Late intervention
+centers <- data.frame(
+  Center_ID = factor(1:n_centers),
+  Treatment = factor(rep(c("Early", "Late"), each = n_centers/2)),
+  u_center = rnorm(n_centers, mean = 0, sd = 5)
 )
 
-clinical_data <- expand.grid(
-  Subject_ID = subjects$Subject_ID, 
+# 2. Assign Subjects to Centers
+subjects <- expand.grid(
+  Subject_ID = 1:(n_centers * n_subjects_per_center),
   time = c(0, 1, 2)
 )
-clinical_data <- merge(clinical_data, subjects, by = "Subject_ID")
+subjects$Center_ID <- factor(rep(1:n_centers, each = n_subjects_per_center * 3))
+subjects$u_subject <- rep(rnorm(n_centers * n_subjects_per_center, 0, 10), each = 3)
+
+clinical_data <- merge(subjects, centers, by = "Center_ID")
+
+# 3. Stepped-Wedge Intervention Timing
+# Early gets it at t = 0.5, Late gets it at t = 1.5
+clinical_data$intervention_time <- ifelse(clinical_data$Treatment == "Early", 0.5, 1.5)
 
 # Generate trajectories: baseline score 50, slow decay of -2
-clinical_data$score <- 50 + clinical_data$u_i - 2 * clinical_data$time
+clinical_data$score <- 50 + clinical_data$u_center + clinical_data$u_subject - 2 * clinical_data$time
 
-# Treatment group gets an accelerated decay (-15 slope) after time = 0.5
-is_treated <- clinical_data$Treatment == "Treatment"
-post_bp <- pmax(0, clinical_data$time - 0.5)
-clinical_data$score[is_treated] <- clinical_data$score[is_treated] - 15 * post_bp[is_treated]
+# True ATE: accelerated decay (-15 slope) after the specific intervention time
+post_bp <- pmax(0, clinical_data$time - clinical_data$intervention_time)
+clinical_data$score <- clinical_data$score - 15 * post_bp
 
 # Add measurement noise
 clinical_data$score <- clinical_data$score + rnorm(nrow(clinical_data), 0, 3)
@@ -87,29 +96,43 @@ clinical_data$score <- clinical_data$score + rnorm(nrow(clinical_data), 0, 3)
 # 1. Fit the fast marginal model
 fit_naive <- smoothbp(
   score ~ time,
-  b1 = ~ 1,                        # Shared pre-breakpoint slope
-  deltas = list(~ Treatment),      # Post-breakpoint slope change depends on Treatment
-  omega = list(fixed(0.5)),      # Known discrete breakpoint exactly at time = 0.5
-  rho = list(fixed(100)),        # Force sharp breakpoint (approximating infinite rho)
+  b1 = ~ 1,                        # Shared secular drift
+  deltas = list(~ 1),              # Universal ATE (slope change when intervention hits)
+  omega = list(~ 0 + Treatment),   # Center-specific timing via covariates
+  rho = list(fixed(100)),          # Force sharp breakpoint
   data = clinical_data,
+  priors = smoothbp_priors(
+    omega = list(
+      TreatmentEarly = prior_normal(0.5, 0),
+      TreatmentLate  = prior_normal(1.5, 0)
+    )
+  ),
   iter = 2000, 
   warmup = 1000,
   chains = 2,
   .verbose = FALSE
 )
 
-# 2. Apply the Bayesian Sandwich
-fit_robust <- robustify(fit_naive, cluster = "Subject_ID")
+# 2. Apply the Bayesian Sandwich clustering at the Highest Level (Center_ID)
+# This captures BOTH within-center AND within-subject correlation implicitly!
+fit_robust <- robustify(fit_naive, cluster = "Center_ID")
 
-# 3. Fit the full Mixed-Effects Model (Random Intercepts)
+# 3. Fit the full Mixed-Effects Model (Random Intercept for Center only)
+# Note: smoothbp natively supports only one random intercept grouping.
 fit_mixed <- smoothbp(
   score ~ time,
-  b0 = ~ 1 + (1|Subject_ID),       # Add random intercept for baseline
-  b1 = ~ 1,                        # Shared pre-breakpoint slope
-  deltas = list(~ Treatment),      # Post-breakpoint slope change depends on Treatment
-  omega = list(fixed(0.5)),      # Known discrete breakpoint exactly at time = 0.5
-  rho = list(fixed(100)),        # Force sharp breakpoint (approximating infinite rho)
+  b0 = ~ 1 + (1|Center_ID),        # Add random intercept for Center
+  b1 = ~ 1,                        
+  deltas = list(~ 1),              
+  omega = list(~ 0 + Treatment),
+  rho = list(fixed(100)),          
   data = clinical_data,
+  priors = smoothbp_priors(
+    omega = list(
+      TreatmentEarly = prior_normal(0.5, 0),
+      TreatmentLate  = prior_normal(1.5, 0)
+    )
+  ),
   iter = 2000, 
   warmup = 1000,
   chains = 2,
@@ -119,14 +142,14 @@ fit_mixed <- smoothbp(
 
 ### Hypothesis Testing with Bayes Factors
 
-Because `robustify()` structurally transforms the underlying MCMC draws, the posterior density evaluates differently. You can pass the robustified object directly into the `hypothesis()` function to calculate the Savage-Dickey density ratio for a Bayes Factor (e.g., testing if the Treatment slope differs from zero).
+Because `robustify()` structurally transforms the underlying MCMC draws, the posterior density evaluates differently. You can pass the robustified object directly into the `hypothesis()` function to calculate the Savage-Dickey density ratio for a Bayes Factor (e.g., testing if the ATE slope change differs from zero).
 
 ```{r bf}
-# Test if the Treatment alters the slope post-breakpoint
-bf_robust <- hypothesis(fit_robust, "delta1_TreatmentTreatment < 0")
-bf_mixed  <- hypothesis(fit_mixed, "delta1_TreatmentTreatment < 0")
+# Test if the intervention significantly alters the slope (ATE < 0)
+bf_robust <- hypothesis(fit_robust, "delta1_(Intercept) < 0")
+bf_mixed  <- hypothesis(fit_mixed, "delta1_(Intercept) < 0")
 
-cat("--- Robust Marginal Model ---\n")
+cat("--- Robust Marginal Model (Clustered by Center) ---\n")
 print(bf_robust)
 
 cat("\n--- Full Mixed-Effects Model ---\n")
@@ -141,8 +164,12 @@ print(bf_mixed)
 A core tenet of Edward Tufte's design philosophy is maximizing the data-ink ratio. We can visualize the robustified Highest Density Intervals (HDIs) cleanly without chartjunk using `ggthemes::theme_tufte()`.
 
 ```{r tufte_plot, fig.width=8, fig.height=5}
-# Create a dummy population dataset (no Subject_ID) to predict average trajectories
-newdata_pop <- expand.grid(Treatment = factor(c("Control", "Treatment")), time = seq(0, 2, by = 0.1))
+# Create a dummy population dataset to predict average trajectories
+newdata_pop <- expand.grid(
+  Treatment = factor(c("Early", "Late")), 
+  time = seq(0, 2, by = 0.1)
+)
+newdata_pop$intervention_time <- ifelse(newdata_pop$Treatment == "Early", 0.5, 1.5)
 
 # Extract predicted population trajectories with 95% HDIs for both models
 preds_robust <- fitted(fit_robust, newdata = newdata_pop)
@@ -158,12 +185,12 @@ ggplot(plot_data, aes(x = time, y = fitted_mean, color = Treatment, linetype = M
   geom_ribbon(aes(ymin = fitted_Q2.5, ymax = fitted_Q97.5, fill = Treatment), alpha = 0.15, color = NA) +
   geom_line(linewidth = 1.2) +
   theme_tufte(base_size = 14, ticks = FALSE) +
-  scale_color_manual(values = c("Control" = "#7f8c8d", "Treatment" = "#c0392b")) +
-  scale_fill_manual(values = c("Control" = "#7f8c8d", "Treatment" = "#c0392b")) +
+  scale_color_manual(values = c("Early" = "#c0392b", "Late" = "#7f8c8d")) +
+  scale_fill_manual(values = c("Early" = "#c0392b", "Late" = "#7f8c8d")) +
   labs(
     x = "Time Point",
     y = "Clinical Score",
-    title = "Comparison of Population Trajectories and HDIs",
+    title = "Stepped-Wedge Population Trajectories and HDIs",
     subtitle = "Robust Marginal vs. Mixed-Effects Model"
   ) +
   theme(legend.position = "right")
