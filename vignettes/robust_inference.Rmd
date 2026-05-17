@@ -71,8 +71,8 @@ centers <- data.frame(
 
 # 2. Assign Subjects to Centers
 subjects <- expand.grid(
-  Subject_ID = 1:(n_centers * n_subjects_per_center),
-  time = c(0, 1, 2)
+  time = c(0, 1, 2),
+  Subject_ID = 1:(n_centers * n_subjects_per_center)
 )
 subjects$Center_ID <- factor(rep(1:n_centers, each = n_subjects_per_center * 3))
 subjects$u_subject <- rep(rnorm(n_centers * n_subjects_per_center, 0, 10), each = 3)
