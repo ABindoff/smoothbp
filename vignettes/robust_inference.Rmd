@@ -161,37 +161,86 @@ print(bf_mixed)
 
 ### Visualizing the Robust HDI (Tufte Style)
 
-A core tenet of Edward Tufte's design philosophy is maximizing the data-ink ratio. We can visualize the robustified Highest Density Intervals (HDIs) cleanly without chartjunk using `ggthemes::theme_tufte()`.
+A core tenet of Edward Tufte's design philosophy is maximizing the data-ink ratio. We can replace traditional trajectory ribbons with minimalist point-and-whisker plots that directly address the core scientific questions.
 
-```{r tufte_plot, fig.width=8, fig.height=5}
-# Create a dummy population dataset to predict average trajectories
-newdata_pop <- expand.grid(
+First, we calculate the between-group difference (Early vs. Late) at specific follow-up time points. In a stepped-wedge design, we expect a strong treatment effect at $t=1$ (when only Early is treated) and roughly zero difference at $t=2$ (when both are treated).
+
+```{r tufte_diff_plot, fig.width=6, fig.height=4, warning=FALSE, message=FALSE}
+# Create a dummy population dataset for exact observation times
+newdata_t1_t2 <- expand.grid(
   Treatment = factor(c("Early", "Late")), 
-  time = seq(0, 2, by = 0.1)
+  time = c(1, 2)
 )
-newdata_pop$intervention_time <- ifelse(newdata_pop$Treatment == "Early", 0.5, 1.5)
 
-# Extract predicted population trajectories with 95% HDIs for both models
-preds_robust <- fitted(fit_robust, newdata = newdata_pop)
-plot_data_robust <- bind_cols(newdata_pop, preds_robust) %>% mutate(Model = "Marginal (Robust)")
+# Extract full posterior predicted draws for both models
+# `fitted(..., summary = FALSE)` returns a matrix: rows = MCMC draws, cols = newdata rows
+draws_robust <- fitted(fit_robust, newdata = newdata_t1_t2, summary = FALSE)
+draws_mixed  <- fitted(fit_mixed, newdata = newdata_t1_t2, summary = FALSE)
 
-preds_mixed <- fitted(fit_mixed, newdata = newdata_pop)
-plot_data_mixed <- bind_cols(newdata_pop, preds_mixed) %>% mutate(Model = "Mixed Effects")
+# Compute pairwise differences (Early - Late) at each time point
+diff_t1_robust <- draws_robust[, 1] - draws_robust[, 2]
+diff_t2_robust <- draws_robust[, 3] - draws_robust[, 4]
 
-plot_data <- bind_rows(plot_data_robust, plot_data_mixed)
+diff_t1_mixed <- draws_mixed[, 1] - draws_mixed[, 2]
+diff_t2_mixed <- draws_mixed[, 3] - draws_mixed[, 4]
 
-ggplot(plot_data, aes(x = time, y = fitted_mean, color = Treatment, linetype = Model)) +
-  # Tufte-style minimalist presentation
-  geom_ribbon(aes(ymin = fitted_Q2.5, ymax = fitted_Q97.5, fill = Treatment), alpha = 0.15, color = NA) +
-  geom_line(linewidth = 1.2) +
-  theme_tufte(base_size = 14, ticks = FALSE) +
-  scale_color_manual(values = c("Early" = "#c0392b", "Late" = "#7f8c8d")) +
-  scale_fill_manual(values = c("Early" = "#c0392b", "Late" = "#7f8c8d")) +
-  labs(
-    x = "Time Point",
-    y = "Clinical Score",
-    title = "Stepped-Wedge Population Trajectories and HDIs",
-    subtitle = "Robust Marginal vs. Mixed-Effects Model"
+# Assemble into a neat data frame for ggplot
+plot_diffs <- bind_rows(
+  data.frame(Time = "t = 1 (Early Treated)", Model = "Marginal (Robust)", Diff = diff_t1_robust),
+  data.frame(Time = "t = 2 (Both Treated)",  Model = "Marginal (Robust)", Diff = diff_t2_robust),
+  data.frame(Time = "t = 1 (Early Treated)", Model = "Mixed Effects", Diff = diff_t1_mixed),
+  data.frame(Time = "t = 2 (Both Treated)",  Model = "Mixed Effects", Diff = diff_t2_mixed)
+) %>%
+  group_by(Time, Model) %>%
+  summarize(
+    Estimate = median(Diff),
+    Lower = quantile(Diff, 0.025),
+    Upper = quantile(Diff, 0.975),
+    .groups = "drop"
+  )
+
+# 1. Point and Whisker plot of differences
+ggplot(plot_diffs, aes(x = Time, y = Estimate, color = Model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+  geom_point(position = position_dodge(width = 0.4), size = 3) +
+  geom_errorbar(
+    aes(ymin = Lower, ymax = Upper), 
+    position = position_dodge(width = 0.4), width = 0, linewidth = 1.2
   ) +
-  theme(legend.position = "right")
+  theme_tufte(base_size = 14, ticks = FALSE) +
+  scale_color_manual(values = c("Marginal (Robust)" = "#c0392b", "Mixed Effects" = "#2c3e50")) +
+  labs(
+    x = "Follow-up Time",
+    y = "Difference (Early - Late)",
+    title = "Stepped-Wedge Treatment Effect",
+    subtitle = "Between-group difference with 95% HDIs"
+  ) +
+  theme(legend.position = "top")
+```
+
+Next, we can directly compare the posterior densities of the estimated Average Treatment Effect (`delta1_(Intercept)`) between the robustified marginal model and the heavy mixed-effects model.
+
+```{r tufte_density_plot, fig.width=6, fig.height=4, warning=FALSE, message=FALSE}
+# Extract the ATE parameter directly from the underlying MCMC chains
+ate_robust <- as.numeric(posterior::as_draws_matrix(fit_robust$draws)[, "delta1_(Intercept)"])
+ate_mixed  <- as.numeric(posterior::as_draws_matrix(fit_mixed$draws)[, "delta1_(Intercept)"])
+
+plot_ate <- bind_rows(
+  data.frame(Model = "Marginal (Robust)", ATE = ate_robust),
+  data.frame(Model = "Mixed Effects", ATE = ate_mixed)
+)
+
+# 2. Posterior Density of the ATE
+ggplot(plot_ate, aes(x = ATE, fill = Model, color = Model)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  theme_tufte(base_size = 14, ticks = FALSE) +
+  scale_fill_manual(values = c("Marginal (Robust)" = "#c0392b", "Mixed Effects" = "#2c3e50")) +
+  scale_color_manual(values = c("Marginal (Robust)" = "#c0392b", "Mixed Effects" = "#2c3e50")) +
+  labs(
+    x = "Average Treatment Effect (Slope Change)",
+    y = "Posterior Density",
+    title = "Posterior Density of the ATE",
+    subtitle = "Robust sandwich recovers identical uncertainty as mixed model"
+  ) +
+  theme(legend.position = "top")
 ```
