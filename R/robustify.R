@@ -20,6 +20,9 @@ robustify.smoothbp_fit <- function(object, cluster, ...) {
   
   # 1. Extract the center (posterior mean)
   draw_mat <- posterior::as_draws_matrix(object$draws)
+  if (nrow(draw_mat) == 0) {
+    stop("No post-warmup draws found in the model fit. Please ensure iter > warmup when calling smoothbp().")
+  }
   theta_bar <- colMeans(draw_mat)
   
   # 2. Calculate V_naive (original covariance)
@@ -35,7 +38,7 @@ robustify.smoothbp_fit <- function(object, cluster, ...) {
   
   # Subset to active parameters
   theta_bar_act <- theta_bar[active_idx]
-  V_naive_act <- V_naive[active_idx, active_idx]
+  V_naive_act <- V_naive[active_idx, active_idx, drop = FALSE]
   
   y <- as.numeric(object$data[[object$response]])
   
