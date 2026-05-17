@@ -89,8 +89,8 @@ fit_naive <- smoothbp(
   score ~ time,
   b1 = ~ 1,                        # Shared pre-breakpoint slope
   deltas = list(~ Treatment),      # Post-breakpoint slope change depends on Treatment
-  omega = list(~ fixed(0.5)),      # Known discrete breakpoint exactly at time = 0.5
-  rho = list(~ fixed(100)),        # Force sharp breakpoint (approximating infinite rho)
+  omega = list(fixed(0.5)),      # Known discrete breakpoint exactly at time = 0.5
+  rho = list(fixed(100)),        # Force sharp breakpoint (approximating infinite rho)
   data = clinical_data,
   iter = 2000, 
   warmup = 1000,
@@ -107,8 +107,8 @@ fit_mixed <- smoothbp(
   b0 = ~ 1 + (1|Subject_ID),       # Add random intercept for baseline
   b1 = ~ 1,                        # Shared pre-breakpoint slope
   deltas = list(~ Treatment),      # Post-breakpoint slope change depends on Treatment
-  omega = list(~ fixed(0.5)),      # Known discrete breakpoint exactly at time = 0.5
-  rho = list(~ fixed(100)),        # Force sharp breakpoint (approximating infinite rho)
+  omega = list(fixed(0.5)),      # Known discrete breakpoint exactly at time = 0.5
+  rho = list(fixed(100)),        # Force sharp breakpoint (approximating infinite rho)
   data = clinical_data,
   iter = 2000, 
   warmup = 1000,
