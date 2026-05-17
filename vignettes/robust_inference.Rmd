@@ -1,0 +1,103 @@
+---
+title: "Robust Inference for Repeated Measures: The Bayesian Sandwich"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Robust Inference for Repeated Measures}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Experimental Design Considerations
+
+When analyzing longitudinal data—such as a clinical experiment with two treatment groups measured across three time points (e.g., Baseline, Week 1, and Week 2)—measurements from the same subject are inherently correlated. 
+
+In a traditional frequentist ANOVA/ANCOVA framework, ignoring this within-subject correlation violates the mathematical assumption of independence. This artificially shrinks standard errors and drastically inflates Type I error rates (false positives). The classical solution is to use a mixed-effects model by adding a random intercept for each subject. 
+
+However, in complex, non-linear Bayesian models—like the hierarchical piecewise regressions fitted by `smoothbp`—random effects introduce massive computational overhead. A model with 200 subjects requires 200 latent intercept parameters. The resulting posterior geometry can become highly "rugged," causing MCMC samplers to struggle with convergence, take hours to run, or require deep tuning of hyperparameters.
+
+## Why use the `robustify()` approach?
+
+The **Bayesian Sandwich** estimator implemented in `robustify()` provides a "best of both worlds" solution: the speed and stability of a marginal model, combined with the rigorous statistical validity of a mixed model.
+
+Instead of explicitly modeling the random effects, you:
+1. Fit a **marginal** `smoothbp()` model (which assumes independence and fits blazingly fast).
+2. Call `robustify(fit, cluster = "Subject_ID")`.
+
+Under the hood, `robustify()` calculates the frequentist robust sandwich covariance matrix (which penalizes for within-subject clustering). It then applies a multidimensional **affine transformation** to your MCMC chains. This mathematically "stretches" the posterior samples so their variance exactly matches the robust covariance. Downstream, your HDIs, plots, and Bayes Factors will automatically reflect the true, wider uncertainty.
+
+## Example: 2 Groups, 3 Time Points
+
+Let's assume a basic clinical trial where the `Treatment` group experiences a shift in trajectory after Baseline.
+
+```{r setup, eval=FALSE}
+library(smoothbp)
+library(dplyr)
+library(ggplot2)
+library(ggthemes) # For Tufte styling
+
+# 1. Fit the fast marginal model
+fit_naive <- smoothbp(
+  score ~ time,
+  b1 = ~ Treatment,     # Treatment affects the slope
+  omega = ~ 1,          # Population-averaged change-point
+  data = clinical_data,
+  iter = 2000, 
+  chains = 4
+)
+
+# 2. Apply the Bayesian Sandwich
+fit_robust <- robustify(fit_naive, cluster = "Subject_ID")
+```
+
+### Hypothesis Testing with Bayes Factors
+
+Because `robustify()` structurally transforms the underlying MCMC draws, the posterior density evaluates differently. You can pass the robustified object directly into the `hypothesis()` function to calculate the Savage-Dickey density ratio for a Bayes Factor (e.g., testing if the Treatment slope differs from zero).
+
+```{r bf, eval=FALSE}
+# Test if the Treatment alters the slope post-breakpoint
+test_result <- hypothesis(fit_robust, "b1_Treatment > 0")
+
+print(test_result)
+# The Evidence Ratio (Bayes Factor) will be appropriately penalized 
+# for the within-subject correlation.
+```
+
+### Visualizing the Robust HDI (Tufte Style)
+
+A core tenet of Edward Tufte's design philosophy is maximizing the data-ink ratio. We can visualize the robustified Highest Density Intervals (HDIs) cleanly without chartjunk using `ggthemes::theme_tufte()`.
+
+```{r tufte_plot, eval=FALSE}
+# Extract predicted trajectories with 95% HDIs
+preds <- fitted(fit_robust, newdata = clinical_data)
+plot_data <- bind_cols(clinical_data, preds) %>%
+  group_by(Treatment, time) %>%
+  summarise(
+    mean = mean(fitted_mean),
+    lower = mean(fitted_Q2.5),
+    upper = mean(fitted_Q97.5),
+    .groups = "drop"
+  )
+
+ggplot(plot_data, aes(x = time, y = mean, color = Treatment)) +
+  # Tufte-style range frames (minimalist error bars)
+  geom_linerange(aes(ymin = lower, ymax = upper), linewidth = 1.2, alpha = 0.8) +
+  geom_point(size = 3) +
+  geom_line(aes(group = Treatment), linetype = "dotted") +
+  # Apply Tufte theme
+  theme_tufte(base_size = 14, ticks = FALSE) +
+  geom_rangeframe() +
+  scale_color_manual(values = c("Control" = "#7f8c8d", "Treatment" = "#c0392b")) +
+  labs(
+    x = "Time Point",
+    y = "Clinical Score",
+    title = "Treatment Trajectories with Robust 95% HDIs"
+  ) +
+  theme(legend.position = "top")
+```
