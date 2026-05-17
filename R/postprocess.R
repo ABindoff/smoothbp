@@ -159,17 +159,39 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
 }
 
 .build_newdata_dm <- function(object, newdata) {
+  .safe_mk_mm <- function(f, dat, train_dat) {
+    if (inherits(f, "smoothbp_fixed")) {
+      X <- matrix(as.numeric(f), nrow = nrow(dat), ncol = 1)
+      colnames(X) <- "(Intercept)"
+      attr(X, "re_mask") <- 0L
+      if (length(f) > 1) {
+        attr(X, "fixed_value") <- 1.0
+      } else {
+        X[] <- 1.0
+        attr(X, "fixed_value") <- as.numeric(f)
+      }
+      return(X)
+    }
+    .mk_mm_single(.parse_re(f)$fixed, dat, train_dat)
+  }
+
   mk_mm_list <- function(fml_list, dat) {
     if (!is.list(fml_list)) fml_list <- list(fml_list)
-    lapply(fml_list, function(f) .mk_mm_single(.parse_re(f)$fixed, dat, object$data))
+    lapply(fml_list, function(f) .safe_mk_mm(f, dat, object$data))
   }
-  X_b0     <- .mk_mm_single(.parse_re(object$b0_formula)$fixed, newdata, object$data)
-  X_b1     <- .mk_mm_single(.parse_re(object$b1_formula)$fixed, newdata, object$data)
+  
+  X_b0     <- .safe_mk_mm(object$b0_formula, newdata, object$data)
+  X_b1     <- .safe_mk_mm(object$b1_formula, newdata, object$data)
   X_deltas <- mk_mm_list(object$deltas_formula, newdata)
   X_om     <- mk_mm_list(object$omega_formula,  newdata)
   X_rho    <- mk_mm_list(object$rho_formula,    newdata)
 
-  re_var <- .parse_re(object$b0_formula)$re_group
+  if (inherits(object$b0_formula, "smoothbp_fixed")) {
+    re_var <- NULL
+  } else {
+    re_var <- .parse_re(object$b0_formula)$re_group
+  }
+  
   group_levels_b0 <- object$dm$group_levels_b0
   if (!is.null(re_var) && re_var %in% names(newdata)) {
     gfac <- factor(newdata[[re_var]], levels = group_levels_b0)
