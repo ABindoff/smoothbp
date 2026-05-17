@@ -103,8 +103,10 @@ fit_naive <- smoothbp(
   data = clinical_data,
   priors = smoothbp_priors(
     omega = list(
-      TreatmentEarly = prior_normal(0.5, 0),
-      TreatmentLate  = prior_normal(1.5, 0)
+      list(
+        TreatmentEarly = prior_normal(0.5, 0),
+        TreatmentLate  = prior_normal(1.5, 0)
+      )
     )
   ),
   iter = 2000, 
@@ -129,8 +131,10 @@ fit_mixed <- smoothbp(
   data = clinical_data,
   priors = smoothbp_priors(
     omega = list(
-      TreatmentEarly = prior_normal(0.5, 0),
-      TreatmentLate  = prior_normal(1.5, 0)
+      list(
+        TreatmentEarly = prior_normal(0.5, 0),
+        TreatmentLate  = prior_normal(1.5, 0)
+      )
     )
   ),
   iter = 2000, 
