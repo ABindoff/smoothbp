@@ -171,7 +171,9 @@
 # ---------------------------------------------------------------------------
 .build_prior_vectors <- function(priors, dm) {
   expand_list <- function(spec_list, nms_list) {
-    if (!is.list(spec_list) || inherits(spec_list, "smoothbp_prior")) {
+    is_single <- inherits(spec_list, "smoothbp_prior") || 
+                 (is.list(spec_list) && !is.null(names(spec_list)) && all(sapply(spec_list, inherits, "smoothbp_prior")))
+    if (is_single || (!is_single && length(spec_list) != length(nms_list))) {
         spec_list <- rep(list(spec_list), length(nms_list))
     }
     lapply(seq_along(nms_list), function(i) .expand_prior(spec_list[[i]], nms_list[[i]]))
@@ -184,7 +186,9 @@
   
   # Handle fixed omega/rho by overriding priors if needed
   expand_segment_priors <- function(spec_list, dm_list, names_list) {
-    if (!is.list(spec_list) || inherits(spec_list, "smoothbp_prior")) {
+    is_single <- inherits(spec_list, "smoothbp_prior") || 
+                 (is.list(spec_list) && !is.null(names(spec_list)) && all(sapply(spec_list, inherits, "smoothbp_prior")))
+    if (is_single || (!is_single && length(spec_list) != length(names_list))) {
       spec_list <- rep(list(spec_list), length(names_list))
     }
     lapply(seq_along(names_list), function(i) {
