@@ -96,6 +96,7 @@ clinical_data$score <- clinical_data$score + rnorm(nrow(clinical_data), 0, 3)
 # 1. Fit the fast marginal model
 fit_naive <- smoothbp(
   score ~ time,
+  b0 = ~ Treatment,                # Intercept differs because breakpoints occur at different times
   b1 = ~ 1,                        # Shared secular drift
   deltas = list(~ 1),              # Universal ATE (slope change when intervention hits)
   omega = list(~ 0 + Treatment),   # Center-specific timing via covariates
@@ -121,7 +122,7 @@ fit_robust <- robustify(fit_naive, cluster = "Center_ID")
 # Note: smoothbp natively supports only one random intercept grouping.
 fit_mixed <- smoothbp(
   score ~ time,
-  b0 = ~ 1 + (1|Center_ID),        # Add random intercept for Center
+  b0 = ~ Treatment + (1|Center_ID), # Add random intercept for Center
   b1 = ~ 1,                        
   deltas = list(~ 1),              
   omega = list(~ 0 + Treatment),
