@@ -32,6 +32,20 @@ Instead of explicitly modeling the random effects, you:
 
 Under the hood, `robustify()` calculates the frequentist robust sandwich covariance matrix (which penalizes for within-subject clustering). It then applies a multidimensional **affine transformation** to your MCMC chains. This mathematically "stretches" the posterior samples so their variance exactly matches the robust covariance. Downstream, your HDIs, plots, and Bayes Factors will automatically reflect the true, wider uncertainty.
 
+### Assumptions and Limitations
+
+While the Bayesian Sandwich estimator provides a powerful, computationally cheap alternative to heavy mixed-effects models, its defensibility hinges on several key mathematical assumptions:
+
+**Valid and Defensible When:**
+*   **Asymptotic Normality**: The affine transformation linearly scales and rotates the MCMC chains using covariance matrices (via Cholesky factorization). This assumes the unadjusted posterior distribution is roughly multivariate normal or elliptical.
+*   **Large Number of Independent Clusters**: Just like frequentist GEEs (Generalized Estimating Equations), the empirical "meat" of the sandwich matrix relies on large-sample asymptotics across clusters. It works exceptionally well when you have a sufficient number of independent clusters (e.g., $N > 30$ subjects).
+*   **Unbiased Marginal Means**: The sandwich estimator corrects the *variance* of the parameters, not the *point estimates* (posterior means). It assumes that omitting the random effects does not structurally bias the marginal mean trajectory.
+
+**Not Valid or Defensible When:**
+*   **Highly Skewed or Multimodal Posteriors**: If the underlying posterior geometry is strongly non-normal (e.g., severe "banana shapes", strict boundary constraints, or multimodality), applying a linear stretch can severely distort the tails or push MCMC draws into mathematically impossible parameter spaces (like negative variances).
+*   **Small Number of Clusters**: If your dataset only contains a small handful of clusters (e.g., 4 hospital sites), the empirical score variance will be highly unstable, leading to a severely biased (often too narrow) robust covariance estimate.
+*   **Strong Subject-Level Non-Linear Heterogeneity**: In highly non-linear models (like logistic/Poisson piecewise models with massive unmodeled random slopes), the marginal mean mathematically differs from the conditional mean. In these cases, fitting a naive marginal model yields structurally biased point estimates that no variance adjustment can fix. You must fit the full hierarchical model.
+
 ## Example: 2 Groups, 3 Time Points
 
 Let's assume a basic clinical trial where the `Treatment` group experiences a shift in trajectory after Baseline.
