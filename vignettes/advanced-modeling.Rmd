@@ -302,13 +302,12 @@ t_min <- min(dat_sim$month)
 t_max <- max(dat_sim$month)
 
 # Use the space_omega_priors helper to initialize 8 candidate breakpoints.
-# By passing a formula with an intercept, we specify that the intercept (the global 
-# mean) should have the spaced priors, while random effects are handled automatically.
+# The function automatically names the priors `(Intercept)` so they apply correctly 
+# to the global mean, while random effects are handled automatically by the model.
 omega_priors_hier <- space_omega_priors(
   K       = 8, 
   tau_min = t_min, 
-  tau_max = t_max,
-  formula = ~ (1 | ticker)
+  tau_max = t_max
 )
 
 
