@@ -28,12 +28,15 @@ robustify.smoothbp_fit <- function(object, cluster, ...) {
   # 2. Calculate V_naive (original covariance)
   V_naive <- stats::cov(draw_mat)
   
-  # Find 'slab' parameters (parameters that have non-zero variance and are not perfectly correlated)
-  # Spike and slab parameters pushed exactly to 0 will have 0 variance, breaking inversion
+  # Find 'slab' parameters (parameters that have non-zero variance)
+  # EXCLUDE random effects (u[...]) and variance components (sigma_u, etc) 
+  # from the robustification matrix to prevent rank-deficiency in large hierarchical models.
   var_theta <- diag(V_naive)
-  active_idx <- which(var_theta > 1e-12)
-  if (length(active_idx) < length(theta_bar)) {
-    message("Note: Some parameters have effectively zero variance (e.g. spike). Robustification applied only to active parameters.")
+  param_names <- names(theta_bar)
+  is_target <- !grepl("^(u\\[|sigma_u|sigma_re_om)", param_names)
+  active_idx <- which(var_theta > 1e-12 & is_target)
+  if (length(active_idx) < sum(is_target)) {
+    message("Note: Some target parameters have effectively zero variance (e.g. spike). Robustification applied only to active parameters.")
   }
   
   # Subset to active parameters
