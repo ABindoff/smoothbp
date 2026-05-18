@@ -16,11 +16,11 @@ knitr::opts_chunk$set(
 
 ## Experimental Design Considerations
 
-When analyzing longitudinal data—such as a clinical experiment with two treatment groups measured across three time points (e.g., Baseline, Week 1, and Week 2)—measurements from the same subject are inherently correlated. 
+When analyzing longitudinal dataâ€”such as a clinical experiment with two treatment groups measured across three time points (e.g., Baseline, Week 1, and Week 2)â€”measurements from the same subject are inherently correlated. 
 
 In a traditional frequentist ANOVA/ANCOVA framework, ignoring this within-subject correlation violates the mathematical assumption of independence. This artificially shrinks standard errors and drastically inflates Type I error rates (false positives). The classical solution is to use a mixed-effects model by adding a random intercept for each subject. 
 
-However, in complex, non-linear Bayesian models—like the hierarchical piecewise regressions fitted by `smoothbp`—random effects introduce massive computational overhead. A model with 200 subjects requires 200 latent intercept parameters. The resulting posterior geometry can become highly "rugged," causing MCMC samplers to struggle with convergence, take hours to run, or require deep tuning of hyperparameters.
+However, in complex, non-linear Bayesian modelsâ€”like the hierarchical piecewise regressions fitted by `smoothbp`â€”random effects introduce massive computational overhead. A model with 200 subjects requires 200 latent intercept parameters. The resulting posterior geometry can become highly "rugged," causing MCMC samplers to struggle with convergence, take hours to run, or require deep tuning of hyperparameters.
 
 ## Why use the `robustify()` approach?
 
@@ -253,13 +253,13 @@ As demonstrated above, combining a fast marginal model with the `robustify()` sa
 However, researchers should be aware of two critical methodological trade-offs when relying on cluster-robust variance estimators:
 
 1. **Small-Sample Bias (The Number of Clusters Problem)**
-   Sandwich estimators rely on asymptotic theory�they assume the number of independent clusters approaches infinity. When robustifying by `Center_ID`, the empirical variance is built from the score vectors of each center. If the number of centers is small (e.g., fewer than 30-50), the sandwich estimator becomes highly unstable and notoriously **underestimates** standard errors, leading to artificially narrow HDIs.
+   Sandwich estimators rely on asymptotic theory—they assume the number of independent clusters approaches infinity. When robustifying by `Center_ID`, the empirical variance is built from the score vectors of each center. If the number of centers is small (e.g., fewer than 30-50), the sandwich estimator becomes highly unstable and notoriously **underestimates** standard errors, leading to artificially narrow HDIs.
 2. **Loss of Point-Estimate Efficiency**
    True hierarchical models (e.g., `(1|Center_ID)`) optimally weight clusters based on precision, shrinking noisy clusters toward the global mean. Marginal models lack this shrinkage mechanism. Consequently, while `robustify()` corrects the *width* of the posterior uncertainty, the *center* of that posterior (the point estimate) remains statistically less efficient than a fully modeled hierarchical approach.
 
 ### Scaling Up: The Preferred Approach
 
-Because `smoothbp` is powered by a highly optimized, compiled Rust sampler, full mixed-effects models fit surprisingly fast�often negating the need for sandwich approximations in standard clinical trial designs. Sandwich estimators are best reserved for massive datasets with un-modelable crossed hierarchies.
+Because `smoothbp` is powered by a highly optimized, compiled Rust sampler, full mixed-effects models fit surprisingly fast—often negating the need for sandwich approximations in standard clinical trial designs. Sandwich estimators are best reserved for massive datasets with un-modelable crossed hierarchies.
 
 To demonstrate the speed of the sampler, we can scale our simulation up to **30 centers** (1,500 subjects, 4,500 observations). At this scale, the sandwich estimator is fully reliable, but the true mixed-effects model fits so efficiently that it remains the preferred choice.
 
@@ -374,6 +374,22 @@ ggplot(plot_diffs_lg, aes(x = Time, y = Estimate, color = Model)) +
   ) +
   theme(legend.position = "top")
 ```
+
+### Spotlight: The Power of Bayesian GEE in Variance Partitioning
+
+Looking at the posterior density plot above, you will immediately notice a striking result: The **GEE Marginal (Robust)** model recovers the true Average Treatment Effect ($-15$) with incredible precision, while the "gold standard" **Mixed Effects** model produces a highly bloated, imprecise, and slightly biased posterior. 
+
+Why did the hierarchical model perform so poorly in comparison? 
+
+It comes down to a fundamental limitation of computational architecture: `smoothbp` allows only one grouping variable per parameter. In our simulation, the data contained two major sources of unmeasured noise:
+1. **Subject-level variance:** $\sigma_{\text{subject}} = 10$
+2. **Center-level variance:** $\sigma_{\text{center}} = 5$
+
+Because we were forced to choose, the **Mixed Effects Model** explicitly modeled the structural design of the trial (`(1|Center_ID)`), completely ignoring the massive subject-level variance. As a result, all of that unmodeled subject-level noise (SD=10) was dumped into the model's residual error term (`sigma`). A massive residual error flattens the likelihood function, destroying the precision of the fixed-effect estimates (like our treatment effect, `delta1`).
+
+Conversely, the **GEE Marginal Model** was instructed to explicitly model the *largest source of variance* (`(1|Subject_ID)`). By partitioning the massive subject-level noise out of the residual error, the model gained a crystal-clear view of the longitudinal trajectories, allowing it to pinpoint the treatment effect with high accuracy. We then passed this highly precise model through `robustify(cluster = "Center_ID")`, which used a sandwich estimator to correctly (and slightly) widen the standard errors to account for the remaining, unmodeled Center-level correlation.
+
+**The Takeaway:** When software architecture limits you to a single hierarchical level, *always explicitly model the level that explains the most variance* (typically the subject-level repeated measures), and rely on robust sandwich estimators (`robustify()`) to correct for the higher-level structural clustering (the centers/clinics).
 
 ```{r tufte_density_large, fig.width=6, fig.height=4, warning=FALSE, message=FALSE}
 ate_robust_lg <- as.numeric(posterior::as_draws_matrix(fit_robust_lg$draws)[, "delta1_(Intercept)"])
