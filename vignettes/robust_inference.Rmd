@@ -245,3 +245,66 @@ ggplot(plot_ate, aes(x = ATE, fill = Model, color = Model)) +
   ) +
   theme(legend.position = "top")
 ```
+
+## Methodological Considerations: Hierarchical vs. Robustified Models
+
+As demonstrated above, combining a fast marginal model with the `robustify()` sandwich estimator yields nearly identical inference to a full mixed-effects model. For complex clustered datasets, this approach (the Bayesian equivalent of Generalized Estimating Equations) provides an elegant computational alternative to crossed random effects. 
+
+However, researchers should be aware of two critical methodological trade-offs when relying on cluster-robust variance estimators:
+
+1. **Small-Sample Bias (The Number of Clusters Problem)**
+   Sandwich estimators rely on asymptotic theory—they assume the number of independent clusters approaches infinity. When robustifying by `Center_ID`, the empirical variance is built from the score vectors of each center. If the number of centers is small (e.g., fewer than 30-50), the sandwich estimator becomes highly unstable and notoriously **underestimates** standard errors, leading to artificially narrow HDIs.
+2. **Loss of Point-Estimate Efficiency**
+   True hierarchical models (e.g., `(1|Center_ID)`) optimally weight clusters based on precision, shrinking noisy clusters toward the global mean. Marginal models lack this shrinkage mechanism. Consequently, while `robustify()` corrects the *width* of the posterior uncertainty, the *center* of that posterior (the point estimate) remains statistically less efficient than a fully modeled hierarchical approach.
+
+### Scaling Up: The Preferred Approach
+
+Because `smoothbp` is powered by a highly optimized, compiled Rust sampler, full mixed-effects models fit surprisingly fast—often negating the need for sandwich approximations in standard clinical trial designs. Sandwich estimators are best reserved for massive datasets with un-modelable crossed hierarchies.
+
+To demonstrate the speed of the sampler, we can scale our simulation up to **30 centers** (1,500 subjects, 4,500 observations). At this scale, the sandwich estimator is fully reliable, but the true mixed-effects model fits so efficiently that it remains the preferred choice.
+
+```{r large_scale_simulation, warning=FALSE, message=FALSE}
+# Scale up the simulation to a realistic multi-center trial
+n_centers_large <- 30
+n_subjects_large <- 50
+
+centers_lg <- data.frame(
+  Center_ID = factor(1:n_centers_large),
+  Treatment = factor(rep(c("Early", "Late"), each = n_centers_large / 2)),
+  u_center = rnorm(n_centers_large, 0, 5)
+)
+
+subjects_lg <- expand.grid(
+  time = c(0, 1, 2),
+  Subject_ID = 1:(n_centers_large * n_subjects_large)
+)
+subjects_lg$Center_ID <- factor(rep(1:n_centers_large, each = n_subjects_large * 3))
+subjects_lg$u_subject <- rep(rnorm(n_centers_large * n_subjects_large, 0, 10), each = 3)
+
+clinical_data_lg <- merge(subjects_lg, centers_lg, by = "Center_ID")
+clinical_data_lg$intervention_time <- ifelse(clinical_data_lg$Treatment == "Early", 0.5, 1.5)
+clinical_data_lg$score <- 50 + clinical_data_lg$u_center + clinical_data_lg$u_subject - 2 * clinical_data_lg$time
+clinical_data_lg$score <- clinical_data_lg$score - 15 * pmax(0, clinical_data_lg$time - clinical_data_lg$intervention_time)
+clinical_data_lg$score <- clinical_data_lg$score + rnorm(nrow(clinical_data_lg), 0, 3)
+
+# Fit the massive hierarchical model directly
+system.time({
+  fit_mixed_lg <- smoothbp(
+    score ~ time,
+    b0 = ~ Treatment + (1|Center_ID),
+    b1 = ~ 1,
+    deltas = list(~ 1),
+    omega = list(~ 0 + Treatment),
+    rho = list(fixed(100)),
+    data = clinical_data_lg,
+    priors = smoothbp_priors(
+      omega = list(
+        TreatmentEarly = prior_normal(0.5, 0),
+        TreatmentLate  = prior_normal(1.5, 0)
+      )
+    ),
+    iter = 200, warmup = 100, chains = 1, .verbose = FALSE
+  )
+})
+```
+
