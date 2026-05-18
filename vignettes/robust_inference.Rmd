@@ -308,3 +308,92 @@ system.time({
 })
 ```
 
+
+Because the dataset now has 30 centers, the asymptotic assumption of the robust sandwich estimator is met. We can safely demonstrate the true "Bayesian GEE" approach: modeling the within-subject repeated measures using a random intercept, and then using `robustify()` to correct the standard errors for the nested Center-level clustering.
+
+```{r bayesian_gee_large, warning=FALSE, message=FALSE}
+# Fit the GEE-style Marginal Model (Subject-level random effects)
+system.time({
+  fit_gee_lg <- smoothbp(
+    score ~ time,
+    b0 = ~ Treatment + (1|Subject_ID),
+    b1 = ~ 1,
+    deltas = list(~ 1),
+    omega = list(~ 0 + Treatment),
+    rho = list(fixed(100)),
+    data = clinical_data_lg,
+    priors = smoothbp_priors(
+      omega = list(
+        TreatmentEarly = prior_normal(0.5, 0),
+        TreatmentLate  = prior_normal(1.5, 0)
+      )
+    ),
+    iter = 200, warmup = 100, chains = 1, .verbose = FALSE
+  )
+})
+
+# Apply the cluster-robust sandwich estimator at the Center level
+fit_robust_lg <- robustify(fit_gee_lg, cluster = "Center_ID")
+```
+
+Finally, we can compare the treatment effect inferences between the full hierarchical model and the robustified GEE approach at scale.
+
+```{r tufte_diff_large, fig.width=6, fig.height=4, warning=FALSE, message=FALSE}
+# Extract posterior predicted draws for both large-scale models
+draws_robust_lg <- fitted(fit_robust_lg, newdata = newdata_t1_t2, summary = FALSE)
+draws_mixed_lg  <- fitted(fit_mixed_lg, newdata = newdata_t1_t2, summary = FALSE)
+
+plot_diffs_lg <- bind_rows(
+  data.frame(Time = "t = 1 (Early Treated)", Model = "GEE Marginal (Robust)", Diff = draws_robust_lg[, 1] - draws_robust_lg[, 2]),
+  data.frame(Time = "t = 2 (Both Treated)",  Model = "GEE Marginal (Robust)", Diff = draws_robust_lg[, 3] - draws_robust_lg[, 4]),
+  data.frame(Time = "t = 1 (Early Treated)", Model = "Mixed Effects", Diff = draws_mixed_lg[, 1] - draws_mixed_lg[, 2]),
+  data.frame(Time = "t = 2 (Both Treated)",  Model = "Mixed Effects", Diff = draws_mixed_lg[, 3] - draws_mixed_lg[, 4])
+) %>%
+  group_by(Time, Model) %>%
+  summarize(
+    Estimate = median(Diff),
+    Lower = quantile(Diff, 0.025),
+    Upper = quantile(Diff, 0.975),
+    .groups = "drop"
+  )
+
+ggplot(plot_diffs_lg, aes(x = Time, y = Estimate, color = Model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray60") +
+  geom_point(position = position_dodge(width = 0.4), size = 3) +
+  geom_errorbar(
+    aes(ymin = Lower, ymax = Upper), 
+    position = position_dodge(width = 0.4), width = 0, linewidth = 1.2
+  ) +
+  theme_tufte(base_size = 14, ticks = FALSE) +
+  scale_color_manual(values = c("GEE Marginal (Robust)" = "#c0392b", "Mixed Effects" = "#2c3e50")) +
+  labs(
+    x = "Follow-up Time",
+    y = "Difference (Early - Late)",
+    title = "Large-Scale Treatment Effect (30 Centers)",
+    subtitle = "Between-group difference with 95% HDIs"
+  ) +
+  theme(legend.position = "top")
+```
+
+```{r tufte_density_large, fig.width=6, fig.height=4, warning=FALSE, message=FALSE}
+ate_robust_lg <- as.numeric(posterior::as_draws_matrix(fit_robust_lg$draws)[, "delta1_(Intercept)"])
+ate_mixed_lg  <- as.numeric(posterior::as_draws_matrix(fit_mixed_lg$draws)[, "delta1_(Intercept)"])
+
+plot_ate_lg <- bind_rows(
+  data.frame(Model = "GEE Marginal (Robust)", ATE = ate_robust_lg),
+  data.frame(Model = "Mixed Effects", ATE = ate_mixed_lg)
+)
+
+ggplot(plot_ate_lg, aes(x = ATE, fill = Model, color = Model)) +
+  geom_density(alpha = 0.3, linewidth = 1) +
+  theme_tufte(base_size = 14, ticks = FALSE) +
+  scale_fill_manual(values = c("GEE Marginal (Robust)" = "#c0392b", "Mixed Effects" = "#2c3e50")) +
+  scale_color_manual(values = c("GEE Marginal (Robust)" = "#c0392b", "Mixed Effects" = "#2c3e50")) +
+  labs(
+    x = "Average Treatment Effect (Slope Change)",
+    y = "Posterior Density",
+    title = "Posterior Density of the ATE (30 Centers)"
+  ) +
+  theme(legend.position = "top")
+```
+
