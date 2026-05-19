@@ -5,6 +5,7 @@ use rayon::prelude::*;
 mod model;
 mod sampler;
 mod sampler_re;
+mod bridge;
 
 use model::{ModelData, Priors, SpikeSlabConfig};
 use sampler::{run_chain, run_chain_ss};
@@ -565,6 +566,99 @@ extendr_module! {
     mod smoothbp;
     fn run_mcmc;
     fn run_mcmc_ss;
-    fn run_mcmc_re;
     fn run_mcmc_re_ss;
+    fn run_bridge;
+}
+
+/// @noRd
+/// @keywords internal
+#[extendr]
+fn run_bridge(
+    y: &[f64],
+    tau: &[f64],
+    x_b0: &[f64], p_b0: i32,
+    x_b1: &[f64], p_b1: i32,
+    x_deltas: List, p_deltas: &[i32],
+    x_om: List, p_om: &[i32],
+    x_rho: List, p_rho: &[i32],
+    group_b0: &[i32],
+    n_groups_b0: i32,
+    prior_mean_b0: &[f64], prior_sd_b0: &[f64], prior_lb_b0: &[f64], prior_ub_b0: &[f64],
+    prior_mean_b1: &[f64], prior_sd_b1: &[f64], prior_lb_b1: &[f64], prior_ub_b1: &[f64],
+    prior_mean_deltas: List, prior_sd_deltas: List, prior_lb_deltas: List, prior_ub_deltas: List,
+    prior_mean_om: List, prior_sd_om: List, prior_lb_om: List, prior_ub_om: List,
+    prior_mean_rho: List, prior_sd_rho: List, prior_lb_rho: List, prior_ub_rho: List,
+    sigma_shape: f64,
+    sigma_scale: f64,
+    sigma_u_shape: f64,
+    sigma_u_scale: f64,
+    mcmc_draws: RMatrix<f64>,
+    seed: i32,
+) -> f64 {
+    let mut p_deltas = p_deltas;
+    let mut p_om = p_om;
+    let mut p_rho = p_rho;
+    let mut group_b0 = group_b0;
+
+    if p_deltas.len() == 1 && p_deltas[0] == -1 { p_deltas = &[]; }
+    if p_om.len() == 1 && p_om[0] == -1 { p_om = &[]; }
+    if p_rho.len() == 1 && p_rho[0] == -1 { p_rho = &[]; }
+    if group_b0.len() == 1 && group_b0[0] == -1 { group_b0 = &[]; }
+
+    let n = y.len();
+    let n_bp = p_deltas.len();
+
+    let data = ModelData {
+        y: DVector::from_column_slice(y),
+        tau: DVector::from_column_slice(tau),
+        x_b0: flat_to_dmatrix(x_b0, n, p_b0 as usize),
+        x_b1: flat_to_dmatrix(x_b1, n, p_b1 as usize),
+        x_deltas: list_to_vec_dmatrix(x_deltas, n, p_deltas),
+        x_om: list_to_vec_dmatrix(x_om, n, p_om),
+        x_rho: list_to_vec_dmatrix(x_rho, n, p_rho),
+        group_b0: group_b0.to_vec(),
+        n_groups_b0: n_groups_b0 as usize,
+        n_breakpoints: n_bp,
+        n,
+        re_mask_om: Vec::new(),
+    };
+
+    let priors = Priors {
+        b0_mean: prior_mean_b0.to_vec(),
+        b0_sd: prior_sd_b0.to_vec(),
+        b0_lb: prior_lb_b0.to_vec(),
+        b0_ub: prior_ub_b0.to_vec(),
+        b1_mean: prior_mean_b1.to_vec(),
+        b1_sd: prior_sd_b1.to_vec(),
+        b1_lb: prior_lb_b1.to_vec(),
+        b1_ub: prior_ub_b1.to_vec(),
+        delta_mean: prior_mean_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_sd: prior_sd_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_lb: prior_lb_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        delta_ub: prior_ub_deltas.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_mean: prior_mean_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_sd: prior_sd_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_lb: prior_lb_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        om_ub: prior_ub_om.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_mean: prior_mean_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_sd: prior_sd_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_lb: prior_lb_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        rho_ub: prior_ub_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
+        sigma_shape,
+        sigma_scale,
+        sigma_u_shape,
+        sigma_u_scale,
+        sigma_re_om_shape: 1.0,
+        sigma_re_om_scale: 1.0,
+        p_b0: p_b0 as usize,
+        p_b1: p_b1 as usize,
+        p_deltas: p_deltas.iter().map(|&p| p as usize).collect(),
+        p_om: p_om.iter().map(|&p| p as usize).collect(),
+        p_rho: p_rho.iter().map(|&p| p as usize).collect(),
+    };
+
+    let flat_draws: Vec<f64> = mcmc_draws.as_real_slice().unwrap().to_vec();
+    let draws_mat = flat_to_dmatrix(&flat_draws, mcmc_draws.nrows(), mcmc_draws.ncols());
+
+    bridge::run_bridge_sampling(&draws_mat, &data, &priors, seed as u64)
 }

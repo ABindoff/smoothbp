@@ -35,9 +35,11 @@ e.g. \code{value ~ tau}.}
 
 \item{deltas}{List of one-sided formulas for slope changes. Default \code{list(~ 1)}.}
 
-\item{omega}{List of one-sided formulas for change-point locations. Default \code{list(~ 1)}.}
+\item{omega}{List of one-sided formulas for change-point locations. Default \code{list(~ 1)}.
+Can also contain \code{\link{fixed}()} values for known change-points.}
 
-\item{rho}{List of one-sided formulas for transition sharpness. Default \code{list(~ 1)}.}
+\item{rho}{List of one-sided formulas for transition sharpness. Default \code{list(~ 1)}.
+Can also contain \code{\link{fixed}()} values for fixed sharpness.}
 
 \item{data}{A data frame.}
 

@@ -1,7 +1,13 @@
 # Bridge sampling and Bayes factor methods for smoothbp_fit
 
-.log_dinvgamma <- function(x, shape, scale) {
-  shape * log(scale) - lgamma(shape) - (shape + 1) * log(x) - scale / x
+.log_dinvgamma2 <- function(x_sq, shape, scale) {
+  shape * log(scale) - lgamma(shape) - (shape + 1) * log(x_sq) - scale / x_sq
+}
+
+.log_dinvgamma_sigma <- function(sigma, shape, scale) {
+  # exact prior for sigma when sigma^2 ~ InvGamma
+  # f(sigma) = 2 * scale^shape / Gamma(shape) * sigma^(-2*shape - 1) * exp(-scale / sigma^2)
+  log(2) + shape * log(scale) - lgamma(shape) - (2 * shape + 1) * log(sigma) - scale / (sigma^2)
 }
 
 .log_dtnorm <- function(x, mean, sd, lb = -Inf, ub = Inf) {
@@ -125,14 +131,14 @@
   for (k in seq_len(n_bp)) {
     lp <- lp + log_p_block(pars[paste0("delta", k, "_", colnames(dm$X_deltas[[k]]))], pv$deltas[[k]])
     lp <- lp + log_p_block(pars[paste0("omega", k, "_", colnames(dm$X_om[[k]]))],     pv$om[[k]])
-    lp <- lp + log_p_block(pars[paste0("rho", k, "_", colnames(dm$X_rho[[k]]))],     pv$rho[[k]])
+    lp <- lp + .log_dtnorm(pars[paste0("rho", k, "_", colnames(dm$X_rho[[k]]))],     pv$rho[[k]]$mean, pv$rho[[k]]$sd, pv$rho[[k]]$lb, pv$rho[[k]]$ub)
   }
-  lp <- lp + .log_dinvgamma(sigma, data_list$sigma_p$shape, data_list$sigma_p$scale)
+  lp <- lp + .log_dinvgamma_sigma(sigma, data_list$sigma_p$shape, data_list$sigma_p$scale)
 
   if (dm$n_groups_b0 > 0) {
     su <- pars["sigma_u"]
     lp <- lp + sum(stats::dnorm(u_vals, 0, su, log = TRUE))
-    lp <- lp + .log_dinvgamma(su, data_list$sigma_u_p$shape, data_list$sigma_u_p$scale)
+    lp <- lp + .log_dinvgamma_sigma(su, data_list$sigma_u_p$shape, data_list$sigma_u_p$scale)
   }
   
   ll + lp
@@ -141,43 +147,117 @@
 #' Bridge Sampler for smoothbp_fit
 #'
 #' @param samples A \code{smoothbp_fit} object.
+#' @param method Character; either "auto", "rust", or "bridgesampling". Default "auto" uses Rust for continuous models.
+#' @param seed Random seed for the bridge sampler.
 #' @param ... Passed to \code{\link[bridgesampling]{bridge_sampler}}.
 #'
 #' @importFrom bridgesampling bridge_sampler
 #' @method bridge_sampler smoothbp_fit
 #' @export
-bridge_sampler.smoothbp_fit <- function(samples, ...) {
+bridge_sampler.smoothbp_fit <- function(samples, method = c("auto", "rust", "bridgesampling"), seed = 42, ...) {
+  method <- match.arg(method)
   if (!requireNamespace("bridgesampling", quietly = TRUE)) stop("Install 'bridgesampling'.")
+  
   draw_mat <- as.matrix(posterior::as_draws_matrix(samples$draws))
-  
-  # Remove discrete/constant parameters
-  # Bridge sampling doesn't handle discrete parameters well; we'll exclude gammas
-  # if they are being used in BF, but here we'll keep them if they are in the draws
-  # but maybe better to exclude them and condition on the mode if doing BF for model structure.
-  # For now, let's just use all parameters.
-  
   param_names <- colnames(draw_mat)
-  lb_vec <- stats::setNames(rep(-Inf, length(param_names)), param_names)
-  ub_vec <- stats::setNames(rep( Inf, length(param_names)), param_names)
-  bounds <- .smoothbp_param_bounds(samples)
-  for (nm in names(bounds$lb)) {
-    if (nm %in% param_names) { lb_vec[[nm]] <- bounds$lb[[nm]]; ub_vec[[nm]] <- bounds$ub[[nm]] }
-  }
-
-  data_list <- list(
-    dm = samples$dm, y = as.double(samples$data[[samples$response]]),
-    tau = as.double(samples$data[[samples$time]]), pv = samples$pv,
-    sigma_p = samples$priors$sigma, sigma_u_p = samples$priors$sigma_u
-  )
   
-  bridgesampling::bridge_sampler(
-    samples = draw_mat, 
-    log_posterior = function(pars, data) {
-       names(pars) <- colnames(draw_mat)
-       .smoothbp_log_posterior(pars, data)
-    },
-    data = data_list, lb = lb_vec, ub = ub_vec, ...
-  )
+  is_spike_slab <- any(grepl("^gamma_", param_names))
+  has_re_om <- isTRUE(samples$dm$has_re_om)
+  
+  if (method == "auto") {
+    if (!is_spike_slab && !has_re_om) method <- "rust" else method <- "bridgesampling"
+  }
+  
+  if (method == "rust") {
+    if (is_spike_slab || has_re_om) {
+      warning("Rust bridge sampling does not fully support spike-and-slab or om random effects yet. Falling back to bridgesampling.")
+      method <- "bridgesampling"
+    } else {
+      dm <- samples$dm
+      pv <- samples$pv
+      priors <- samples$priors
+      
+      y <- as.double(samples$data[[samples$response]])
+      tau <- as.double(samples$data[[samples$time]])
+      
+      .safe_int <- function(x) if (length(x) == 0) -1L else as.integer(x)
+      p_deltas_safe <- .safe_int(sapply(dm$X_deltas, ncol))
+      p_om_safe     <- .safe_int(sapply(dm$X_om, ncol))
+      p_rho_safe    <- .safe_int(sapply(dm$X_rho, ncol))
+      group_b0_safe <- .safe_int(dm$group_b0)
+      
+      pnames <- .param_names(dm, pv)
+      draw_mat_ordered <- draw_mat[, pnames, drop = FALSE]
+      
+      log_ml <- run_bridge(
+        y             = y,
+        tau           = tau,
+        x_b0          = as.double(dm$X_b0),  p_b0  = ncol(dm$X_b0),
+        x_b1          = as.double(dm$X_b1),  p_b1  = ncol(dm$X_b1),
+        x_deltas      = lapply(dm$X_deltas, as.double),
+        p_deltas      = p_deltas_safe,
+        x_om          = lapply(dm$X_om, as.double),
+        p_om          = p_om_safe,
+        x_rho         = lapply(dm$X_rho, as.double),
+        p_rho         = p_rho_safe,
+        group_b0      = group_b0_safe,
+        n_groups_b0   = dm$n_groups_b0,
+        prior_mean_b0 = pv$b0$mean, prior_sd_b0 = pv$b0$sd, prior_lb_b0 = pv$b0$lb, prior_ub_b0 = pv$b0$ub,
+        prior_mean_b1 = pv$b1$mean, prior_sd_b1 = pv$b1$sd, prior_lb_b1 = pv$b1$lb, prior_ub_b1 = pv$b1$ub,
+        prior_mean_deltas = lapply(pv$deltas, `[[`, "mean"),
+        prior_sd_deltas   = lapply(pv$deltas, `[[`, "sd"),
+        prior_lb_deltas   = lapply(pv$deltas, `[[`, "lb"),
+        prior_ub_deltas   = lapply(pv$deltas, `[[`, "ub"),
+        prior_mean_om     = lapply(pv$om, `[[`, "mean"),
+        prior_sd_om       = lapply(pv$om, `[[`, "sd"),
+        prior_lb_om       = lapply(pv$om, `[[`, "lb"),
+        prior_ub_om       = lapply(pv$om, `[[`, "ub"),
+        prior_mean_rho    = lapply(pv$rho, `[[`, "mean"),
+        prior_sd_rho      = lapply(pv$rho, `[[`, "sd"),
+        prior_lb_rho      = lapply(pv$rho, `[[`, "lb"),
+        prior_ub_rho      = lapply(pv$rho, `[[`, "ub"),
+        sigma_shape   = priors$sigma$shape,
+        sigma_scale   = priors$sigma$scale,
+        sigma_u_shape = priors$sigma_u$shape,
+        sigma_u_scale = priors$sigma_u$scale,
+        mcmc_draws    = draw_mat_ordered,
+        seed          = as.integer(seed)
+      )
+      
+      return(structure(
+        list(
+          logml = log_ml,
+          niter = 1000,
+          method = "rust"
+        ),
+        class = "bridge"
+      ))
+    }
+  }
+  
+  if (method == "bridgesampling") {
+    lb_vec <- stats::setNames(rep(-Inf, length(param_names)), param_names)
+    ub_vec <- stats::setNames(rep( Inf, length(param_names)), param_names)
+    bounds <- .smoothbp_param_bounds(samples)
+    for (nm in names(bounds$lb)) {
+      if (nm %in% param_names) { lb_vec[[nm]] <- bounds$lb[[nm]]; ub_vec[[nm]] <- bounds$ub[[nm]] }
+    }
+  
+    data_list <- list(
+      dm = samples$dm, y = as.double(samples$data[[samples$response]]),
+      tau = as.double(samples$data[[samples$time]]), pv = samples$pv,
+      sigma_p = samples$priors$sigma, sigma_u_p = samples$priors$sigma_u
+    )
+    
+    return(bridgesampling::bridge_sampler(
+      samples = draw_mat, 
+      log_posterior = function(pars, data) {
+         names(pars) <- colnames(draw_mat)
+         .smoothbp_log_posterior(pars, data)
+      },
+      data = data_list, lb = lb_vec, ub = ub_vec, ...
+    ))
+  }
 }
 
 #' Bayes Factor for smoothbp_fit

@@ -36,9 +36,9 @@ smoothbp_ss(
 
 \item{deltas}{List of formulas for slope changes.}
 
-\item{omega}{List of formulas for change-points.}
+\item{omega}{List of formulas for change-points. Can also contain \code{\link{fixed}()} values.}
 
-\item{rho}{List of formulas for sharpness.}
+\item{rho}{List of formulas for sharpness. Can also contain \code{\link{fixed}()} values.}
 
 \item{data}{A data frame.}
 
