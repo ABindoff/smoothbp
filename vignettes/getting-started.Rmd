@@ -199,14 +199,19 @@ options(smoothbp.cores = parallel::detectCores())
 
 ## Posterior summary
 
-`print()` displays results in labelled sections; `summary()` returns a
-data frame. The `effects` argument filters which parameters are shown:
+`print()` displays results in distinct, labelled sections; `summary()` returns a
+clean data frame. By default, `effects = "all"` is used. 
+
+You can filter which parameters are returned or printed by passing a vector to the `effects` argument. The parameters are classified into three strict categories:
+1. `"fixed"`: Population-level structural parameters ($b0, b1, \delta, \omega, \rho, \sigma$)
+2. `"ran_pars"`: Group-level variance parameters (e.g., `sigma_u`)
+3. `"ran_vals"`: The actual group-level deviations (e.g., the individual `u[j]` random intercepts)
 
 ```{r summary}
-print(fit1)                                        # all sections (default)
+print(fit1)                                        # prints all sections
 print(fit1, effects = "fixed")                     # population-level only
-summary(fit1, effects = "fixed")                   # same, as a data frame
-summary(fit1, effects = c("fixed", "ran_pars"))    # fixed + sigma_u, no u[j]
+summary(fit1, effects = "fixed")                   # same, but returns a data frame
+summary(fit1, effects = c("fixed", "ran_pars"))    # fixed + sigma_u, omits the u[j] values
 ```
 
 Parameter names follow the convention:
