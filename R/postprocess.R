@@ -8,7 +8,7 @@
 #' @param ... Unused.
 #'
 #' @export
-print.smoothbp_fit <- function(x, digits = 3, effects = "all", ...) {
+print.smoothbp_fit <- function(x, digits = 3, effects = c("fixed", "ran_pars"), ...) {
   cat("Smooth Change-Point Model (smoothbp)\n")
   cat("-------------------------------------\n")
   cat(sprintf("Response : %s\n", x$response))
@@ -50,7 +50,7 @@ print.smoothbp_fit <- function(x, digits = 3, effects = "all", ...) {
 #' @param ... Unused.
 #'
 #' @export
-summary.smoothbp_fit <- function(object, effects = "all", digits = 3, ...) {
+summary.smoothbp_fit <- function(object, effects = c("fixed", "ran_pars"), digits = 3, ...) {
   show <- .resolve_effects(effects)
   pnames <- colnames(posterior::as_draws_matrix(object$draws))
   

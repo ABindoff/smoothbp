@@ -200,7 +200,7 @@ options(smoothbp.cores = parallel::detectCores())
 ## Posterior summary
 
 `print()` displays results in distinct, labelled sections; `summary()` returns a
-clean data frame. By default, `effects = "all"` is used. 
+clean data frame. By default, `effects = c("fixed", "ran_pars")` is used, matching the conventions of other mixed-modeling packages like `brms`.
 
 You can filter which parameters are returned or printed by passing a vector to the `effects` argument. The parameters are classified into three strict categories:
 1. `"fixed"`: Population-level structural parameters ($b0, b1, \delta, \omega, \rho, \sigma$)
@@ -208,10 +208,9 @@ You can filter which parameters are returned or printed by passing a vector to t
 3. `"ran_vals"`: The actual group-level deviations (e.g., the individual `u[j]` random intercepts)
 
 ```{r summary}
-print(fit1)                                        # prints all sections
+print(fit1)                                        # fixed + ran_pars (default)
 print(fit1, effects = "fixed")                     # population-level only
-summary(fit1, effects = "fixed")                   # same, but returns a data frame
-summary(fit1, effects = c("fixed", "ran_pars"))    # fixed + sigma_u, omits the u[j] values
+summary(fit1, effects = "all")                     # returns everything, including u[j]
 ```
 
 Parameter names follow the convention:
