@@ -17,9 +17,27 @@ print.smoothbp_fit <- function(x, digits = 3, effects = "all", ...) {
               x$chains, x$iter - x$warmup, x$warmup))
   
   show <- .resolve_effects(effects)
+  
+  if ("ran_pars" %in% show) {
+    ran_pars_sum <- summary(x, effects = "ran_pars", digits = digits)
+    if (nrow(ran_pars_sum) > 0) {
+      cat("\nGroup-Level Effects (Parameters):\n")
+      .print_summary_section(ran_pars_sum)
+    }
+  }
   if ("fixed" %in% show) {
-    cat("\nPopulation-Level Effects:\n")
-    .print_summary_section(summary(x, effects = "fixed", digits = digits))
+    fixed_sum <- summary(x, effects = "fixed", digits = digits)
+    if (nrow(fixed_sum) > 0) {
+      cat("\nPopulation-Level Effects:\n")
+      .print_summary_section(fixed_sum)
+    }
+  }
+  if ("ran_vals" %in% show) {
+    ran_vals_sum <- summary(x, effects = "ran_vals", digits = digits)
+    if (nrow(ran_vals_sum) > 0) {
+      cat("\nGroup-Level Effects (Values):\n")
+      .print_summary_section(ran_vals_sum)
+    }
   }
   invisible(x)
 }
@@ -36,10 +54,20 @@ summary.smoothbp_fit <- function(object, effects = "all", digits = 3, ...) {
   show <- .resolve_effects(effects)
   pnames <- colnames(posterior::as_draws_matrix(object$draws))
   
-  # Filter kinds
-  keep_vars <- pnames
-  if (!"ran_vals" %in% show) keep_vars <- keep_vars[!grepl("^u\\[", keep_vars)]
-  if (!"ran_pars" %in% show) keep_vars <- keep_vars[keep_vars != "sigma_u"]
+  is_ran_val <- grepl("^u\\[", pnames)
+  is_ran_par <- grepl("^sigma_u$|^sigma_re_omega", pnames)
+  is_fixed   <- !(is_ran_val | is_ran_par)
+  
+  keep_idx <- rep(FALSE, length(pnames))
+  if ("ran_vals" %in% show) keep_idx <- keep_idx | is_ran_val
+  if ("ran_pars" %in% show) keep_idx <- keep_idx | is_ran_par
+  if ("fixed"    %in% show) keep_idx <- keep_idx | is_fixed
+  
+  keep_vars <- pnames[keep_idx]
+  
+  if (length(keep_vars) == 0) {
+    return(data.frame())
+  }
   
   s <- posterior::summarise_draws(
     object$draws[, , keep_vars, drop = FALSE],
