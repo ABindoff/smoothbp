@@ -15,3 +15,5 @@
 ^pip_plot\.png$
 ^scratch$
 ^sandbox$
+^manuscripts$
+^\.repro$
