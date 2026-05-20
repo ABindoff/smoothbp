@@ -9,3 +9,4 @@
 * This is a new release.
 * Note: checking CRAN incoming feasibility ... Note_to_CRAN_maintainers
   Maintainer: 'Aidan Bindoff <Aidan.Bindoff@utas.edu.au>'
+* patch resubmission following fixed windows install failure
