@@ -4,7 +4,7 @@
 \alias{summary.smoothbp_fit}
 \title{Summarise a smoothbp_fit}
 \usage{
-\method{summary}{smoothbp_fit}(object, effects = "all", digits = 3, ...)
+\method{summary}{smoothbp_fit}(object, effects = c("fixed", "ran_pars"), digits = 3, ...)
 }
 \arguments{
 \item{object}{A \code{smoothbp_fit} object.}

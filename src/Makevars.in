@@ -26,12 +26,12 @@ $(STATLIB):
 	if [ -d ./vendor ]; then \
 		echo "=== Using offline vendor directory ==="; \
 		mkdir -p $(CARGOTMP) && \
-		cp rust/vendor-config.toml $(CARGOTMP)/config.toml; \
+		printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "$(VENDOR_DIR)"\n' > $(CARGOTMP)/config.toml; \
 	elif [ -f ./rust/vendor.tar.xz ]; then \
 		echo "=== Using offline vendor tarball ==="; \
 		tar xf rust/vendor.tar.xz && \
 		mkdir -p $(CARGOTMP) && \
-		cp rust/vendor-config.toml $(CARGOTMP)/config.toml; \
+		printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "$(VENDOR_DIR)"\n' > $(CARGOTMP)/config.toml; \
 	fi
 
 	export CARGO_HOME=$(CARGOTMP) && \

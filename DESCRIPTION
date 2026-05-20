@@ -1,6 +1,6 @@
 Package: smoothbp
 Title: Hierarchical Piecewise Regression with Smoothed Change-Points
-Version: 0.2.0
+Version: 0.2.1
 Authors@R:
     person("Aidan D", "Bindoff", , "aidan.bindoff@utas.edu.au", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0002-0943-2702"))

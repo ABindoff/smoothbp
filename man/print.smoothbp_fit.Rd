@@ -4,7 +4,7 @@
 \alias{print.smoothbp_fit}
 \title{Print a smoothbp_fit}
 \usage{
-\method{print}{smoothbp_fit}(x, digits = 3, effects = "all", ...)
+\method{print}{smoothbp_fit}(x, digits = 3, effects = c("fixed", "ran_pars"), ...)
 }
 \arguments{
 \item{x}{A \code{smoothbp_fit} object.}

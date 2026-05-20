@@ -566,6 +566,7 @@ extendr_module! {
     mod smoothbp;
     fn run_mcmc;
     fn run_mcmc_ss;
+    fn run_mcmc_re;
     fn run_mcmc_re_ss;
     fn run_bridge;
 }

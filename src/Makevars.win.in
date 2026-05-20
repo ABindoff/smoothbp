@@ -13,6 +13,9 @@ $(SHLIB): $(STATLIB)
 
 # Place cargo home in LOCALAPPDATA to avoid paths with spaces/dashes
 CARGOTMP = $(subst \,/,$(LOCALAPPDATA))/.smoothbp_cargo_tmp
+# cygpath -m converts MSYS-style /c/Users/... to Windows-style C:/Users/...
+# so that native Cargo can read the path correctly from the TOML config.
+VENDOR_PATH = $(shell cygpath -m "$(CURDIR)")/vendor
 
 $(STATLIB):
 	mkdir -p $(TARGET_DIR)/libgcc_mock
@@ -20,15 +23,17 @@ $(STATLIB):
 
   # If a vendor directory exists, it is used for offline compilation. Otherwise if
   # vendor.tar.xz exists, it is unzipped and used for offline compilation.
+  # The config.toml is generated with an absolute path to avoid Cargo misresolving
+  # the 'directory' key relative to CARGO_HOME rather than the config file location.
 	if [ -d ./vendor ]; then \
 		echo "=== Using offline vendor directory ==="; \
 		mkdir -p "$(CARGOTMP)" && \
-		cp rust/vendor-config.toml "$(CARGOTMP)/config.toml"; \
+		printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "$(VENDOR_PATH)"\n' > "$(CARGOTMP)/config.toml"; \
 	elif [ -f ./rust/vendor.tar.xz ]; then \
 		echo "=== Using offline vendor tarball ==="; \
 		tar xf rust/vendor.tar.xz && \
 		mkdir -p "$(CARGOTMP)" && \
-		cp rust/vendor-config.toml "$(CARGOTMP)/config.toml"; \
+		printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "$(VENDOR_PATH)"\n' > "$(CARGOTMP)/config.toml"; \
 	fi
 
 	# Build the project using Cargo with additional flags

@@ -4,10 +4,19 @@
 \alias{bridge_sampler.smoothbp_fit}
 \title{Bridge Sampler for smoothbp_fit}
 \usage{
-\method{bridge_sampler}{smoothbp_fit}(samples, ...)
+\method{bridge_sampler}{smoothbp_fit}(
+  samples,
+  method = c("auto", "rust", "bridgesampling"),
+  seed = 42,
+  ...
+)
 }
 \arguments{
 \item{samples}{A \code{smoothbp_fit} object.}
+
+\item{method}{Character; either "auto", "rust", or "bridgesampling". Default "auto" uses Rust for continuous models.}
+
+\item{seed}{Random seed for the bridge sampler.}
 
 \item{...}{Passed to \code{\link[bridgesampling]{bridge_sampler}}.}
 }
