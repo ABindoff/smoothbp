@@ -45,7 +45,7 @@ $(STATLIB):
 	# can find libgcc_eh.a (mocked by the libgcc_mock stub created above).
 	export CARGO_HOME="$(CARGOTMP)" && \
 	export LIBRARY_PATH="$(LIBRARY_PATH);$(CURDIR)/$(TARGET_DIR)/libgcc_mock" && \
-	cargo run @CRAN_FLAGS@ --bin document --target $(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR)
+	cargo run @CRAN_FLAGS@ @PROFILE@ --bin document --target $(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR)
 
 	# Always clean up CARGOTMP
 	rm -Rf "$(CARGOTMP)";
