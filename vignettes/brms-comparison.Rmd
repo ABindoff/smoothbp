@@ -53,21 +53,21 @@ above at `max(tau)` in both samplers, and to initialise brms chains near
 the prior mean (which is what smoothbp does internally). Both fixes
 applied below.
 
-```{r setup, message = FALSE, warning = FALSE}
+```{r setup, message = FALSE, warning = FALSE, eval = TRUE}
 library(smoothbp)
 library(posterior)
 library(ggplot2)
 library(dplyr)
 library(tidyr)
 
-have_brms <- requireNamespace("brms", quietly = TRUE)
-if (!have_brms) {
+have_brms <- requireNamespace("brms", quietly = TRUE) && NOT_CRAN
+if (!have_brms && NOT_CRAN) {
   message("brms not installed -- install.packages('brms') to render the comparison.")
 }
 
 have_mcp <- requireNamespace("mcp",   quietly = TRUE) &&
-            requireNamespace("rjags", quietly = TRUE)
-if (!have_mcp) {
+            requireNamespace("rjags", quietly = TRUE) && NOT_CRAN
+if (!have_mcp && NOT_CRAN) {
   message("mcp or rjags not installed -- install JAGS then install.packages('mcp') ",
           "to render the mcp comparison.")
 }
