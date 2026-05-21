@@ -30,5 +30,5 @@ They are stored inside `src/rust/vendor.tar.xz` in the distributed package,
 so portability of path length is not a practical concern.
 
 ### NOTE: CRAN incoming feasibility
-Maintainer: 'Aidan Bindoff <Aidan.Bindoff@utas.edu.au>'
+Maintainer: 'Aidan Bindoff <aidan.bindoff@utas.edu.au>'
 This is a resubmission.
