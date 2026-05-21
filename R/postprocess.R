@@ -159,17 +159,45 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
 }
 
 .build_newdata_dm <- function(object, newdata) {
-  mk_mm_list <- function(fml_list, dat) {
-    if (!is.list(fml_list)) fml_list <- list(fml_list)
-    lapply(fml_list, function(f) .mk_mm_single(.parse_re(f)$fixed, dat, object$data))
+  .safe_mk_mm <- function(f, dat, train_dat, train_mf = NULL) {
+    if (inherits(f, "smoothbp_fixed")) {
+      X <- matrix(as.numeric(f), nrow = nrow(dat), ncol = 1)
+      colnames(X) <- "(Intercept)"
+      attr(X, "re_mask") <- 0L
+      if (length(f) > 1) {
+        attr(X, "fixed_value") <- 1
+      } else {
+        X[] <- 1
+        attr(X, "fixed_value") <- as.numeric(f)
+      }
+      return(X)
+    }
+    .mk_mm_single(.parse_re(f)$fixed, dat, train_dat, train_mf)
   }
-  X_b0     <- .mk_mm_single(.parse_re(object$b0_formula)$fixed, newdata, object$data)
-  X_b1     <- .mk_mm_single(.parse_re(object$b1_formula)$fixed, newdata, object$data)
-  X_deltas <- mk_mm_list(object$deltas_formula, newdata)
-  X_om     <- mk_mm_list(object$omega_formula,  newdata)
-  X_rho    <- mk_mm_list(object$rho_formula,    newdata)
+  mk_mm_list <- function(fml_list, dat, train_mf_list = NULL) {
+    if (!is.list(fml_list)) fml_list <- list(fml_list)
+    lapply(seq_along(fml_list), function(i) {
+      tmf <- if (!is.null(train_mf_list)) train_mf_list[[i]] else NULL
+      .safe_mk_mm(fml_list[[i]], dat, object$data, tmf)
+    })
+  }
 
-  re_var <- .parse_re(object$b0_formula)$re_group
+  # Retrieve stored training model frames (if present)
+  tmf <- object$train_model_frames
+
+  X_b0     <- .mk_mm_single(.parse_re(object$b0_formula)$fixed, newdata, object$data,
+                              tmf$b0)
+  X_b1     <- .mk_mm_single(.parse_re(object$b1_formula)$fixed, newdata, object$data,
+                              tmf$b1)
+  X_deltas <- mk_mm_list(object$deltas_formula, newdata, tmf$deltas)
+  X_om     <- mk_mm_list(object$omega_formula,  newdata, tmf$omega)
+  X_rho    <- mk_mm_list(object$rho_formula,    newdata, tmf$rho)
+
+  if (inherits(object$b0_formula, "smoothbp_fixed")) {
+    re_var <- NULL
+  } else {
+    re_var <- .parse_re(object$b0_formula)$re_group
+  }
   group_levels_b0 <- object$dm$group_levels_b0
   if (!is.null(re_var) && re_var %in% names(newdata)) {
     gfac <- factor(newdata[[re_var]], levels = group_levels_b0)
@@ -184,12 +212,27 @@ fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {
   )
 }
 
-.mk_mm_single <- function(fml, dat, train_dat) {
+.mk_mm_single <- function(fml, dat, train_dat, train_mf = NULL) {
+  # Align factor levels with training data
   for (col in names(dat)) {
     if (col %in% names(train_dat) && is.factor(train_dat[[col]])) {
       dat[[col]] <- factor(dat[[col]], levels = levels(train_dat[[col]]))
     }
   }
+
+  # If a training model.frame is available, use its terms object so that
+
+  # scale(), poly(), etc. replay with the original centering/scale attributes
+  # rather than being re-evaluated fresh on newdata (which would produce NaN
+  # for constant columns, causing model.matrix to drop all rows).
+  if (!is.null(train_mf)) {
+    tt <- stats::delete.response(stats::terms(train_mf))
+    # Extract factor levels recorded in the training frame
+    xlevels <- .getXlevels(tt, train_mf)
+    mf <- stats::model.frame(tt, data = dat, xlev = xlevels, na.action = stats::na.pass)
+    return(stats::model.matrix(tt, mf))
+  }
+
   stats::model.matrix(fml, data = dat)
 }
 

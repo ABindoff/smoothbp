@@ -209,6 +209,7 @@ smoothbp <- function(
       deltas_formula = deltas,
       omega_formula  = omega,
       rho_formula    = rho,
+      train_model_frames = dm$train_model_frames,
       chains        = as.integer(chains),
       iter          = as.integer(iter),
       warmup        = as.integer(warmup),

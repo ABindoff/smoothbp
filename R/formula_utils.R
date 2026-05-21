@@ -131,6 +131,14 @@
     group_b0        <- as.integer(gfactor) - 1L
   }
 
+  # Capture training model.frames so that in-formula transforms (scale, log,
+  # poly, ns, bs, etc.) can be replayed correctly on new data at prediction
+  # time.  The terms object stored on a model.frame carries the attributes
+  # (center, scale coefficients, knots, ...) from stateful transforms.
+  train_mfs <- .capture_train_model_frames(
+    b0_fml, b1_fml, deltas_fml, omega_fml, rho_fml, data
+  )
+
   list(
     X_b0     = X_b0,
     X_b1     = X_b1,
@@ -144,7 +152,44 @@
     col_names_b1     = colnames(X_b1),
     col_names_deltas = lapply(X_deltas, colnames),
     col_names_om     = lapply(X_om,     colnames),
-    col_names_rho    = lapply(X_rho,    colnames)
+    col_names_rho    = lapply(X_rho,    colnames),
+    train_model_frames = train_mfs
+  )
+}
+
+# ---------------------------------------------------------------------------
+# Capture training model.frames for prediction-time transform replay.
+#
+# When a formula contains stateful transforms like scale(), poly(), ns(),
+# bs(), etc., model.frame() stores the transform attributes (center, scale,
+# knots, degree, ...) on the resulting object's terms.  At prediction time,
+# passing these terms to model.frame(tt, newdata, xlev) causes R to replay
+# the transform with the original (training-time) attributes rather than
+# re-computing them from scratch on newdata.
+#
+# Stateless transforms (log, sqrt, I, exp, ...) are unaffected — they are
+# simply re-evaluated, which is the correct behaviour.
+# ---------------------------------------------------------------------------
+.capture_train_model_frames <- function(b0_fml, b1_fml, deltas_fml, omega_fml, rho_fml, data) {
+  safe_mf <- function(fml) {
+    if (inherits(fml, "smoothbp_fixed")) return(NULL)
+    fixed <- .parse_re(fml)$fixed
+    tryCatch(
+      stats::model.frame(fixed, data = data, na.action = stats::na.pass),
+      error = function(e) NULL
+    )
+  }
+  safe_mf_list <- function(fml_list) {
+    if (!is.list(fml_list)) fml_list <- list(fml_list)
+    lapply(fml_list, safe_mf)
+  }
+
+  list(
+    b0     = safe_mf(b0_fml),
+    b1     = safe_mf(b1_fml),
+    deltas = safe_mf_list(deltas_fml),
+    omega  = safe_mf_list(omega_fml),
+    rho    = safe_mf_list(rho_fml)
   )
 }
 

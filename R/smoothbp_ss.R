@@ -246,6 +246,7 @@ smoothbp_ss <- function(
       deltas_formula = deltas,
       omega_formula  = omega,
       rho_formula    = rho,
+      train_model_frames = dm$train_model_frames,
       gamma_names   = gamma_names,
       chains        = as.integer(chains),
       iter          = as.integer(iter),
