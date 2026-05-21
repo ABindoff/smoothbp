@@ -144,12 +144,30 @@ summary.smoothbp_ss_fit <- function(object, effects = "all", digits = 3, ...) {
   # Normalise column names regardless of how posterior:: qualifies them
   nms <- names(s)
   nms[grepl("^(stats::)?sd$",           nms)] <- "SD"
-  nms[grepl("q2\\.5",                   nms)] <- "Q2.5"
-  nms[grepl("q97\\.5",                  nms)] <- "Q97.5"
+  nms[grepl("(q|^)2\\.5",              nms)] <- "Q2.5"
+  nms[grepl("(q|^)97\\.5",             nms)] <- "Q97.5"
   nms[grepl("rhat",                     nms)] <- "Rhat"
   nms[grepl("ess_bulk",                 nms)] <- "Bulk_ESS"
   nms[grepl("ess_tail",                 nms)] <- "Tail_ESS"
   names(s) <- nms
+
+  # For gamma (spike-and-slab indicator) parameters, raw quantiles of binary
+
+  # 0/1 draws are uninformative (always 0 or 1).  Replace with Beta-Binomial
+  # credible intervals: Beta(1 + K, 1 + N - K) where K = number of draws
+  # with gamma = 1 and N = total draws.  This gives a proper CI for the
+  # inclusion probability, consistent with pip().
+  gamma_rows <- grepl("^gamma_", s$variable)
+  if (any(gamma_rows)) {
+    dm <- posterior::as_draws_matrix(object$draws)
+    N  <- nrow(dm)
+    for (i in which(gamma_rows)) {
+      vname <- s$variable[i]
+      K <- sum(as.numeric(dm[, vname]))
+      s$Q2.5[i]  <- stats::qbeta(0.025, 1 + K, 1 + N - K)
+      s$Q97.5[i] <- stats::qbeta(0.975, 1 + K, 1 + N - K)
+    }
+  }
 
   num_cols <- sapply(s, is.numeric)
   s[num_cols] <- lapply(s[num_cols], round, digits = digits)
