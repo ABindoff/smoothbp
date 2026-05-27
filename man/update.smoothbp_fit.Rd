@@ -9,6 +9,7 @@
   formula,
   b0,
   b1,
+  deltas,
   omega,
   rho,
   data,
@@ -28,7 +29,7 @@
 \arguments{
 \item{object}{A \code{smoothbp_fit} object.}
 
-\item{formula, b0, b1, omega, rho, data, priors, chains, iter, warmup, seed, step_om, step_rho, target_accept, cores, .verbose}{Replacements for the corresponding arguments of \code{\link{smoothbp}}.
+\item{formula, b0, b1, deltas, omega, rho, data, priors, chains, iter, warmup, seed, step_om, step_rho, target_accept, cores, .verbose}{Replacements for the corresponding arguments of \code{\link{smoothbp}}.
 Any argument not supplied is taken from \code{object}.}
 
 \item{...}{Ignored.}

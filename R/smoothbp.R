@@ -225,7 +225,7 @@ smoothbp <- function(
 #' unspecified.
 #'
 #' @param object A \code{smoothbp_fit} object.
-#' @param formula,b0,b1,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
+#' @param formula,b0,b1,deltas,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
 #'   Replacements for the corresponding arguments of \code{\link{smoothbp}}.
 #'   Any argument not supplied is taken from \code{object}.
 #' @param ... Ignored.
@@ -235,7 +235,7 @@ smoothbp <- function(
 update.smoothbp_fit <- function(
     object,
     formula,
-    b0, b1, omega, rho,
+    b0, b1, deltas, omega, rho,
     data,
     priors,
     chains, iter, warmup, seed,
@@ -247,6 +247,7 @@ update.smoothbp_fit <- function(
   if (missing(formula))      formula      <- object$formula
   if (missing(b0))           b0           <- object$b0_formula
   if (missing(b1))           b1           <- object$b1_formula
+  if (missing(deltas))       deltas       <- object$deltas_formula
   if (missing(omega))        omega        <- object$omega_formula
   if (missing(rho))          rho          <- object$rho_formula
   if (missing(data))         data         <- object$data
@@ -265,6 +266,7 @@ update.smoothbp_fit <- function(
     formula       = formula,
     b0            = b0,
     b1            = b1,
+    deltas        = deltas,
     omega         = omega,
     rho           = rho,
     data          = data,
