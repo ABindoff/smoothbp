@@ -150,6 +150,7 @@
 #' @param method Character; either "auto", "rust", or "bridgesampling". Default "auto" uses Rust for continuous models.
 #' @param seed Random seed for the bridge sampler.
 #' @param ... Passed to \code{\link[bridgesampling]{bridge_sampler}}.
+#' @return An object of class \code{"bridge"} or \code{"bridge_list"} containing the log marginal likelihood estimate.
 #'
 #' @importFrom bridgesampling bridge_sampler
 #' @method bridge_sampler smoothbp_fit
@@ -266,6 +267,7 @@ bridge_sampler.smoothbp_fit <- function(samples, method = c("auto", "rust", "bri
 #' @param x2 A \code{smoothbp_fit} object.
 #' @param log Logical; if TRUE, return log Bayes Factor.
 #' @param ... Passed to \code{\link[bridgesampling]{bridge_sampler}}.
+#' @return A numeric value representing the Bayes Factor (or log Bayes Factor if \code{log = TRUE}) comparing \code{x1} to \code{x2}.
 #'
 #' @importFrom bridgesampling bayes_factor
 #' @method bayes_factor smoothbp_fit

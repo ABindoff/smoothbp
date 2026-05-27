@@ -15,6 +15,9 @@
 
 \item{...}{Passed to \code{\link[bridgesampling]{bridge_sampler}}.}
 }
+\value{
+A numeric value representing the Bayes Factor (or log Bayes Factor if \code{log = TRUE}) comparing \code{x1} to \code{x2}.
+}
 \description{
 Bayes Factor for smoothbp_fit
 }

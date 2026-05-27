@@ -15,6 +15,9 @@
 
 \item{...}{Unused.}
 }
+\value{
+If \code{summary = TRUE}, a \code{data.frame} containing the observation index, mean fitted value, and 95\% CI bounds. If \code{summary = FALSE}, a matrix of dimension \code{S x N} where \code{S} is the number of posterior draws and \code{N} is the number of observations, containing the posterior draws of the fitted values.
+}
 \description{
 Fitted values for smoothbp_fit objects
 }

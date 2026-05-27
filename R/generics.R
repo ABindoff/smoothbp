@@ -5,6 +5,9 @@
 #'
 #' @param object A fitted model object.
 #' @param ... Additional arguments passed to methods.
+#' @return A matrix of pointwise log-likelihood values of dimension \code{S x N},
+#'   where \code{S} is the number of posterior draws and \code{N} is the number
+#'   of observations.
 #' @export
 log_lik <- function(object, ...) UseMethod("log_lik")
 

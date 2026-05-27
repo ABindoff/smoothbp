@@ -15,6 +15,9 @@
 
 \item{...}{Unused.}
 }
+\value{
+A \code{data.frame} containing summary statistics (mean, SD, 2.5\% and 97.5\% quantiles, Rhat, and bulk/tail ESS) for the requested effects.
+}
 \description{
 Summarise a smoothbp_fit
 }

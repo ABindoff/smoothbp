@@ -6,6 +6,7 @@
 #' @param digits Number of decimal places to print.
 #' @param effects Which effects to show: `"fixed"`, `"ran_pars"`, `"ran_vals"`, or `"all"`.
 #' @param ... Unused.
+#' @return The input object \code{x} (invisibly), called for its printing side effects.
 #'
 #' @export
 print.smoothbp_fit <- function(x, digits = 3, effects = c("fixed", "ran_pars"), ...) {
@@ -48,6 +49,7 @@ print.smoothbp_fit <- function(x, digits = 3, effects = c("fixed", "ran_pars"), 
 #' @param effects Which effects to summarise: `"fixed"`, `"ran_pars"`, `"ran_vals"`, or `"all"`.
 #' @param digits Number of decimal places for rounding.
 #' @param ... Unused.
+#' @return A \code{data.frame} containing summary statistics (mean, SD, 2.5% and 97.5% quantiles, Rhat, and bulk/tail ESS) for the requested effects.
 #'
 #' @export
 summary.smoothbp_fit <- function(object, effects = c("fixed", "ran_pars"), digits = 3, ...) {
@@ -106,6 +108,7 @@ summary.smoothbp_fit <- function(object, effects = c("fixed", "ran_pars"), digit
 #'
 #' @param x A `smoothbp_fit` object.
 #' @param ... Passed to `as.data.frame.draws_df`.
+#' @return A \code{data.frame} containing the posterior draws of the model parameters.
 #'
 #' @export
 as.data.frame.smoothbp_fit <- function(x, ...) {
@@ -118,6 +121,7 @@ as.data.frame.smoothbp_fit <- function(x, ...) {
 #' @param newdata Optional data frame for prediction.
 #' @param summary Logical; if `TRUE` (default), returns the mean and 95% CI of the fitted values.
 #' @param ... Unused.
+#' @return If \code{summary = TRUE}, a \code{data.frame} containing the observation index, mean fitted value, and 95% CI bounds. If \code{summary = FALSE}, a matrix of dimension \code{S x N} where \code{S} is the number of posterior draws and \code{N} is the number of observations, containing the posterior draws of the fitted values.
 #'
 #' @export
 fitted.smoothbp_fit <- function(object, newdata = NULL, summary = TRUE, ...) {

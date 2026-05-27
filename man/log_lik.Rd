@@ -14,6 +14,11 @@ log_lik(object, ...)
 
 \item{...}{Unused.}
 }
+\value{
+A matrix of pointwise log-likelihood values of dimension \code{S x N},
+where \code{S} is the number of posterior draws and \code{N} is the number
+of observations.
+}
 \description{
 Pointwise log-likelihood matrix
 }

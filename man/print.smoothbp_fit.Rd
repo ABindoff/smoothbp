@@ -15,6 +15,9 @@
 
 \item{...}{Unused.}
 }
+\value{
+The input object \code{x} (invisibly), called for its printing side effects.
+}
 \description{
 Print a smoothbp_fit
 }

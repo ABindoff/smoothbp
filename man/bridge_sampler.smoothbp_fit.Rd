@@ -20,6 +20,9 @@
 
 \item{...}{Passed to \code{\link[bridgesampling]{bridge_sampler}}.}
 }
+\value{
+An object of class \code{"bridge"} or \code{"bridge_list"} containing the log marginal likelihood estimate.
+}
 \description{
 Bridge Sampler for smoothbp_fit
 }

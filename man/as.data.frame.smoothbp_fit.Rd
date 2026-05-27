@@ -11,6 +11,9 @@
 
 \item{...}{Passed to \code{as.data.frame.draws_df}.}
 }
+\value{
+A \code{data.frame} containing the posterior draws of the model parameters.
+}
 \description{
 Convert draws to a data frame
 }

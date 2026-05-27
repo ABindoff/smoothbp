@@ -11,8 +11,8 @@ all: $(SHLIB) rust_clean
 
 $(SHLIB): $(STATLIB)
 
-# Place cargo home in LOCALAPPDATA to avoid paths with spaces/dashes
-CARGOTMP = $(subst \,/,$(LOCALAPPDATA))/.smoothbp_cargo_tmp
+# Place cargo home in R's short temporary directory path to avoid paths with spaces/dashes
+CARGOTMP := $(shell "${R_HOME}/bin/Rscript" -e "cat(normalizePath(utils::shortPathName(tempdir()), winslash='/'))")/.smoothbp_cargo_tmp
 # cygpath -m converts MSYS-style /c/Users/... to Windows-style C:/Users/...
 # so that native Cargo can read the path correctly from the TOML config.
 VENDOR_PATH = $(shell cygpath -m "$(CURDIR)")/vendor
@@ -34,7 +34,12 @@ $(STATLIB):
 		tar xf rust/vendor.tar.xz && \
 		mkdir -p "$(CARGOTMP)" && \
 		printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "$(VENDOR_PATH)"\n' > "$(CARGOTMP)/config.toml"; \
+	else \
+		mkdir -p "$(CARGOTMP)"; \
 	fi
+
+	# Append target-specific Windows linker and ar paths dynamically to CARGOTMP
+	printf '\n[target.x86_64-pc-windows-gnu]\nlinker = "@LINKER@"\nar     = "@AR@"\n' >> "$(CARGOTMP)/config.toml"
 
 	# Build the project using Cargo with additional flags
 	export CARGO_HOME="$(CARGOTMP)" && \

@@ -11,7 +11,10 @@ Description: Fits Bayesian hierarchical piecewise regression models with
     A random-intercept structure is supported for any parameter. Spike-and-slab 
     regularization is supported for selecting the number of breakpoints. 
     Posterior inference uses a Metropolis-within-Gibbs sampler implemented 
-    in Rust for speed.
+    in 'Rust' for speed. Methods are based on the smooth transition 
+    piecewise regression model of Bacon and Watts (1971) <doi:10.2307/2334389> 
+    and variable selection spike-and-slab priors of Kuo and Mallick (1998) 
+    <https://www.jstor.org/stable/25053023>.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
