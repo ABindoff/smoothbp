@@ -252,7 +252,8 @@ smoothbp_ss <- function(
       warmup        = as.integer(warmup),
       priors        = priors,
       spike         = spike,
-      hierarchical  = hierarchical
+      hierarchical  = hierarchical,
+      n_divergent   = as.integer(sum(raw$n_divergent))
     ),
     class = c("smoothbp_ss_fit", "smoothbp_fit")
   )

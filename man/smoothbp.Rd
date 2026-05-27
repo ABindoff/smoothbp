@@ -19,7 +19,7 @@ smoothbp(
   seed = NULL,
   step_om = 0.3,
   step_rho = 0.3,
-  target_accept = 0.8,
+  target_accept = 0.65,
   cores = getOption("smoothbp.cores", 1L),
   hierarchical = NULL,
   .verbose = TRUE

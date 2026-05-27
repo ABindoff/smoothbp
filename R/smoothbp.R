@@ -40,7 +40,7 @@ smoothbp <- function(
     seed   = NULL,
     step_om  = 0.3,
     step_rho = 0.3,
-    target_accept = 0.80,
+    target_accept = 0.65,
     cores    = getOption("smoothbp.cores", 1L),
     hierarchical = NULL,
     .verbose = TRUE
@@ -212,7 +212,8 @@ smoothbp <- function(
       chains        = as.integer(chains),
       iter          = as.integer(iter),
       warmup        = as.integer(warmup),
-      priors        = priors
+      priors        = priors,
+      n_divergent   = as.integer(sum(raw$n_divergent))
     ),
     class = "smoothbp_fit"
   )

@@ -235,12 +235,12 @@ prior_spike_slab <- function(pi = 0.5, slab = prior_normal(0, 2),
 #' @export
 print.smoothbp_spike_slab <- function(x, ...) {
   if (x$learn_pi) {
-    cat(sprintf("SpikeSlab(pi~Beta(%g,%g), slab=Normal(%g, %g), spike_intercept=%s)\n",
-                x$a, x$b, x$slab$mean, x$slab$sd, x$spike_intercept))
+    cat(sprintf("SpikeSlab(pi~Beta(%g,%g), slab=Normal(%g, %g))\n",
+                x$a, x$b, x$slab$mean, x$slab$sd))
   } else {
-    cat(sprintf("SpikeSlab(pi=%s, slab=Normal(%g, %g), spike_intercept=%s)\n",
+    cat(sprintf("SpikeSlab(pi=%s, slab=Normal(%g, %g))\n",
                 paste(format(x$pi), collapse = ","),
-                x$slab$mean, x$slab$sd, x$spike_intercept))
+                x$slab$mean, x$slab$sd))
   }
   invisible(x)
 }

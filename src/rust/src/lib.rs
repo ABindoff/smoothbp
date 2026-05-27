@@ -141,14 +141,15 @@ fn run_mcmc(
         }).collect()
     };
 
-    let chain_results: Vec<Robj> = results.into_iter().map(|(draws, _)| {
+    let (chain_results, divergences): (Vec<Robj>, Vec<i32>) = results.into_iter().map(|(draws, n_div)| {
         let nr = draws.nrows();
         let nc = draws.ncols();
         let flat: Vec<f64> = draws.iter().cloned().collect();
-        RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into()
-    }).collect();
+        let mat = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
+        (mat, n_div as i32)
+    }).unzip();
 
-    list!(draws = chain_results)
+    list!(draws = chain_results, n_divergent = divergences)
 }
 
 /// @noRd
@@ -281,14 +282,15 @@ fn run_mcmc_ss(
         }).collect()
     };
 
-    let chain_results: Vec<Robj> = results.into_iter().map(|(draws, _)| {
+    let (chain_results, divergences): (Vec<Robj>, Vec<i32>) = results.into_iter().map(|(draws, n_div)| {
         let nr = draws.nrows();
         let nc = draws.ncols();
         let flat: Vec<f64> = draws.iter().cloned().collect();
-        RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into()
-    }).collect();
+        let mat = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
+        (mat, n_div as i32)
+    }).unzip();
 
-    list!(draws = chain_results)
+    list!(draws = chain_results, n_divergent = divergences)
 }
 
 /// @noRd
@@ -409,14 +411,15 @@ fn run_mcmc_re(
         }).collect()
     };
 
-    let chain_results: Vec<Robj> = results.into_iter().map(|(draws, _)| {
+    let (chain_results, divergences): (Vec<Robj>, Vec<i32>) = results.into_iter().map(|(draws, n_div)| {
         let nr = draws.nrows();
         let nc = draws.ncols();
         let flat: Vec<f64> = draws.iter().cloned().collect();
-        RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into()
-    }).collect();
+        let mat = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
+        (mat, n_div as i32)
+    }).unzip();
 
-    list!(draws = chain_results)
+    list!(draws = chain_results, n_divergent = divergences)
 }
 
 /// @noRd
@@ -552,14 +555,15 @@ fn run_mcmc_re_ss(
         }).collect()
     };
 
-    let chain_results: Vec<Robj> = results.into_iter().map(|(draws, _)| {
+    let (chain_results, divergences): (Vec<Robj>, Vec<i32>) = results.into_iter().map(|(draws, n_div)| {
         let nr = draws.nrows();
         let nc = draws.ncols();
         let flat: Vec<f64> = draws.iter().cloned().collect();
-        RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into()
-    }).collect();
+        let mat = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
+        (mat, n_div as i32)
+    }).unzip();
 
-    list!(draws = chain_results)
+    list!(draws = chain_results, n_divergent = divergences)
 }
 
 extendr_module! {
