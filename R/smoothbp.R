@@ -19,8 +19,11 @@
 #' @param step_rho Initial HMC/MH step size for rho.
 #' @param target_accept Target HMC acceptance probability.
 #' @param cores    Number of CPU cores.
-#' @param hierarchical Character vector; which parameters should be treated as hierarchical.
-#'   Legacy argument, now mostly auto-detected from `(1|group)` formula syntax.
+#' @param hierarchical \strong{Deprecated.} Character vector; which parameters
+#'   should be treated as hierarchical. This argument is no longer needed:
+#'   random effects on change-point timing are auto-detected from
+#'   \code{(1|group)} formula syntax (e.g. \code{omega = list(~ 1 + (1|group))}).
+#'   Passing a non-\code{NULL} value generates a deprecation warning.
 #' @param .verbose Print progress.
 #'
 #' @return A \code{smoothbp_fit} object.
@@ -75,9 +78,19 @@ smoothbp <- function(
   dm <- .build_design_matrices(b0, b1, deltas, omega, rho, data)
   pv <- .build_prior_vectors(priors, dm)
 
+  if (!is.null(hierarchical)) {
+    .Deprecated(
+      msg = paste0(
+        "The `hierarchical` argument is deprecated and will be removed in a ",
+        "future version. Random effects on change-point timing are now ",
+        "auto-detected from formula syntax: use `omega = list(~ 1 + (1 | group))` ",
+        "instead of `hierarchical = \"omega\"`."
+      )
+    )
+  }
+
   # Auto-detect RE from formula: (1|group) in omega formula triggers the
-  # hierarchical sampler. The 'hierarchical' argument is kept for back-compat
-  # but is no longer required when (1|group) syntax is used.
+  # hierarchical sampler.
   has_re_om <- .has_re(dm$X_om) || "omega" %in% hierarchical
   dm$has_re_om <- has_re_om
 
@@ -212,6 +225,10 @@ smoothbp <- function(
       chains        = as.integer(chains),
       iter          = as.integer(iter),
       warmup        = as.integer(warmup),
+      seed          = as.integer(seed),
+      step_om       = step_om,
+      step_rho      = step_rho,
+      target_accept = target_accept,
       priors        = priors,
       n_divergent   = as.integer(sum(raw$n_divergent))
     ),
@@ -228,7 +245,10 @@ smoothbp <- function(
 #' @param object A \code{smoothbp_fit} object.
 #' @param formula,b0,b1,deltas,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
 #'   Replacements for the corresponding arguments of \code{\link{smoothbp}}.
-#'   Any argument not supplied is taken from \code{object}.
+#'   Any argument not supplied is taken from \code{object}, including the
+#'   original \code{seed} and sampler tuning parameters (\code{step_om},
+#'   \code{step_rho}, \code{target_accept}).  To use a fresh seed or different
+#'   tuning, supply them explicitly.
 #' @param ... Ignored.
 #'
 #' @return A new \code{smoothbp_fit} object.
@@ -256,30 +276,4 @@ update.smoothbp_fit <- function(
   if (missing(chains))       chains       <- object$chains
   if (missing(iter))         iter         <- object$iter
   if (missing(warmup))       warmup       <- object$warmup
-  if (missing(seed))         seed         <- object$seed
-  if (missing(cores))        cores        <- object$cores
-  # step_om, step_rho, target_accept are not stored; fall back to smoothbp() defaults
-  if (missing(step_om))        step_om        <- 0.3
-  if (missing(step_rho))       step_rho       <- 0.3
-  if (missing(target_accept))  target_accept  <- 0.65
-
-  smoothbp(
-    formula       = formula,
-    b0            = b0,
-    b1            = b1,
-    deltas        = deltas,
-    omega         = omega,
-    rho           = rho,
-    data          = data,
-    priors        = priors,
-    chains        = chains,
-    iter          = iter,
-    warmup        = warmup,
-    seed          = seed,
-    step_om       = step_om,
-    step_rho      = step_rho,
-    target_accept = target_accept,
-    cores         = cores,
-    .verbose      = .verbose
-  )
-}
+  if (missing(seed))         seed         <- object$

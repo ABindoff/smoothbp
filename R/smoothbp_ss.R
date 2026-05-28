@@ -94,6 +94,17 @@ smoothbp_ss <- function(
     as.integer(rep(1L, length(nms)))
   })
 
+  if (!is.null(hierarchical)) {
+    .Deprecated(
+      msg = paste0(
+        "The `hierarchical` argument is deprecated and will be removed in a ",
+        "future version. Random effects on change-point timing are now ",
+        "auto-detected from formula syntax: use `omega = list(~ 1 + (1 | group))` ",
+        "instead of `hierarchical = \"omega\"`."
+      )
+    )
+  }
+
   has_re_om <- .has_re(dm$X_om) || "omega" %in% hierarchical
   dm$has_re_om <- has_re_om
 
@@ -245,16 +256,4 @@ smoothbp_ss <- function(
       b1_formula    = b1,
       deltas_formula = deltas,
       omega_formula  = omega,
-      rho_formula    = rho,
-      gamma_names   = gamma_names,
-      chains        = as.integer(chains),
-      iter          = as.integer(iter),
-      warmup        = as.integer(warmup),
-      priors        = priors,
-      spike         = spike,
-      hierarchical  = hierarchical,
-      n_divergent   = as.integer(sum(raw$n_divergent))
-    ),
-    class = c("smoothbp_ss_fit", "smoothbp_fit")
-  )
-}
+      rho_formula    = rho
