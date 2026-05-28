@@ -302,29 +302,3 @@ update.smoothbp_fit <- function(
     .verbose      = .verbose
   )
 }
-seed
-  if (missing(cores))        cores        <- object$cores
-  if (missing(step_om))        step_om        <- object$step_om
-  if (missing(step_rho))       step_rho       <- object$step_rho
-  if (missing(target_accept))  target_accept  <- object$target_accept
-
-  smoothbp(
-    formula       = formula,
-    b0            = b0,
-    b1            = b1,
-    deltas        = deltas,
-    omega         = omega,
-    rho           = rho,
-    data          = data,
-    priors        = priors,
-    chains        = chains,
-    iter          = iter,
-    warmup        = warmup,
-    seed          = seed,
-    step_om       = step_om,
-    step_rho      = step_rho,
-    target_accept = target_accept,
-    cores         = cores,
-    .verbose      = .verbose
-  )
-}

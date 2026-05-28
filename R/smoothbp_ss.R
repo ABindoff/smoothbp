@@ -273,20 +273,3 @@ smoothbp_ss <- function(
     class = c("smoothbp_ss_fit", "smoothbp_fit")
   )
 }
-,
-      gamma_names   = gamma_names,
-      chains        = as.integer(chains),
-      iter          = as.integer(iter),
-      warmup        = as.integer(warmup),
-      seed          = as.integer(seed),
-      step_om       = step_om,
-      step_rho      = step_rho,
-      target_accept = target_accept,
-      priors        = priors,
-      spike         = spike,
-      hierarchical  = hierarchical,
-      n_divergent   = as.integer(sum(raw$n_divergent))
-    ),
-    class = c("smoothbp_ss_fit", "smoothbp_fit")
-  )
-}
