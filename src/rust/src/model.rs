@@ -249,6 +249,7 @@ pub fn log_truncated_normal_prior(
     lbs: &[f64],
     ubs: &[f64],
 ) -> f64 {
+    use statrs::distribution::{ContinuousCDF, Normal};
     let log_sqrt2pi = 0.5 * std::f64::consts::TAU.ln();
     let mut lp = 0.0;
     for i in 0..values.len() {
@@ -257,7 +258,19 @@ pub fn log_truncated_normal_prior(
             return f64::NEG_INFINITY;
         }
         let z = (v - means[i]) / sds[i];
-        lp -= 0.5 * z * z + sds[i].ln() + log_sqrt2pi;
+        
+        let z_u = (ubs[i] - means[i]) / sds[i];
+        let z_l = (lbs[i] - means[i]) / sds[i];
+        
+        let cdf_u = if ubs[i] == f64::INFINITY { 1.0 } else { Normal::new(0.0, 1.0).unwrap().cdf(z_u) };
+        let cdf_l = if lbs[i] == f64::NEG_INFINITY { 0.0 } else { Normal::new(0.0, 1.0).unwrap().cdf(z_l) };
+        
+        let denom = cdf_u - cdf_l;
+        if denom <= 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        
+        lp -= 0.5 * z * z + sds[i].ln() + log_sqrt2pi + denom.ln();
     }
     lp
 }
