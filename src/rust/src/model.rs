@@ -22,6 +22,14 @@ pub struct ModelData {
     pub n_breakpoints: usize,
     /// Indicates if a coefficient in x_om[k] is a random effect (hierarchical)
     pub re_mask_om: Vec<Vec<bool>>,
+    /// Indicates if a coefficient in x_b1 is a random effect
+    pub re_mask_b1: Vec<bool>,
+    /// Indicates if a coefficient in x_deltas[k] is a random effect
+    pub re_mask_deltas: Vec<Vec<bool>>,
+    /// Subject index (0-based) for each observation; -1 if no joint RE
+    /// (derived from any one of re_mask_b1, re_mask_deltas, re_mask_om)
+    pub group_re: Vec<i32>,
+    pub n_subjects: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +71,11 @@ pub struct Priors {
 
     pub sigma_re_om_shape: f64,
     pub sigma_re_om_scale: f64,
+
+    pub sigma_re_b1_shape: f64,
+    pub sigma_re_b1_scale: f64,
+    pub sigma_re_deltas_shape: f64,
+    pub sigma_re_deltas_scale: f64,
 
     pub p_b0: usize,
     pub p_b1: usize,
@@ -110,6 +123,10 @@ pub struct State {
     pub pi: f64,
     /// Learned standard deviation for omega random effects at each breakpoint
     pub sigma_re_om: Vec<f64>,
+    /// Learned standard deviation for b1 random effects (scalar)
+    pub sigma_re_b1: f64,
+    /// Learned standard deviation for delta random effects (per breakpoint)
+    pub sigma_re_deltas: Vec<f64>,
 }
 
 impl State {
@@ -128,9 +145,10 @@ impl State {
             }
         }
         if learn_pi { n += 1; }
-        // One sigma_re_om per breakpoint
         if hierarchical {
-            n += self.sigma_re_om.len();
+            n += self.sigma_re_om.len();      // sigma_re_omega[k]
+            n += 1;                           // sigma_re_b1
+            n += self.sigma_re_deltas.len();  // sigma_re_delta[k]
         }
         n
     }
@@ -158,7 +176,9 @@ impl State {
             v.push(self.pi);
         }
         if hierarchical {
-            for &s in &self.sigma_re_om { v.push(s); }
+            for &s in &self.sigma_re_om    { v.push(s); }
+            v.push(self.sigma_re_b1);
+            for &s in &self.sigma_re_deltas { v.push(s); }
         }
         v
     }

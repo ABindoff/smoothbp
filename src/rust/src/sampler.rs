@@ -818,6 +818,8 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
         sigma: 1.0, sigma_u: 1.0,
         gamma_b1: vec![true; data.x_b1.ncols()],
         gamma_deltas, pi: 0.5,
-        sigma_re_om: vec![1.0; data.n_breakpoints],
+        sigma_re_om:     vec![1.0; data.n_breakpoints],
+        sigma_re_b1:     1.0,
+        sigma_re_deltas: vec![1.0; data.n_breakpoints],
     }
 }

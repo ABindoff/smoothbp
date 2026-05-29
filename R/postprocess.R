@@ -57,7 +57,7 @@ summary.smoothbp_fit <- function(object, effects = c("fixed", "ran_pars"), digit
   pnames <- colnames(posterior::as_draws_matrix(object$draws))
   
   is_ran_val <- grepl("^u\\[", pnames)
-  is_ran_par <- grepl("^sigma_u$|^sigma_re_omega", pnames)
+  is_ran_par <- grepl("^sigma_u$|^sigma_re_omega|^sigma_re_b1$|^sigma_re_delta", pnames)
   is_fixed   <- !(is_ran_val | is_ran_par)
   
   keep_idx <- rep(FALSE, length(pnames))

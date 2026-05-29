@@ -93,7 +93,9 @@ print.smoothbp_prior <- function(x, ...) {
 #' @param rho     Prior(s) for `rho` coefficients (one list per segment).
 #' @param sigma   `prior_invgamma()` for residual SD.
 #' @param sigma_u `prior_invgamma()` for random-effect SD.
-#' @param sigma_re_om `prior_invgamma()` for random-effect SD on omega.
+#' @param sigma_re_om     `prior_invgamma()` for random-effect SD on omega.
+#' @param sigma_re_b1     `prior_invgamma()` for random-effect SD on b1.
+#' @param sigma_re_deltas `prior_invgamma()` for random-effect SD on deltas.
 #'
 #' @return A `smoothbp_priors` list.
 #' @export
@@ -105,11 +107,16 @@ smoothbp_priors <- function(
     rho     = prior_normal(3, 2, lb = 0),
     sigma   = prior_invgamma(1, 1),
     sigma_u = prior_invgamma(1, 1),
-    sigma_re_om = prior_invgamma(1, 1)
+    sigma_re_om     = prior_invgamma(1, 1),
+    sigma_re_b1     = prior_invgamma(1, 1),
+    sigma_re_deltas = prior_invgamma(1, 1)
 ) {
   structure(
     list(b0 = b0, b1 = b1, deltas = deltas, omega = omega, rho = rho,
-         sigma = sigma, sigma_u = sigma_u, sigma_re_om = sigma_re_om),
+         sigma = sigma, sigma_u = sigma_u,
+         sigma_re_om = sigma_re_om,
+         sigma_re_b1 = sigma_re_b1,
+         sigma_re_deltas = sigma_re_deltas),
     class = "smoothbp_priors"
   )
 }

@@ -83,7 +83,11 @@ fn run_mcmc(
         n_groups_b0: n_groups_b0 as usize,
         n_breakpoints: n_bp,
         n,
-        re_mask_om: Vec::new(),
+        re_mask_om:     Vec::new(),
+        re_mask_b1:     Vec::new(),
+        re_mask_deltas: Vec::new(),
+        group_re:       vec![-1_i32; n],
+        n_subjects:     0,
     };
 
     let priors = Priors {
@@ -113,6 +117,10 @@ fn run_mcmc(
         sigma_u_scale,
         sigma_re_om_shape: 1.0,
         sigma_re_om_scale: 1.0,
+        sigma_re_b1_shape: 1.0,
+        sigma_re_b1_scale: 1.0,
+        sigma_re_deltas_shape: 1.0,
+        sigma_re_deltas_scale: 1.0,
         p_b0: p_b0 as usize,
         p_b1: p_b1 as usize,
         p_deltas: p_deltas.iter().map(|&p| p as usize).collect(),
@@ -216,7 +224,11 @@ fn run_mcmc_ss(
         n_groups_b0: n_groups_b0 as usize,
         n_breakpoints: n_bp,
         n,
-        re_mask_om: Vec::new(),
+        re_mask_om:     Vec::new(),
+        re_mask_b1:     Vec::new(),
+        re_mask_deltas: Vec::new(),
+        group_re:       vec![-1_i32; n],
+        n_subjects:     0,
     };
 
     let priors = Priors {
@@ -246,6 +258,10 @@ fn run_mcmc_ss(
         sigma_u_scale,
         sigma_re_om_shape: 1.0,
         sigma_re_om_scale: 1.0,
+        sigma_re_b1_shape: 1.0,
+        sigma_re_b1_scale: 1.0,
+        sigma_re_deltas_shape: 1.0,
+        sigma_re_deltas_scale: 1.0,
         p_b0: p_b0 as usize,
         p_b1: p_b1 as usize,
         p_deltas: p_deltas.iter().map(|&p| p as usize).collect(),
@@ -307,7 +323,13 @@ fn run_mcmc_re(
     group_b0: &[i32],
     n_groups_b0: i32,
     re_mask_om: List,
-    nc_om: &[i32],   // per-breakpoint flag: 1 = NC reparameterisation for omega RE
+    nc_om: &[i32],
+    re_mask_b1: &[i32],
+    re_mask_deltas: List,
+    nc_b1: bool,
+    nc_deltas: &[i32],
+    group_re: &[i32],
+    n_subjects: i32,
     prior_mean_b0: &[f64], prior_sd_b0: &[f64], prior_lb_b0: &[f64], prior_ub_b0: &[f64],
     prior_mean_b1: &[f64], prior_sd_b1: &[f64], prior_lb_b1: &[f64], prior_ub_b1: &[f64],
     prior_mean_deltas: List, prior_sd_deltas: List, prior_lb_deltas: List, prior_ub_deltas: List,
@@ -319,6 +341,10 @@ fn run_mcmc_re(
     sigma_u_scale: f64,
     sigma_re_om_shape: f64,
     sigma_re_om_scale: f64,
+    sigma_re_b1_shape: f64,
+    sigma_re_b1_scale: f64,
+    sigma_re_deltas_shape: f64,
+    sigma_re_deltas_scale: f64,
     step_om: f64,
     step_rho: f64,
     target_accept: f64,
@@ -339,7 +365,13 @@ fn run_mcmc_re(
     if p_rho.len() == 1 && p_rho[0] == -1 { p_rho = &[]; }
     if group_b0.len() == 1 && group_b0[0] == -1 { group_b0 = &[]; }
 
-    let nc_om_bool: Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
+    let nc_om_bool:     Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
+    let nc_deltas_bool: Vec<bool> = nc_deltas.iter().map(|&v| v != 0).collect();
+    let re_mask_b1_bool: Vec<bool> = re_mask_b1.iter().map(|&v| v != 0).collect();
+    let re_mask_deltas_bool: Vec<Vec<bool>> = re_mask_deltas.iter()
+        .map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v != 0).collect()).collect();
+    let mut group_re_vec = group_re.to_vec();
+    if group_re_vec.len() == 1 && group_re_vec[0] == -1 { group_re_vec = vec![-1_i32; y.len()]; }
 
     let n = y.len();
     let n_bp = p_deltas.len();
@@ -357,6 +389,10 @@ fn run_mcmc_re(
         n_breakpoints: n_bp,
         n,
         re_mask_om: re_mask_om.iter().map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v != 0).collect()).collect(),
+        re_mask_b1: re_mask_b1_bool,
+        re_mask_deltas: re_mask_deltas_bool,
+        group_re: group_re_vec,
+        n_subjects: n_subjects as usize,
     };
 
     let priors = Priors {
@@ -380,12 +416,10 @@ fn run_mcmc_re(
         rho_sd: prior_sd_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
         rho_lb: prior_lb_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
         rho_ub: prior_ub_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
-        sigma_shape,
-        sigma_scale,
-        sigma_u_shape,
-        sigma_u_scale,
-        sigma_re_om_shape,
-        sigma_re_om_scale,
+        sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale,
+        sigma_re_om_shape, sigma_re_om_scale,
+        sigma_re_b1_shape, sigma_re_b1_scale,
+        sigma_re_deltas_shape, sigma_re_deltas_scale,
         p_b0: p_b0 as usize,
         p_b1: p_b1 as usize,
         p_deltas: p_deltas.iter().map(|&p| p as usize).collect(),
@@ -404,13 +438,13 @@ fn run_mcmc_re(
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
                 let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_bool, &|_,_,_,_,_| {})
+                run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_bool, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
             }).collect()
         })
     } else {
         (0..n_chains).map(|c| {
             let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-            run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_bool, &|_,_,_,_,_| {})
+            run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_bool, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
         }).collect()
     };
 
@@ -440,6 +474,12 @@ fn run_mcmc_re_ss(
     n_groups_b0: i32,
     re_mask_om: List,
     nc_om: &[i32],
+    re_mask_b1: &[i32],
+    re_mask_deltas: List,
+    nc_b1: bool,
+    nc_deltas: &[i32],
+    group_re: &[i32],
+    n_subjects: i32,
     prior_mean_b0: &[f64], prior_sd_b0: &[f64], prior_lb_b0: &[f64], prior_ub_b0: &[f64],
     prior_mean_b1: &[f64], prior_sd_b1: &[f64], prior_lb_b1: &[f64], prior_ub_b1: &[f64],
     prior_mean_deltas: List, prior_sd_deltas: List, prior_lb_deltas: List, prior_ub_deltas: List,
@@ -451,6 +491,10 @@ fn run_mcmc_re_ss(
     sigma_u_scale: f64,
     sigma_re_om_shape: f64,
     sigma_re_om_scale: f64,
+    sigma_re_b1_shape: f64,
+    sigma_re_b1_scale: f64,
+    sigma_re_deltas_shape: f64,
+    sigma_re_deltas_scale: f64,
     step_om: f64,
     step_rho: f64,
     target_accept: f64,
@@ -478,7 +522,13 @@ fn run_mcmc_re_ss(
     if group_b0.len() == 1 && group_b0[0] == -1 { group_b0 = &[]; }
     if b1_spike_mask.len() == 1 && b1_spike_mask[0] == -1 { b1_spike_mask = &[]; }
 
-    let nc_om_bool: Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
+    let nc_om_bool:     Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
+    let nc_deltas_bool: Vec<bool> = nc_deltas.iter().map(|&v| v != 0).collect();
+    let re_mask_b1_bool: Vec<bool> = re_mask_b1.iter().map(|&v| v != 0).collect();
+    let re_mask_deltas_bool: Vec<Vec<bool>> = re_mask_deltas.iter()
+        .map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v != 0).collect()).collect();
+    let mut group_re_vec = group_re.to_vec();
+    if group_re_vec.len() == 1 && group_re_vec[0] == -1 { group_re_vec = vec![-1_i32; y.len()]; }
     let n = y.len();
     let n_bp = p_deltas.len();
 
@@ -495,6 +545,10 @@ fn run_mcmc_re_ss(
         n_breakpoints: n_bp,
         n,
         re_mask_om: re_mask_om.iter().map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v != 0).collect()).collect(),
+        re_mask_b1: re_mask_b1_bool,
+        re_mask_deltas: re_mask_deltas_bool,
+        group_re: group_re_vec,
+        n_subjects: n_subjects as usize,
     };
 
     let priors = Priors {
@@ -518,12 +572,10 @@ fn run_mcmc_re_ss(
         rho_sd: prior_sd_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
         rho_lb: prior_lb_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
         rho_ub: prior_ub_rho.iter().map(|r| r.1.as_real_vector().unwrap()).collect(),
-        sigma_shape,
-        sigma_scale,
-        sigma_u_shape,
-        sigma_u_scale,
-        sigma_re_om_shape,
-        sigma_re_om_scale,
+        sigma_shape, sigma_scale, sigma_u_shape, sigma_u_scale,
+        sigma_re_om_shape, sigma_re_om_scale,
+        sigma_re_b1_shape, sigma_re_b1_scale,
+        sigma_re_deltas_shape, sigma_re_deltas_scale,
         p_b0: p_b0 as usize,
         p_b1: p_b1 as usize,
         p_deltas: p_deltas.iter().map(|&p| p as usize).collect(),
@@ -550,13 +602,13 @@ fn run_mcmc_re_ss(
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
                 let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_bool, &|_,_,_,_,_| {})
+                run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_bool, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
             }).collect()
         })
     } else {
         (0..n_chains).map(|c| {
             let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-            run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_bool, &|_,_,_,_,_| {})
+            run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_bool, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
         }).collect()
     };
 
@@ -630,7 +682,11 @@ fn run_bridge(
         n_groups_b0: n_groups_b0 as usize,
         n_breakpoints: n_bp,
         n,
-        re_mask_om: Vec::new(),
+        re_mask_om:     Vec::new(),
+        re_mask_b1:     Vec::new(),
+        re_mask_deltas: Vec::new(),
+        group_re:       vec![-1_i32; n],
+        n_subjects:     0,
     };
 
     let priors = Priors {
@@ -660,6 +716,10 @@ fn run_bridge(
         sigma_u_scale,
         sigma_re_om_shape: 1.0,
         sigma_re_om_scale: 1.0,
+        sigma_re_b1_shape: 1.0,
+        sigma_re_b1_scale: 1.0,
+        sigma_re_deltas_shape: 1.0,
+        sigma_re_deltas_scale: 1.0,
         p_b0: p_b0 as usize,
         p_b1: p_b1 as usize,
         p_deltas: p_deltas.iter().map(|&p| p as usize).collect(),

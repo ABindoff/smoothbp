@@ -106,7 +106,10 @@ smoothbp_ss <- function(
     )
   }
 
-  has_re_om <- .has_re(dm$X_om) || "omega" %in% hierarchical
+  has_re_om     <- .has_re(dm$X_om) || "omega" %in% hierarchical
+  has_re_b1     <- .has_re(list(dm$X_b1))
+  has_re_deltas <- .has_re(dm$X_deltas)
+  has_re_any    <- has_re_om || has_re_b1 || has_re_deltas
   dm$has_re_om <- has_re_om
 
   if (.verbose) message("Running sampler...")
@@ -118,7 +121,7 @@ smoothbp_ss <- function(
   group_b0_safe <- .safe_int(dm$group_b0)
   b1_mask_safe  <- .safe_int(b1_mask)
 
-  if (has_re_om) {
+  if (has_re_any) {
     re_mask_om <- .get_re_masks(dm$X_om)
     if (length(re_mask_om) == 0) re_mask_om <- list(as.integer(-1))
 
@@ -127,6 +130,30 @@ smoothbp_ss <- function(
       mask <- attr(dm$X_om[[k]], "re_mask")
       as.integer(reparameterise == "omega" && !is.null(mask) && any(mask == 1L))
     })
+
+    re_mask_b1_vec <- if (has_re_b1) {
+      m <- attr(dm$X_b1, "re_mask"); if (is.null(m)) as.integer(-1) else as.integer(m)
+    } else as.integer(-1)
+    re_mask_deltas_list <- if (has_re_deltas) .get_re_masks(dm$X_deltas) else list(as.integer(-1))
+    nc_b1     <- isTRUE(reparameterise == "omega" && has_re_b1)
+    nc_deltas <- as.integer(rep(reparameterise == "omega" && has_re_deltas, length(dm$X_deltas)))
+    group_re_vec <- {
+      re_grp <- NULL
+      if (has_re_b1) {
+        re_cols <- which(attr(dm$X_b1, "re_mask") == 1L)
+        if (length(re_cols)) re_grp <- max.col(dm$X_b1[, re_cols, drop = FALSE]) - 1L
+      } else if (has_re_deltas) {
+        for (k in seq_along(dm$X_deltas)) {
+          mask <- attr(dm$X_deltas[[k]], "re_mask"); re_cols <- which(mask == 1L)
+          if (length(re_cols)) { re_grp <- max.col(dm$X_deltas[[k]][, re_cols, drop = FALSE]) - 1L; break }
+        }
+      } else if (has_re_om) {
+        re_cols <- which(attr(dm$X_om[[1]], "re_mask") == 1L)
+        if (length(re_cols)) re_grp <- max.col(dm$X_om[[1]][, re_cols, drop = FALSE]) - 1L
+      }
+      if (is.null(re_grp)) as.integer(-1) else as.integer(re_grp)
+    }
+    n_subjects <- if (length(group_re_vec) > 1) max(group_re_vec) + 1L else 0L
 
     raw <- run_mcmc_re_ss(
       y             = y,
@@ -143,6 +170,12 @@ smoothbp_ss <- function(
       n_groups_b0   = dm$n_groups_b0,
       re_mask_om    = re_mask_om,
       nc_om         = nc_om,
+      re_mask_b1    = re_mask_b1_vec,
+      re_mask_deltas = re_mask_deltas_list,
+      nc_b1         = nc_b1,
+      nc_deltas     = nc_deltas,
+      group_re      = group_re_vec,
+      n_subjects    = as.integer(n_subjects),
       prior_mean_b0 = pv$b0$mean, prior_sd_b0 = pv$b0$sd, prior_lb_b0 = pv$b0$lb, prior_ub_b0 = pv$b0$ub,
       prior_mean_b1 = pv$b1$mean, prior_sd_b1 = pv$b1$sd, prior_lb_b1 = pv$b1$lb, prior_ub_b1 = pv$b1$ub,
       prior_mean_deltas = lapply(pv$deltas, `[[`, "mean"),
@@ -161,8 +194,12 @@ smoothbp_ss <- function(
       sigma_scale   = priors$sigma$scale,
       sigma_u_shape = priors$sigma_u$shape,
       sigma_u_scale = priors$sigma_u$scale,
-      sigma_re_om_shape = priors$sigma_re_om$shape,
-      sigma_re_om_scale = priors$sigma_re_om$scale,
+      sigma_re_om_shape     = priors$sigma_re_om$shape,
+      sigma_re_om_scale     = priors$sigma_re_om$scale,
+      sigma_re_b1_shape     = priors$sigma_re_b1$shape,
+      sigma_re_b1_scale     = priors$sigma_re_b1$scale,
+      sigma_re_deltas_shape = priors$sigma_re_deltas$shape,
+      sigma_re_deltas_scale = priors$sigma_re_deltas$scale,
       step_om  = step_om,
       step_rho = step_rho,
       target_accept = as.double(target_accept),
@@ -238,8 +275,11 @@ smoothbp_ss <- function(
   
   pnames <- c(base_pnames, gamma_names)
   if (isTRUE(spike$learn_pi)) pnames <- c(pnames, "pi")
-  if (has_re_om) {
-    pnames <- c(pnames, paste0("sigma_re_omega", seq_along(dm$X_om)))
+  if (has_re_any) {
+    pnames <- c(pnames,
+                paste0("sigma_re_omega", seq_along(dm$X_om)),
+                "sigma_re_b1",
+                paste0("sigma_re_delta", seq_along(dm$X_deltas)))
   }
   
   n_post <- nrow(raw$draws[[1]])

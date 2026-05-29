@@ -20,7 +20,9 @@ pub fn unconstrained_to_state(x: &DVector<f64>, data: &ModelData) -> State {
         gamma_b1: vec![true; data.x_b1.ncols()],
         gamma_deltas: data.x_deltas.iter().map(|mat| vec![true; mat.ncols()]).collect(),
         pi: 1.0,
-        sigma_re_om: vec![],
+        sigma_re_om:     vec![],
+        sigma_re_b1:     1.0,
+        sigma_re_deltas: vec![],
     };
     
     let mut idx = 0;

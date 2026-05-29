@@ -213,6 +213,44 @@ fn sample_sigma_re_om(data: &ModelData, priors: &Priors, state: &mut State, rng:
     }
 }
 
+fn sample_sigma_re_b1(data: &ModelData, priors: &Priors, state: &mut State, rng: &mut StdRng) {
+    let mut ss = 0.0;
+    let mut count = 0.0;
+    for j in 0..state.beta_b1.len() {
+        if data.re_mask_b1[j] {
+            let val = state.beta_b1[j];
+            ss += val * val;
+            count += 1.0;
+        }
+    }
+    if count > 0.0 {
+        let shape = priors.sigma_re_b1_shape + count * 0.5;
+        let scale = priors.sigma_re_b1_scale + ss * 0.5;
+        let gamma_dist = Gamma::new(shape, 1.0 / scale).unwrap();
+        state.sigma_re_b1 = 1.0 / gamma_dist.sample(rng).sqrt();
+    }
+}
+
+fn sample_sigma_re_deltas(data: &ModelData, priors: &Priors, state: &mut State, rng: &mut StdRng) {
+    for k in 0..data.n_breakpoints {
+        let mut ss = 0.0;
+        let mut count = 0.0;
+        for j in 0..state.beta_deltas[k].len() {
+            if data.re_mask_deltas[k][j] {
+                let val = state.beta_deltas[k][j];
+                ss += val * val;
+                count += 1.0;
+            }
+        }
+        if count > 0.0 {
+            let shape = priors.sigma_re_deltas_shape + count * 0.5;
+            let scale = priors.sigma_re_deltas_scale + ss * 0.5;
+            let gamma_dist = Gamma::new(shape, 1.0 / scale).unwrap();
+            state.sigma_re_deltas[k] = 1.0 / gamma_dist.sample(rng).sqrt();
+        }
+    }
+}
+
 fn sample_pi(ss: &SpikeSlabConfig, state: &mut State, rng: &mut StdRng) {
     let mut n1 = 0.0;
     let mut n0 = 0.0;
@@ -342,16 +380,18 @@ fn sample_linear_coefs(data: &ModelData, priors: &Priors, state: &mut State, rng
             for j in 0..p_b1 { row[j] *= data.tau[i]; }
         }
     }
-    // Apply gamma_b1 ( Kuo-Mallick )
+    // Apply gamma_b1 (Kuo-Mallick) AND zero out RE columns (handled by joint_subject_nuts)
     for j in 0..p_b1 {
-        if !state.gamma_b1[j] {
+        if !state.gamma_b1[j] || data.re_mask_b1[j] {
             let mut col = b1_design.column_mut(j);
             col.fill(0.0);
         }
     }
     x_full.view_mut((0, p_b0), (n, p_b1)).copy_from(&b1_design);
     for j in 0..p_b1 {
-        prec_prior[p_b0 + j] = 1.0 / (priors.b1_sd[j] * priors.b1_sd[j]);
+        // RE columns: use adaptive prior (sigma_re_b1); fixed columns: static prior
+        let sd = if data.re_mask_b1[j] { state.sigma_re_b1 } else { priors.b1_sd[j] };
+        prec_prior[p_b0 + j] = 1.0 / (sd * sd);
         mu_prior[p_b0 + j] = priors.b1_mean[j];
     }
 
@@ -368,27 +408,63 @@ fn sample_linear_coefs(data: &ModelData, priors: &Priors, state: &mut State, rng
             let mut row = d_design.row_mut(i);
             for j in 0..pk { row[j] *= di * si; }
         }
-        // Apply gamma_deltas
+        // Apply gamma_deltas AND zero RE columns (handled by joint_subject_nuts)
         for j in 0..pk {
-            if !state.gamma_deltas[k][j] {
+            if !state.gamma_deltas[k][j] || data.re_mask_deltas[k][j] {
                 let mut col = d_design.column_mut(j);
                 col.fill(0.0);
             }
         }
         x_full.view_mut((0, offset), (n, pk)).copy_from(&d_design);
         for j in 0..pk {
-            prec_prior[offset + j] = 1.0 / (priors.delta_sd[k][j] * priors.delta_sd[k][j]);
+            let sd = if data.re_mask_deltas[k][j] { state.sigma_re_deltas[k] }
+                     else { priors.delta_sd[k][j] };
+            prec_prior[offset + j] = 1.0 / (sd * sd);
             mu_prior[offset + j] = priors.delta_mean[k][j];
         }
         offset += pk;
     }
 
-    // Sufficient statistics
-    let mut y_tilde = &data.y - DVector::zeros(n);
+    // Sufficient statistics: subtract all random-effect contributions so the
+    // joint precision sampler only updates fixed-effect coefficients.
+    let mut y_tilde = data.y.clone();
+
+    // b0 random intercepts
     if data.n_groups_b0 > 0 {
         for i in 0..n {
             let g = data.group_b0[i];
             if g >= 0 { y_tilde[i] -= state.u_b0[g as usize]; }
+        }
+    }
+
+    // b1 RE columns — subtract current RE contribution to mu
+    {
+        let om1 = if data.n_breakpoints > 0 { state.omega_vec(0, &data.x_om[0]) }
+                  else { DVector::zeros(n) };
+        for j in 0..p_b1 {
+            if data.re_mask_b1[j] && state.gamma_b1[j] {
+                for i in 0..n {
+                    let scale = if data.n_breakpoints > 0 { data.tau[i] - om1[i] }
+                                else { data.tau[i] };
+                    y_tilde[i] -= state.beta_b1[j] * data.x_b1[(i, j)] * scale;
+                }
+            }
+        }
+    }
+
+    // delta RE columns — subtract current RE contribution to mu
+    for k in 0..data.n_breakpoints {
+        let pk = data.x_deltas[k].ncols();
+        let om  = state.omega_vec(k, &data.x_om[k]);
+        let rho = state.rho_vec(k, &data.x_rho[k]);
+        for j in 0..pk {
+            if data.re_mask_deltas[k][j] && state.gamma_deltas[k][j] {
+                for i in 0..n {
+                    let di = data.tau[i] - om[i];
+                    let si = sigmoid(di * rho[i]);
+                    y_tilde[i] -= state.beta_deltas[k][j] * data.x_deltas[k][(i, j)] * di * si;
+                }
+            }
         }
     }
 
@@ -921,6 +997,390 @@ where F: FnMut(&DVector<f64>) -> (f64, DVector<f64>)
 }
 
 // ---------------------------------------------------------------------------
+// Joint per-subject NUTS with within-subject Fisher metric (geometry-aware)
+// ---------------------------------------------------------------------------
+
+/// For each subject s, jointly updates all per-subject RE:
+///   q_s = [u_b1_s?, u_delta_1_s?, ..., u_delta_K_s?, u_omega_1_s?, ..., u_omega_K_s?]
+///
+/// The within-subject Fisher metric G_s (analytic, ≤ (1+2K)×(1+2K)) is applied
+/// via SoftAbs to give a PD mass matrix for NUTS.  This captures the off-diagonal
+/// coupling between slopes and changepoints that makes naive per-parameter HMC slow.
+#[allow(clippy::too_many_arguments)]
+fn joint_subject_nuts(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    adapt_per_subject: &mut Vec<HmcAdapt>,
+    rng: &mut StdRng,
+    nc_b1: bool,
+    nc_deltas: &[bool],
+    nc_omega: &[bool],
+) {
+    let n = data.n;
+    let nb = data.n_breakpoints;
+    let sigma = state.sigma;
+    let inv_s2 = 1.0 / (sigma * sigma);
+
+    // Precompute current omega, rho, delta per observation (fixing all non-RE)
+    // We'll recompute inside the closure for each subject.
+
+    // For each subject s, identify which columns in each RE block belong to s.
+    // With identity coding there is exactly one RE column per subject in each RE block.
+    // Column index for subject s in beta_b1 RE: among all j where re_mask_b1[j]==true, subject s
+    // maps to the s-th such j (0-indexed among RE subjects).
+    // We precompute a lookup: re_col_b1[s], re_col_deltas[k][s], re_col_omega[k][s]
+
+    let has_re_b1 = data.re_mask_b1.iter().any(|&m| m);
+    let has_re_deltas: Vec<bool> = (0..nb).map(|k| data.re_mask_deltas[k].iter().any(|&m| m)).collect();
+    let has_re_omega: Vec<bool>  = (0..nb).map(|k| data.re_mask_om[k].iter().any(|&m| m)).collect();
+
+    let n_sub = data.n_subjects;
+    if n_sub == 0 { return; }
+
+    // Build lookup: for each RE block, what column in the state vector corresponds to subject s?
+    let re_cols_b1: Vec<usize> = data.re_mask_b1.iter().enumerate()
+        .filter_map(|(j, &m)| if m { Some(j) } else { None }).collect();
+    let re_cols_deltas: Vec<Vec<usize>> = (0..nb).map(|k| {
+        data.re_mask_deltas[k].iter().enumerate()
+            .filter_map(|(j, &m)| if m { Some(j) } else { None }).collect()
+    }).collect();
+    let re_cols_omega: Vec<Vec<usize>> = (0..nb).map(|k| {
+        data.re_mask_om[k].iter().enumerate()
+            .filter_map(|(j, &m)| if m { Some(j) } else { None }).collect()
+    }).collect();
+
+    // Observation-to-subject mapping (via group_re)
+    // Precompute per-subject observation indices
+    let mut obs_for_subject: Vec<Vec<usize>> = vec![Vec::new(); n_sub];
+    for i in 0..n {
+        let s = data.group_re[i];
+        if s >= 0 { obs_for_subject[s as usize].push(i); }
+    }
+
+    // Precompute global mu without any RE contribution (we'll add per-subject RE inside)
+    // Use a modified state with all per-subject RE zeroed
+    let mut state_no_re = state.clone();
+    for j in 0..state_no_re.beta_b1.len() {
+        if data.re_mask_b1[j] { state_no_re.beta_b1[j] = 0.0; }
+    }
+    for k in 0..nb {
+        for j in 0..state_no_re.beta_deltas[k].len() {
+            if data.re_mask_deltas[k][j] { state_no_re.beta_deltas[k][j] = 0.0; }
+        }
+        for j in 0..state_no_re.beta_om[k].len() {
+            if data.re_mask_om[k][j] { state_no_re.beta_om[k][j] = 0.0; }
+        }
+    }
+    let mu_no_re = state_no_re.means(data);   // N-vector: contribution of all non-RE terms
+
+    // Build per-subject bounds: b1 bounds come from priors.b1_lb/ub for the RE columns,
+    // delta bounds from priors.delta_lb/ub, omega bounds from priors.om_lb/ub.
+    // Per-subject dim: 1 (b1) + nb (delta) + nb (omega) at most.
+
+    for s in 0..n_sub {
+        let obs = &obs_for_subject[s];
+        if obs.is_empty() { continue; }
+
+        // Assemble q_s and bounds
+        let mut q_s_vals: Vec<f64> = Vec::new();
+        let mut lb_s: Vec<f64> = Vec::new();
+        let mut ub_s: Vec<f64> = Vec::new();
+        let mut sigma_re_s: Vec<f64> = Vec::new();
+
+        if has_re_b1 && s < re_cols_b1.len() {
+            let j = re_cols_b1[s];
+            q_s_vals.push(state.beta_b1[j]);
+            lb_s.push(priors.b1_lb[j]);
+            ub_s.push(priors.b1_ub[j]);
+            sigma_re_s.push(state.sigma_re_b1);
+        }
+        for k in 0..nb {
+            if has_re_deltas[k] && s < re_cols_deltas[k].len() {
+                let j = re_cols_deltas[k][s];
+                q_s_vals.push(state.beta_deltas[k][j]);
+                lb_s.push(priors.delta_lb[k][j]);
+                ub_s.push(priors.delta_ub[k][j]);
+                sigma_re_s.push(state.sigma_re_deltas[k]);
+            }
+        }
+        for k in 0..nb {
+            if has_re_omega[k] && s < re_cols_omega[k].len() {
+                let j = re_cols_omega[k][s];
+                q_s_vals.push(state.beta_om[k][j]);
+                lb_s.push(priors.om_lb[k][j]);
+                ub_s.push(priors.om_ub[k][j]);
+                sigma_re_s.push(state.sigma_re_om[k]);
+            }
+        }
+
+        let d_s = q_s_vals.len();
+        if d_s == 0 { continue; }
+
+        // NC transform: z[i] = q[i] / sigma_re[i] for each component
+        // Determine which components use NC
+        let mut nc_flags: Vec<bool> = Vec::with_capacity(d_s);
+        {
+            let mut idx = 0usize;
+            if has_re_b1 && s < re_cols_b1.len() {
+                nc_flags.push(nc_b1);
+                idx += 1;
+            }
+            for k in 0..nb {
+                if has_re_deltas[k] && s < re_cols_deltas[k].len() {
+                    nc_flags.push(if k < nc_deltas.len() { nc_deltas[k] } else { false });
+                    idx += 1;
+                }
+            }
+            for k in 0..nb {
+                if has_re_omega[k] && s < re_cols_omega[k].len() {
+                    nc_flags.push(if k < nc_omega.len() { nc_omega[k] } else { false });
+                    idx += 1;
+                }
+            }
+            let _ = idx;
+        }
+
+        // Current per-subject contributions to mu (we need these to form the residual inside closure)
+        // The closure will recompute mu from q_s each call, using mu_no_re as the baseline.
+
+        // Clone what the closure needs
+        let obs_s = obs.clone();
+        let mu_base_s: Vec<f64> = obs_s.iter().map(|&i| mu_no_re[i]).collect();
+        let tau_s: Vec<f64>   = obs_s.iter().map(|&i| data.tau[i]).collect();
+        let y_s: Vec<f64>     = obs_s.iter().map(|&i| data.y[i]).collect();
+        let n_s = obs_s.len();
+
+        // Design column slices for this subject in each RE block
+        let x_b1_s: Vec<f64> = if has_re_b1 && s < re_cols_b1.len() {
+            let j = re_cols_b1[s];
+            obs_s.iter().map(|&i| data.x_b1[(i, j)]).collect()
+        } else { vec![] };
+
+        let x_delta_s: Vec<Vec<f64>> = (0..nb).map(|k| {
+            if has_re_deltas[k] && s < re_cols_deltas[k].len() {
+                let j = re_cols_deltas[k][s];
+                obs_s.iter().map(|&i| data.x_deltas[k][(i, j)]).collect()
+            } else { vec![] }
+        }).collect();
+
+        let x_om_s: Vec<Vec<f64>> = (0..nb).map(|k| {
+            if has_re_omega[k] && s < re_cols_omega[k].len() {
+                let j = re_cols_omega[k][s];
+                obs_s.iter().map(|&i| data.x_om[k][(i, j)]).collect()
+            } else { vec![] }
+        }).collect();
+
+        // All rho values for this subject (fixed, not per-subject RE)
+        let rho_s: Vec<Vec<f64>> = (0..nb).map(|k| {
+            let rho_k = state.rho_vec(k, &data.x_rho[k]);
+            obs_s.iter().map(|&i| rho_k[i]).collect()
+        }).collect();
+
+        // Global omega for non-RE columns (to compute d_ki baseline)
+        let om_fixed_s: Vec<Vec<f64>> = (0..nb).map(|k| {
+            // omega contribution from FIXED columns only (RE column zeroed)
+            let mut beta_fixed = state.beta_om[k].clone();
+            for j in 0..beta_fixed.len() {
+                if data.re_mask_om[k][j] { beta_fixed[j] = 0.0; }
+            }
+            let om_fixed = &data.x_om[k] * &beta_fixed;
+            obs_s.iter().map(|&i| om_fixed[i]).collect()
+        }).collect();
+
+        // b1 effective values (fixed columns only)
+        let b1_fixed_s: Vec<f64> = {
+            let mut b1_eff = state.beta_b1.clone();
+            for j in 0..b1_eff.len() {
+                if !state.gamma_b1[j] || data.re_mask_b1[j] { b1_eff[j] = 0.0; }
+            }
+            let b1_vec = &data.x_b1 * &b1_eff;
+            obs_s.iter().map(|&i| b1_vec[i]).collect()
+        };
+
+        // delta effective (fixed columns only)
+        let delta_fixed_s: Vec<Vec<f64>> = (0..nb).map(|k| {
+            let mut bd_eff = state.beta_deltas[k].clone();
+            for j in 0..bd_eff.len() {
+                if !state.gamma_deltas[k][j] || data.re_mask_deltas[k][j] { bd_eff[j] = 0.0; }
+            }
+            let d_vec = &data.x_deltas[k] * &bd_eff;
+            obs_s.iter().map(|&i| d_vec[i]).collect()
+        }).collect();
+
+        let sigma_re_s_clone = sigma_re_s.clone();
+        let has_re_b1_s  = has_re_b1 && s < re_cols_b1.len();
+        let has_re_del_s: Vec<bool> = (0..nb).map(|k| has_re_deltas[k] && s < re_cols_deltas[k].len()).collect();
+        let has_re_om_s:  Vec<bool> = (0..nb).map(|k| has_re_omega[k]  && s < re_cols_omega[k].len()).collect();
+
+        // ── Energy function for subject s ──────────────────────────────────
+        // q = [u_b1_s?, u_delta_1_s?, ..., u_omega_1_s?, ...]  in NC or centred coords
+        let energy_fn = |q: &DVector<f64>| -> (f64, DVector<f64>) {
+            let mut idx = 0usize;
+
+            // Convert q to beta values (undo NC if needed)
+            let u_b1_s = if has_re_b1_s {
+                let v = if nc_flags[idx] { q[idx] * sigma_re_s_clone[idx] } else { q[idx] };
+                idx += 1; v
+            } else { 0.0 };
+
+            let u_del_s: Vec<f64> = (0..nb).map(|k| {
+                if has_re_del_s[k] {
+                    let v = if nc_flags[idx] { q[idx] * sigma_re_s_clone[idx] } else { q[idx] };
+                    idx += 1; v
+                } else { 0.0 }
+            }).collect();
+
+            let u_om_s: Vec<f64> = (0..nb).map(|k| {
+                if has_re_om_s[k] {
+                    let v = if nc_flags[idx] { q[idx] * sigma_re_s_clone[idx] } else { q[idx] };
+                    idx += 1; v
+                } else { 0.0 }
+            }).collect();
+
+            // Compute mu for each obs in subject s
+            let mut ll = 0.0f64;
+            let mut grad_beta = vec![0.0f64; d_s];
+
+            for li in 0..n_s {
+                let tau_i = tau_s[li];
+                let y_i   = y_s[li];
+
+                // omega per breakpoint for this obs (fixed base + subject RE)
+                let omega_i: Vec<f64> = (0..nb).map(|k| om_fixed_s[k][li] + u_om_s[k] * x_om_s[k].get(li).copied().unwrap_or(0.0)).collect();
+
+                // d_ki, s_ki for each breakpoint
+                let d_ki: Vec<f64> = (0..nb).map(|k| tau_i - omega_i[k]).collect();
+                let s_ki: Vec<f64> = (0..nb).map(|k| sigmoid(d_ki[k] * rho_s[k][li])).collect();
+
+                // b1 contribution
+                let om1_i = if nb > 0 { omega_i[0] } else { 0.0 };
+                let b1_scale = if nb > 0 { tau_i - om1_i } else { tau_i };
+                let b1_contrib = b1_fixed_s[li] * b1_scale
+                    + if has_re_b1_s { u_b1_s * x_b1_s[li] * b1_scale } else { 0.0 };
+
+                // delta contributions
+                let mut delta_contrib = 0.0f64;
+                for k in 0..nb {
+                    delta_contrib += delta_fixed_s[k][li] * d_ki[k] * s_ki[k];
+                    if has_re_del_s[k] {
+                        delta_contrib += u_del_s[k] * x_delta_s[k][li] * d_ki[k] * s_ki[k];
+                    }
+                }
+
+                let mu_i = mu_base_s[li] + b1_contrib + delta_contrib;
+                let r_i  = y_i - mu_i;
+                ll += -0.5 * r_i * r_i * inv_s2;
+
+                // Gradients in beta space
+                let mut qi = 0usize;
+
+                // dmu/d(u_b1_s)
+                if has_re_b1_s {
+                    let dmu = x_b1_s[li] * b1_scale;
+                    grad_beta[qi] -= r_i * inv_s2 * dmu;
+                    qi += 1;
+                }
+
+                // dmu/d(u_delta_k_s)
+                for k in 0..nb {
+                    if has_re_del_s[k] {
+                        let dmu = x_delta_s[k][li] * d_ki[k] * s_ki[k];
+                        grad_beta[qi] -= r_i * inv_s2 * dmu;
+                        qi += 1;
+                    }
+                }
+
+                // dmu/d(u_omega_k_s)
+                for k in 0..nb {
+                    if has_re_om_s[k] {
+                        let bi = delta_fixed_s[k][li]
+                            + if has_re_del_s[k] { u_del_s[k] * x_delta_s[k][li] } else { 0.0 };
+                        let ri_k = rho_s[k][li];
+                        let mut dmu_dom = -(bi * s_ki[k] + d_ki[k] * ri_k * s_ki[k] * (1.0 - s_ki[k]) * bi);
+                        if k == 0 {
+                            let b1_i = b1_fixed_s[li] + if has_re_b1_s { u_b1_s * x_b1_s[li] } else { 0.0 };
+                            dmu_dom -= b1_i;
+                        }
+                        grad_beta[qi] -= r_i * inv_s2 * dmu_dom * x_om_s[k][li];
+                        qi += 1;
+                    }
+                }
+                let _ = qi;
+            }
+
+            // Prior terms and chain-rule for NC
+            let mut lp = 0.0f64;
+            let mut grad = vec![0.0f64; d_s];
+            for i in 0..d_s {
+                let sr = sigma_re_s_clone[i];
+                if nc_flags[i] {
+                    // z[i] ~ N(0,1); beta = z * sr
+                    // grad_z = sr * grad_beta + z
+                    lp -= 0.5 * q[i] * q[i];
+                    grad[i] = sr * grad_beta[i] + q[i];
+                } else {
+                    // beta ~ N(0, sr^2)
+                    lp -= 0.5 * (q[i] / sr).powi(2);
+                    grad[i] = grad_beta[i] + q[i] / (sr * sr);
+                }
+            }
+
+            let u = -ll - lp;
+            (u, DVector::from_vec(grad))
+        };
+
+        let q0 = DVector::from_vec({
+            let mut v = q_s_vals.clone();
+            // Apply NC transform to initial q
+            for i in 0..d_s {
+                if nc_flags[i] && sigma_re_s[i] > 1e-10 { v[i] /= sigma_re_s[i]; }
+            }
+            v
+        });
+
+        // Bounds in q-space (NC-adjusted where applicable)
+        let lb_q: Vec<f64> = lb_s.iter().enumerate().map(|(i, &lb)| {
+            if nc_flags[i] && sigma_re_s[i] > 1e-10 { lb / sigma_re_s[i] } else { lb }
+        }).collect();
+        let ub_q: Vec<f64> = ub_s.iter().enumerate().map(|(i, &ub)| {
+            if nc_flags[i] && sigma_re_s[i] > 1e-10 { ub / sigma_re_s[i] } else { ub }
+        }).collect();
+
+        // NUTS step
+        let (q_new, accept) = nuts_sample(
+            &q0, energy_fn, &mut adapt_per_subject[s], rng, &lb_q, &ub_q,
+        );
+
+        // Write back: undo NC transform → beta values
+        {
+            let mut qi = 0usize;
+            if has_re_b1_s {
+                let j = re_cols_b1[s];
+                state.beta_b1[j] = if nc_flags[qi] { q_new[qi] * sigma_re_s[qi] } else { q_new[qi] };
+                qi += 1;
+            }
+            for k in 0..nb {
+                if has_re_del_s[k] {
+                    let j = re_cols_deltas[k][s];
+                    state.beta_deltas[k][j] = if nc_flags[qi] { q_new[qi] * sigma_re_s[qi] } else { q_new[qi] };
+                    qi += 1;
+                }
+            }
+            for k in 0..nb {
+                if has_re_om_s[k] {
+                    let j = re_cols_omega[k][s];
+                    state.beta_om[k][j] = if nc_flags[qi] { q_new[qi] * sigma_re_s[qi] } else { q_new[qi] };
+                    qi += 1;
+                }
+            }
+        }
+
+        adapt_per_subject[s].update_epsilon(accept);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main Chain Loops
 // ---------------------------------------------------------------------------
 
@@ -928,7 +1388,9 @@ pub fn run_chain_re(
     data: &ModelData, priors: &Priors, n_iter: usize, n_warmup: usize,
     step_om_init: f64, step_rho_init: f64, target_accept: f64,
     seed: u64, verbose: bool, chain_id: usize, n_chains: usize,
-    nc_om: &[bool],   // per-breakpoint: true = NC reparameterisation for omega RE
+    nc_om: &[bool],
+    nc_b1: bool,
+    nc_deltas: &[bool],
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
 ) -> (DMatrix<f64>, usize) {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -937,57 +1399,53 @@ pub fn run_chain_re(
     let n_params = state.n_params(false, false, true);
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
-    let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept)).collect();
-    let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept)).collect();
+    // Per-subject NUTS adapters (one per subject for the joint RE update)
+    let d_s = (if data.re_mask_b1.iter().any(|&m| m) { 1 } else { 0 })
+            + data.re_mask_deltas.iter().filter(|m| m.iter().any(|&v| v)).count()
+            + data.re_mask_om.iter().filter(|m| m.iter().any(|&v| v)).count();
+    let mut adapt_subj: Vec<HmcAdapt> = (0..data.n_subjects)
+        .map(|_| HmcAdapt::new(d_s.max(1), step_om_init, target_accept))
+        .collect();
+
+    let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints)
+        .map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept))
+        .collect();
 
     let report_every = (n_iter / 10).max(1);
 
     for iter in 0..n_iter {
-        if verbose && iter % report_every == 0 { progress_fn(chain_id, n_chains, iter, n_iter, iter < n_warmup); }
+        if verbose && iter % report_every == 0 {
+            progress_fn(chain_id, n_chains, iter, n_iter, iter < n_warmup);
+        }
 
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_random_effects(data, priors, &mut state, &mut rng); }
 
+        // Joint per-subject NUTS for all RE (b1, delta, omega)
+        joint_subject_nuts(data, priors, &mut state, &mut adapt_subj, &mut rng,
+                           nc_b1, nc_deltas, nc_om);
+
+        // Rho still uses its own per-breakpoint NUTS (rho has no subject-level RE)
         let cache = LinearCache::build(&state, data);
         for k in 0..data.n_breakpoints {
-            let nc_k = nc_om.get(k).copied().unwrap_or(false);
-            hmc_step_om(data, priors, &mut state, k, &cache, &mut adapt_om[k], &mut rng, nc_k);
             hmc_step_rho(data, priors, &mut state, k, &cache, &mut adapt_rho[k], &mut rng);
         }
 
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         sample_sigma(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_sigma_u(priors, &mut state, &mut rng); }
-
-        // Hierarchical update for omega variances (uses beta_om, correct for both centred and NC)
         sample_sigma_re_om(data, priors, &mut state, &mut rng);
+        sample_sigma_re_b1(data, priors, &mut state, &mut rng);
+        sample_sigma_re_deltas(data, priors, &mut state, &mut rng);
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
-                // Observe in q-space: z-space for NC RE columns so mass matrix adapts correctly
-                let nc_k = nc_om.get(k).copied().unwrap_or(false);
-                let sigma_re = state.sigma_re_om[k];
-                let q_obs = if nc_k && sigma_re > 1e-10 {
-                    let mut z = state.beta_om[k].clone();
-                    for j in 0..data.x_om[k].ncols() {
-                        if data.re_mask_om[k][j] { z[j] /= sigma_re; }
-                    }
-                    z
-                } else {
-                    state.beta_om[k].clone()
-                };
-                adapt_om[k].observe(&q_obs);
                 adapt_rho[k].observe(&state.beta_rho[k]);
-                if (iter + 1) % 500 == 0 {
-                    adapt_om[k].refresh_mass_matrix();
-                    adapt_rho[k].refresh_mass_matrix();
-                }
+                if (iter + 1) % 500 == 0 { adapt_rho[k].refresh_mass_matrix(); }
             }
         } else if iter == n_warmup {
-            for k in 0..data.n_breakpoints {
-                adapt_om[k].freeze();
-                adapt_rho[k].freeze();
-            }
+            for k in 0..data.n_breakpoints { adapt_rho[k].freeze(); }
+            for s in 0..data.n_subjects { adapt_subj[s].freeze(); }
         }
 
         if iter >= n_warmup {
@@ -996,7 +1454,8 @@ pub fn run_chain_re(
             for (col, &val) in draw.iter().enumerate() { draws[(row, col)] = val; }
         }
     }
-    let n_div = adapt_om.iter().map(|h| h.n_divergent).sum::<usize>() + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
+    let n_div = adapt_subj.iter().map(|h| h.n_divergent).sum::<usize>()
+              + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
     (draws, n_div)
 }
 pub fn run_chain_re_ss(
@@ -1004,6 +1463,8 @@ pub fn run_chain_re_ss(
     step_om_init: f64, step_rho_init: f64, target_accept: f64,
     seed: u64, verbose: bool, chain_id: usize, n_chains: usize,
     nc_om: &[bool],
+    nc_b1: bool,
+    nc_deltas: &[bool],
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
 ) -> (DMatrix<f64>, usize) {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -1014,21 +1475,31 @@ pub fn run_chain_re_ss(
     let n_params = state.n_params(true, learn_pi, true);
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
-    let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept)).collect();
-    let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept)).collect();
+    let d_s = (if data.re_mask_b1.iter().any(|&m| m) { 1 } else { 0 })
+            + data.re_mask_deltas.iter().filter(|m| m.iter().any(|&v| v)).count()
+            + data.re_mask_om.iter().filter(|m| m.iter().any(|&v| v)).count();
+    let mut adapt_subj: Vec<HmcAdapt> = (0..data.n_subjects)
+        .map(|_| HmcAdapt::new(d_s.max(1), step_om_init, target_accept))
+        .collect();
+    let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints)
+        .map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept))
+        .collect();
 
     let report_every = (n_iter / 10).max(1);
 
     for iter in 0..n_iter {
-        if verbose && iter % report_every == 0 { progress_fn(chain_id, n_chains, iter, n_iter, iter < n_warmup); }
+        if verbose && iter % report_every == 0 {
+            progress_fn(chain_id, n_chains, iter, n_iter, iter < n_warmup);
+        }
 
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_random_effects(data, priors, &mut state, &mut rng); }
 
+        joint_subject_nuts(data, priors, &mut state, &mut adapt_subj, &mut rng,
+                           nc_b1, nc_deltas, nc_om);
+
         let cache = LinearCache::build(&state, data);
         for k in 0..data.n_breakpoints {
-            let nc_k = nc_om.get(k).copied().unwrap_or(false);
-            hmc_step_om(data, priors, &mut state, k, &cache, &mut adapt_om[k], &mut rng, nc_k);
             hmc_step_rho(data, priors, &mut state, k, &cache, &mut adapt_rho[k], &mut rng);
         }
 
@@ -1037,34 +1508,18 @@ pub fn run_chain_re_ss(
         if learn_pi { sample_pi(ss, &mut state, &mut rng); }
         sample_sigma(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_sigma_u(priors, &mut state, &mut rng); }
-
         sample_sigma_re_om(data, priors, &mut state, &mut rng);
+        sample_sigma_re_b1(data, priors, &mut state, &mut rng);
+        sample_sigma_re_deltas(data, priors, &mut state, &mut rng);
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
-                let nc_k = nc_om.get(k).copied().unwrap_or(false);
-                let sigma_re = state.sigma_re_om[k];
-                let q_obs = if nc_k && sigma_re > 1e-10 {
-                    let mut z = state.beta_om[k].clone();
-                    for j in 0..data.x_om[k].ncols() {
-                        if data.re_mask_om[k][j] { z[j] /= sigma_re; }
-                    }
-                    z
-                } else {
-                    state.beta_om[k].clone()
-                };
-                adapt_om[k].observe(&q_obs);
                 adapt_rho[k].observe(&state.beta_rho[k]);
-                if (iter + 1) % 500 == 0 {
-                    adapt_om[k].refresh_mass_matrix();
-                    adapt_rho[k].refresh_mass_matrix();
-                }
+                if (iter + 1) % 500 == 0 { adapt_rho[k].refresh_mass_matrix(); }
             }
         } else if iter == n_warmup {
-            for k in 0..data.n_breakpoints {
-                adapt_om[k].freeze();
-                adapt_rho[k].freeze();
-            }
+            for k in 0..data.n_breakpoints { adapt_rho[k].freeze(); }
+            for s in 0..data.n_subjects { adapt_subj[s].freeze(); }
         }
 
         if iter >= n_warmup {
@@ -1073,7 +1528,8 @@ pub fn run_chain_re_ss(
             for (col, &val) in draw.iter().enumerate() { draws[(row, col)] = val; }
         }
     }
-    let n_div = adapt_om.iter().map(|h| h.n_divergent).sum::<usize>() + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
+    let n_div = adapt_subj.iter().map(|h| h.n_divergent).sum::<usize>()
+              + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
     (draws, n_div)
 }
 
@@ -1115,6 +1571,8 @@ pub fn init_state_re(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> Sta
         sigma: 1.0, sigma_u: 1.0,
         gamma_b1: vec![true; data.x_b1.ncols()],
         gamma_deltas, pi: 0.5,
-        sigma_re_om: vec![1.0; data.n_breakpoints],
+        sigma_re_om:     vec![1.0; data.n_breakpoints],
+        sigma_re_b1:     1.0,
+        sigma_re_deltas: vec![1.0; data.n_breakpoints],
     }
 }
