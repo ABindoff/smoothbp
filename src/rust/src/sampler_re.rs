@@ -89,11 +89,10 @@ impl LinearCache {
 const EPSILON_FLOOR: f64 = 1e-6;
 const DIVERGENCE_THRESHOLD: f64 = 1000.0;
 const MAX_REFLECTIONS: usize = 20;
+const NUTS_MAX_DEPTH: usize = 10;
 
 struct HmcAdapt {
     p: usize,
-    l_min: usize,
-    l_max: usize,
     epsilon: f64,
     target_accept: f64,
     mu: f64,
@@ -112,9 +111,9 @@ struct HmcAdapt {
 }
 
 impl HmcAdapt {
-    fn new(p: usize, init_epsilon: f64, target_accept: f64, l_min: usize, l_max: usize) -> Self {
+    fn new(p: usize, init_epsilon: f64, target_accept: f64) -> Self {
         HmcAdapt {
-            p, l_min, l_max, epsilon: init_epsilon, target_accept,
+            p, epsilon: init_epsilon, target_accept,
             mu: (10.0 * init_epsilon).ln(), log_eps_bar: 0.0, h_bar: 0.0,
             gamma: 0.05, t0: 10.0, kappa: 0.75, da_count: 0,
             inv_mass: vec![1.0; p], welford_n: 0,
@@ -168,9 +167,6 @@ impl HmcAdapt {
         self.adapting = false;
     }
 
-    fn sample_l(&self, rng: &mut StdRng) -> usize {
-        if self.l_min == self.l_max { self.l_min } else { rng.gen_range(self.l_min..=self.l_max) }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -583,7 +579,7 @@ fn hmc_step_om(
         (-ll - lp, grad)
     };
 
-    let (q_new, accept) = hmc_sample(&q0, energy_fn, adapt, rng, &lb, &ub);
+    let (q_new, accept) = nuts_sample(&q0, energy_fn, adapt, rng, &lb, &ub);
 
     // Convert q_new back to beta_om space
     if do_nc {
@@ -657,12 +653,167 @@ fn hmc_step_rho(
         (-ll - lp, grad)
     };
 
-    let (q_new, accept) = hmc_sample(&state.beta_rho[k], energy_fn, adapt, rng, &priors.rho_lb[k], &priors.rho_ub[k]);
+    let (q_new, accept) = nuts_sample(&state.beta_rho[k], energy_fn, adapt, rng, &priors.rho_lb[k], &priors.rho_ub[k]);
     state.beta_rho[k] = q_new;
     adapt.update_epsilon(accept);
 }
 
-fn hmc_sample<F>(
+// ---------------------------------------------------------------------------
+// NUTS (No-U-Turn Sampler) — replaces fixed-L HMC for omega and rho steps
+// ---------------------------------------------------------------------------
+
+/// State of a NUTS subtree (Hoffman & Gelman 2011, Algorithm 2).
+struct NutsTree {
+    q_minus: DVector<f64>,
+    p_minus: DVector<f64>,
+    grad_minus: DVector<f64>,
+    q_plus: DVector<f64>,
+    p_plus: DVector<f64>,
+    grad_plus: DVector<f64>,
+    q_proposal: DVector<f64>,
+    n_valid: i64,        // leaf nodes inside the slice
+    keep_going: bool,    // no U-turn yet and no divergence
+    sum_accept: f64,     // Σ min(1, exp(H0 - H_leaf)) for dual-averaging
+    n_evals: usize,      // gradient evaluations in this subtree
+    has_divergence: bool,
+}
+
+/// Single leapfrog step, using the gradient already computed at q.
+/// Returns (q_new, p_new, u_new, grad_new).
+fn leapfrog_one<F>(
+    q: &DVector<f64>,
+    p: &DVector<f64>,
+    grad_q: &DVector<f64>,
+    v_eps: f64,          // signed step: direction * epsilon
+    energy_fn: &mut F,
+    inv_mass: &[f64],
+    lb: &[f64],
+    ub: &[f64],
+) -> (DVector<f64>, DVector<f64>, f64, DVector<f64>)
+where F: FnMut(&DVector<f64>) -> (f64, DVector<f64>)
+{
+    let dim = p.len();
+    let mut p_half = p.clone();
+    for i in 0..dim { p_half[i] -= 0.5 * v_eps * grad_q[i]; }
+
+    let mut q_new = q.clone();
+    for i in 0..dim {
+        q_new[i] += v_eps * p_half[i] * inv_mass[i];
+        for _ in 0..MAX_REFLECTIONS {
+            if      q_new[i] < lb[i] { q_new[i] = 2.0*lb[i] - q_new[i]; p_half[i] = -p_half[i]; }
+            else if q_new[i] > ub[i] { q_new[i] = 2.0*ub[i] - q_new[i]; p_half[i] = -p_half[i]; }
+            else { break; }
+        }
+    }
+
+    let (u_new, grad_new) = energy_fn(&q_new);
+    let mut p_new = p_half;
+    for i in 0..dim { p_new[i] -= 0.5 * v_eps * grad_new[i]; }
+
+    (q_new, p_new, u_new, grad_new)
+}
+
+/// Recursive tree builder for NUTS.
+#[allow(clippy::too_many_arguments)]
+fn build_tree<F>(
+    q: &DVector<f64>,
+    p: &DVector<f64>,
+    grad_q: &DVector<f64>,
+    log_u: f64,   // log of the slice variable
+    v: f64,       // direction: +1 or -1
+    depth: usize,
+    eps: f64,
+    energy_fn: &mut F,
+    inv_mass: &[f64],
+    lb: &[f64],
+    ub: &[f64],
+    h0: f64,      // initial Hamiltonian (for divergence check and alpha)
+    rng: &mut StdRng,
+) -> NutsTree
+where F: FnMut(&DVector<f64>) -> (f64, DVector<f64>)
+{
+    if depth == 0 {
+        // Base case: one leapfrog step
+        let (q_new, p_new, u_new, grad_new) = leapfrog_one(
+            q, p, grad_q, v * eps, energy_fn, inv_mass, lb, ub,
+        );
+        let k_new: f64 = p_new.iter().zip(inv_mass).map(|(pi, mi)| pi*pi*mi).sum::<f64>() * 0.5;
+        let h_new = u_new + k_new;
+        let dh = h_new - h0;
+
+        let in_slice     = h_new.is_finite() && h_new <= -log_u;
+        let not_diverged = h_new.is_finite() && dh.abs() < DIVERGENCE_THRESHOLD;
+        // Acceptance probability for this leaf (used in dual-averaging)
+        let alpha = if dh.is_finite() { (-dh).exp().min(1.0) } else { 0.0 };
+
+        NutsTree {
+            q_minus: q_new.clone(), p_minus: p_new.clone(), grad_minus: grad_new.clone(),
+            q_plus:  q_new.clone(), p_plus:  p_new.clone(), grad_plus:  grad_new.clone(),
+            q_proposal: q_new,
+            n_valid: if in_slice { 1 } else { 0 },
+            keep_going: not_diverged,
+            sum_accept: alpha,
+            n_evals: 1,
+            has_divergence: !not_diverged,
+        }
+    } else {
+        // Recursive case: build first half-tree
+        let mut tree = build_tree(
+            q, p, grad_q, log_u, v, depth - 1, eps,
+            energy_fn, inv_mass, lb, ub, h0, rng,
+        );
+
+        if tree.keep_going {
+            // Build second half-tree from the frontier endpoint
+            let (q2, p2, grad2) = if v < 0.0 {
+                (tree.q_minus.clone(), tree.p_minus.clone(), tree.grad_minus.clone())
+            } else {
+                (tree.q_plus.clone(), tree.p_plus.clone(), tree.grad_plus.clone())
+            };
+
+            let tree2 = build_tree(
+                &q2, &p2, &grad2, log_u, v, depth - 1, eps,
+                energy_fn, inv_mass, lb, ub, h0, rng,
+            );
+
+            // Extend the appropriate endpoint
+            if v < 0.0 {
+                tree.q_minus    = tree2.q_minus;
+                tree.p_minus    = tree2.p_minus;
+                tree.grad_minus = tree2.grad_minus;
+            } else {
+                tree.q_plus    = tree2.q_plus;
+                tree.p_plus    = tree2.p_plus;
+                tree.grad_plus = tree2.grad_plus;
+            }
+
+            // Biased progressive sampling of the proposal
+            if tree2.n_valid > 0 {
+                let n_total = tree.n_valid + tree2.n_valid;
+                let p_swap = (tree2.n_valid as f64) / (n_total as f64).max(f64::EPSILON);
+                if rng.gen::<f64>() < p_swap {
+                    tree.q_proposal = tree2.q_proposal;
+                }
+            }
+
+            tree.n_valid      += tree2.n_valid;
+            tree.sum_accept   += tree2.sum_accept;
+            tree.n_evals      += tree2.n_evals;
+            tree.has_divergence = tree.has_divergence || tree2.has_divergence;
+
+            // No-U-turn check across the full span
+            let delta = &tree.q_plus - &tree.q_minus;
+            let no_uturn = delta.dot(&tree.p_minus) >= 0.0
+                        && delta.dot(&tree.p_plus)  >= 0.0;
+            tree.keep_going = tree2.keep_going && no_uturn;
+        }
+
+        tree
+    }
+}
+
+/// NUTS sampler — drop-in replacement for hmc_sample with the same signature.
+fn nuts_sample<F>(
     q0: &DVector<f64>,
     mut energy_fn: F,
     adapt: &mut HmcAdapt,
@@ -672,42 +823,101 @@ fn hmc_sample<F>(
 ) -> (DVector<f64>, f64)
 where F: FnMut(&DVector<f64>) -> (f64, DVector<f64>)
 {
-    let p = adapt.p;
+    let dim     = adapt.p;
+    let eps     = adapt.epsilon;
+    // Clone inv_mass to avoid holding a borrow on adapt during energy_fn calls
+    let inv_mass = adapt.inv_mass.clone();
+
+    // Sample initial momentum p0 ~ N(0, M)
     let normal = Normal::new(0.0, 1.0).unwrap();
-    let p0 = DVector::<f64>::from_iterator(p, (0..p).map(|i| normal.sample(rng) / adapt.inv_mass[i].sqrt()));
-    let kinetic0: f64 = (0..p).map(|i| p0[i]*p0[i]*adapt.inv_mass[i]).sum::<f64>() * 0.5;
-    let (u0, mut grad) = energy_fn(q0);
-    let h0 = u0 + kinetic0;
+    let p0 = DVector::<f64>::from_iterator(
+        dim,
+        (0..dim).map(|i| normal.sample(rng) / inv_mass[i].sqrt()),
+    );
 
-    let mut q = q0.clone();
-    let mut mom = p0.clone();
-    let l = adapt.sample_l(rng);
-    let eps = adapt.epsilon;
+    // Hamiltonian at start
+    let (u0, grad0) = energy_fn(q0);
+    let k0: f64 = (0..dim).map(|i| p0[i]*p0[i]*inv_mass[i]).sum::<f64>() * 0.5;
+    let h0 = u0 + k0;
 
-    for _ in 0..l {
-        for i in 0..p { mom[i] -= 0.5 * eps * grad[i]; }
-        for i in 0..p {
-            q[i] += eps * mom[i] * adapt.inv_mass[i];
-            // Reflections
-            for _ in 0..MAX_REFLECTIONS {
-                if q[i] < lb[i] { q[i] = 2.0 * lb[i] - q[i]; mom[i] = -mom[i]; }
-                else if q[i] > ub[i] { q[i] = 2.0 * ub[i] - q[i]; mom[i] = -mom[i]; }
-                else { break; }
-            }
+    // Slice variable: u ~ Uniform(0, exp(-H0)), work in log-space
+    // log_u = log(Uniform(0,1)) - H0; accept leaf if H_leaf <= -log_u
+    let log_u: f64 = rng.gen::<f64>().ln() - h0;
+
+    // Initialise spanning endpoints and proposal
+    let mut q_minus    = q0.clone();
+    let mut p_minus    = p0.clone();
+    let mut grad_minus = grad0.clone();
+    let mut q_plus     = q0.clone();
+    let mut p_plus     = p0.clone();
+    let mut grad_plus  = grad0.clone();
+    let mut q_prop     = q0.clone();
+    let mut n_valid:   i64 = 1;  // q0 is always in its own slice
+    let mut keep_going     = true;
+    let mut sum_accept     = 0.0_f64;
+    let mut n_evals: usize = 0;
+    let mut any_divergence = false;
+
+    for j in 0..NUTS_MAX_DEPTH {
+        if !keep_going { break; }
+
+        let v: f64 = if rng.gen_bool(0.5) { 1.0 } else { -1.0 };
+
+        let subtree = if v < 0.0 {
+            build_tree(
+                &q_minus, &p_minus, &grad_minus,
+                log_u, v, j, eps,
+                &mut energy_fn, &inv_mass, lb, ub, h0, rng,
+            )
+        } else {
+            build_tree(
+                &q_plus, &p_plus, &grad_plus,
+                log_u, v, j, eps,
+                &mut energy_fn, &inv_mass, lb, ub, h0, rng,
+            )
+        };
+
+        // Extend spanning endpoints
+        if v < 0.0 {
+            q_minus    = subtree.q_minus;
+            p_minus    = subtree.p_minus;
+            grad_minus = subtree.grad_minus;
+        } else {
+            q_plus    = subtree.q_plus;
+            p_plus    = subtree.p_plus;
+            grad_plus = subtree.grad_plus;
         }
-        let (_, g_new) = energy_fn(&q);
-        grad = g_new;
-        for i in 0..p { mom[i] -= 0.5 * eps * grad[i]; }
+
+        // Progressive proposal update
+        if subtree.n_valid > 0 {
+            let p_swap = (subtree.n_valid as f64) / (n_valid + subtree.n_valid) as f64;
+            if rng.gen::<f64>() < p_swap { q_prop = subtree.q_proposal; }
+        }
+
+        n_valid      += subtree.n_valid;
+        sum_accept   += subtree.sum_accept;
+        n_evals      += subtree.n_evals;
+        any_divergence = any_divergence || subtree.has_divergence;
+
+        // Global no-U-turn check
+        let delta   = &q_plus - &q_minus;
+        let no_uturn = delta.dot(&p_minus) >= 0.0 && delta.dot(&p_plus) >= 0.0;
+        keep_going  = subtree.keep_going && no_uturn;
     }
 
-    let (u1, _) = energy_fn(&q);
-    let kinetic1: f64 = (0..p).map(|i| mom[i]*mom[i]*adapt.inv_mass[i]).sum::<f64>() * 0.5;
-    let h1 = u1 + kinetic1;
+    // Average acceptance probability for dual-averaging
+    let avg_alpha = if n_evals > 0 {
+        (sum_accept / n_evals as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
 
-    let dh = h1 - h0;
-    adapt.record_energy_error(dh);
-    let accept_prob = (-dh).exp().min(1.0);
-    if rng.gen_bool(accept_prob) { (q, accept_prob) } else { (q0.clone(), accept_prob) }
+    // Record divergences (uses same infrastructure as fixed-L HMC)
+    if any_divergence {
+        adapt.record_energy_error(DIVERGENCE_THRESHOLD + 1.0);
+    }
+
+    (q_prop, avg_alpha)
 }
 
 // ---------------------------------------------------------------------------
@@ -727,8 +937,8 @@ pub fn run_chain_re(
     let n_params = state.n_params(false, false, true);
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
-    let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept, 5, 15)).collect();
-    let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept, 5, 15)).collect();
+    let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept)).collect();
+    let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept)).collect();
 
     let report_every = (n_iter / 10).max(1);
 
@@ -804,8 +1014,8 @@ pub fn run_chain_re_ss(
     let n_params = state.n_params(true, learn_pi, true);
     let mut draws = DMatrix::<f64>::zeros(n_post, n_params);
 
-    let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept, 5, 15)).collect();
-    let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept, 5, 15)).collect();
+    let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept)).collect();
+    let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints).map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept)).collect();
 
     let report_every = (n_iter / 10).max(1);
 
