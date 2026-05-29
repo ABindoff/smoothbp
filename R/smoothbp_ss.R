@@ -41,6 +41,7 @@ smoothbp_ss <- function(
     step_rho = 0.3,
     target_accept = 0.65,
     cores    = getOption("smoothbp.cores", 1L),
+    reparameterise = c("none", "omega"),
     .verbose = TRUE
 ) {
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -121,6 +122,12 @@ smoothbp_ss <- function(
     re_mask_om <- .get_re_masks(dm$X_om)
     if (length(re_mask_om) == 0) re_mask_om <- list(as.integer(-1))
 
+    reparameterise <- match.arg(reparameterise)
+    nc_om <- sapply(seq_along(dm$X_om), function(k) {
+      mask <- attr(dm$X_om[[k]], "re_mask")
+      as.integer(reparameterise == "omega" && !is.null(mask) && any(mask == 1L))
+    })
+
     raw <- run_mcmc_re_ss(
       y             = y,
       tau           = tau,
@@ -135,6 +142,7 @@ smoothbp_ss <- function(
       group_b0      = group_b0_safe,
       n_groups_b0   = dm$n_groups_b0,
       re_mask_om    = re_mask_om,
+      nc_om         = nc_om,
       prior_mean_b0 = pv$b0$mean, prior_sd_b0 = pv$b0$sd, prior_lb_b0 = pv$b0$lb, prior_ub_b0 = pv$b0$ub,
       prior_mean_b1 = pv$b1$mean, prior_sd_b1 = pv$b1$sd, prior_lb_b1 = pv$b1$lb, prior_ub_b1 = pv$b1$ub,
       prior_mean_deltas = lapply(pv$deltas, `[[`, "mean"),

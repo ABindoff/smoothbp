@@ -467,6 +467,7 @@ fn hmc_step_om(
     cache: &LinearCache,
     adapt: &mut HmcAdapt,
     rng: &mut StdRng,
+    nc: bool,   // use non-centred reparameterisation for RE columns at this breakpoint
 ) {
     let p = adapt.p;
 
@@ -474,76 +475,126 @@ fn hmc_step_om(
     let mut all_fixed = true;
     for j in 0..p {
         if !data.re_mask_om[k][j] && priors.om_sd[k][j] > 0.0 { all_fixed = false; break; }
-        if data.re_mask_om[k][j] { all_fixed = false; break; } // REs are never fixed by prior SD
+        if data.re_mask_om[k][j] { all_fixed = false; break; }
     }
     if all_fixed { return; }
 
-    let sigma = state.sigma;
-    let mu_base = cache.mu_without_segment(data, state, k);
-    
-    // Joint logic for b1 centering and delta segment
-    let is_om1 = k == 0 && data.n_breakpoints > 0;
-    
+    let sigma    = state.sigma;
+    let sigma_re = state.sigma_re_om[k];
+    let mu_base  = cache.mu_without_segment(data, state, k);
+    let is_om1   = k == 0 && data.n_breakpoints > 0;
+
+    // Non-centred only when nc=true and sigma_re is non-degenerate.
+    // In NC mode, HMC operates on z[j] = beta_om[j] / sigma_re for RE columns.
+    let do_nc = nc && sigma_re > 1e-10;
+
+    // Initial q in HMC space
+    let q0: DVector<f64> = if do_nc {
+        let mut z = state.beta_om[k].clone();
+        for j in 0..p { if data.re_mask_om[k][j] { z[j] /= sigma_re; } }
+        z
+    } else {
+        state.beta_om[k].clone()
+    };
+
+    // Bounds in HMC space (z-space for NC RE columns)
+    let lb: Vec<f64> = (0..p).map(|j| {
+        if do_nc && data.re_mask_om[k][j] { priors.om_lb[k][j] / sigma_re }
+        else { priors.om_lb[k][j] }
+    }).collect();
+    let ub: Vec<f64> = (0..p).map(|j| {
+        if do_nc && data.re_mask_om[k][j] { priors.om_ub[k][j] / sigma_re }
+        else { priors.om_ub[k][j] }
+    }).collect();
+
     let energy_fn = |q: &DVector<f64>| -> (f64, DVector<f64>) {
-        let om_k = &data.x_om[k] * q;
-        let rho_k = state.rho_vec(k, &data.x_rho[k]);
+        // Convert q (HMC space) → beta_om for likelihood.
+        // For NC RE columns: beta_om[j] = z[j] * sigma_re.
+        let beta_om: DVector<f64> = if do_nc {
+            let mut b = q.clone();
+            for j in 0..p { if data.re_mask_om[k][j] { b[j] = q[j] * sigma_re; } }
+            b
+        } else {
+            q.clone()
+        };
+
+        let om_k   = &data.x_om[k] * &beta_om;
+        let rho_k  = state.rho_vec(k, &data.x_rho[k]);
         let delta_k = &cache.delta_vals[k];
-        
+
         let mut mu = mu_base.clone();
         if is_om1 {
-            // Subtract b1 * (tau - om1_old) already in mu_base? No, mu_without_segment excludes it.
-            // But we need to add b1 * (tau - om_k)
-            for i in 0..data.n {
-                mu[i] += cache.b1_vals[i] * (data.tau[i] - om_k[i]);
-            }
+            for i in 0..data.n { mu[i] += cache.b1_vals[i] * (data.tau[i] - om_k[i]); }
         }
-        
         for i in 0..data.n {
             let di = data.tau[i] - om_k[i];
             let si = sigmoid(di * rho_k[i]);
             mu[i] += delta_k[i] * di * si;
         }
-        
-        let r = &data.y - &mu;
-        let ll = -0.5 * r.dot(&r) / (sigma * sigma);
-        
+
+        let r   = &data.y - &mu;
+        let ll  = -0.5 * r.dot(&r) / (sigma * sigma);
+
+        // Log-prior in q-space and bounds check
         let mut lp = 0.0;
         let log_sqrt2pi = 0.5 * std::f64::consts::TAU.ln();
         for j in 0..p {
             let v = q[j];
-            if v < priors.om_lb[k][j] || v > priors.om_ub[k][j] { return (f64::INFINITY, DVector::<f64>::zeros(p)); }
-            let sd = if data.re_mask_om[k][j] { state.sigma_re_om[k] } else { priors.om_sd[k][j] };
-            let z = (v - priors.om_mean[k][j]) / sd;
-            lp -= 0.5 * z * z + sd.ln() + log_sqrt2pi;
+            if v < lb[j] || v > ub[j] { return (f64::INFINITY, DVector::<f64>::zeros(p)); }
+            if do_nc && data.re_mask_om[k][j] {
+                // z ~ N(0,1): unnormalised log-prior = -0.5 z^2
+                lp -= 0.5 * v * v;
+            } else {
+                let sd = if data.re_mask_om[k][j] { sigma_re } else { priors.om_sd[k][j] };
+                let z = (v - priors.om_mean[k][j]) / sd;
+                lp -= 0.5 * z * z + sd.ln() + log_sqrt2pi;
+            }
         }
-        
-        // Gradient
+
+        // Likelihood gradient w.r.t. beta_om
         let inv_s2 = 1.0 / (sigma * sigma);
-        let mut grad = DVector::<f64>::zeros(p);
+        let mut grad_beta = DVector::<f64>::zeros(p);
         for i in 0..data.n {
-            let di = data.tau[i] - om_k[i];
-            let si = sigmoid(di * rho_k[i]);
-            let ri = rho_k[i];
-            let bi = cache.delta_vals[k][i];
-            
+            let di  = data.tau[i] - om_k[i];
+            let si  = sigmoid(di * rho_k[i]);
+            let ri  = rho_k[i];
+            let bi  = delta_k[i];
             let mut dmu_dom = -(bi * si + di * ri * si * (1.0 - si) * bi);
             if is_om1 { dmu_dom -= cache.b1_vals[i]; }
-            
             let factor = r[i] * inv_s2 * dmu_dom;
-            for j in 0..p { grad[j] -= factor * data.x_om[k][(i, j)]; }
+            for j in 0..p { grad_beta[j] -= factor * data.x_om[k][(i, j)]; }
         }
-        
-        // Prior gradient
+
+        // Transform gradient to q-space and add prior gradient
+        let mut grad = DVector::<f64>::zeros(p);
         for j in 0..p {
-            let sd = if data.re_mask_om[k][j] { state.sigma_re_om[k] } else { priors.om_sd[k][j] };
-            grad[j] += (q[j] - priors.om_mean[k][j]) / (sd * sd);
+            if do_nc && data.re_mask_om[k][j] {
+                // Chain rule: dU_lik/dz = sigma_re * dU_lik/d(beta_om)
+                grad[j] = sigma_re * grad_beta[j];
+                // N(0,1) prior: d(-log N(0,1))/dz = z
+                grad[j] += q[j];
+            } else {
+                grad[j] = grad_beta[j];
+                let sd = if data.re_mask_om[k][j] { sigma_re } else { priors.om_sd[k][j] };
+                grad[j] += (q[j] - priors.om_mean[k][j]) / (sd * sd);
+            }
         }
-        
+
         (-ll - lp, grad)
     };
 
-    let (q_new, accept) = hmc_sample(&state.beta_om[k], energy_fn, adapt, rng, &priors.om_lb[k], &priors.om_ub[k]);
-    state.beta_om[k] = q_new;
+    let (q_new, accept) = hmc_sample(&q0, energy_fn, adapt, rng, &lb, &ub);
+
+    // Convert q_new back to beta_om space
+    if do_nc {
+        for j in 0..p {
+            state.beta_om[k][j] = if data.re_mask_om[k][j] { q_new[j] * sigma_re }
+                                   else { q_new[j] };
+        }
+    } else {
+        state.beta_om[k] = q_new;
+    }
+
     adapt.update_epsilon(accept);
 }
 
@@ -667,6 +718,7 @@ pub fn run_chain_re(
     data: &ModelData, priors: &Priors, n_iter: usize, n_warmup: usize,
     step_om_init: f64, step_rho_init: f64, target_accept: f64,
     seed: u64, verbose: bool, chain_id: usize, n_chains: usize,
+    nc_om: &[bool],   // per-breakpoint: true = NC reparameterisation for omega RE
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
 ) -> (DMatrix<f64>, usize) {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -685,23 +737,36 @@ pub fn run_chain_re(
 
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_random_effects(data, priors, &mut state, &mut rng); }
-        
+
         let cache = LinearCache::build(&state, data);
         for k in 0..data.n_breakpoints {
-            hmc_step_om(data, priors, &mut state, k, &cache, &mut adapt_om[k], &mut rng);
+            let nc_k = nc_om.get(k).copied().unwrap_or(false);
+            hmc_step_om(data, priors, &mut state, k, &cache, &mut adapt_om[k], &mut rng, nc_k);
             hmc_step_rho(data, priors, &mut state, k, &cache, &mut adapt_rho[k], &mut rng);
         }
 
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         sample_sigma(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_sigma_u(priors, &mut state, &mut rng); }
-        
-        // Hierarchical update for omega variances
+
+        // Hierarchical update for omega variances (uses beta_om, correct for both centred and NC)
         sample_sigma_re_om(data, priors, &mut state, &mut rng);
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
-                adapt_om[k].observe(&state.beta_om[k]);
+                // Observe in q-space: z-space for NC RE columns so mass matrix adapts correctly
+                let nc_k = nc_om.get(k).copied().unwrap_or(false);
+                let sigma_re = state.sigma_re_om[k];
+                let q_obs = if nc_k && sigma_re > 1e-10 {
+                    let mut z = state.beta_om[k].clone();
+                    for j in 0..data.x_om[k].ncols() {
+                        if data.re_mask_om[k][j] { z[j] /= sigma_re; }
+                    }
+                    z
+                } else {
+                    state.beta_om[k].clone()
+                };
+                adapt_om[k].observe(&q_obs);
                 adapt_rho[k].observe(&state.beta_rho[k]);
                 if (iter + 1) % 500 == 0 {
                     adapt_om[k].refresh_mass_matrix();
@@ -728,6 +793,7 @@ pub fn run_chain_re_ss(
     data: &ModelData, priors: &Priors, ss: &SpikeSlabConfig, n_iter: usize, n_warmup: usize,
     step_om_init: f64, step_rho_init: f64, target_accept: f64,
     seed: u64, verbose: bool, chain_id: usize, n_chains: usize,
+    nc_om: &[bool],
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
 ) -> (DMatrix<f64>, usize) {
     let mut rng = StdRng::seed_from_u64(seed);
@@ -748,10 +814,11 @@ pub fn run_chain_re_ss(
 
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_random_effects(data, priors, &mut state, &mut rng); }
-        
+
         let cache = LinearCache::build(&state, data);
         for k in 0..data.n_breakpoints {
-            hmc_step_om(data, priors, &mut state, k, &cache, &mut adapt_om[k], &mut rng);
+            let nc_k = nc_om.get(k).copied().unwrap_or(false);
+            hmc_step_om(data, priors, &mut state, k, &cache, &mut adapt_om[k], &mut rng, nc_k);
             hmc_step_rho(data, priors, &mut state, k, &cache, &mut adapt_rho[k], &mut rng);
         }
 
@@ -760,13 +827,23 @@ pub fn run_chain_re_ss(
         if learn_pi { sample_pi(ss, &mut state, &mut rng); }
         sample_sigma(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_sigma_u(priors, &mut state, &mut rng); }
-        
-        // Hierarchical update for omega variances
+
         sample_sigma_re_om(data, priors, &mut state, &mut rng);
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
-                adapt_om[k].observe(&state.beta_om[k]);
+                let nc_k = nc_om.get(k).copied().unwrap_or(false);
+                let sigma_re = state.sigma_re_om[k];
+                let q_obs = if nc_k && sigma_re > 1e-10 {
+                    let mut z = state.beta_om[k].clone();
+                    for j in 0..data.x_om[k].ncols() {
+                        if data.re_mask_om[k][j] { z[j] /= sigma_re; }
+                    }
+                    z
+                } else {
+                    state.beta_om[k].clone()
+                };
+                adapt_om[k].observe(&q_obs);
                 adapt_rho[k].observe(&state.beta_rho[k]);
                 if (iter + 1) % 500 == 0 {
                     adapt_om[k].refresh_mass_matrix();

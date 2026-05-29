@@ -307,6 +307,7 @@ fn run_mcmc_re(
     group_b0: &[i32],
     n_groups_b0: i32,
     re_mask_om: List,
+    nc_om: &[i32],   // per-breakpoint flag: 1 = NC reparameterisation for omega RE
     prior_mean_b0: &[f64], prior_sd_b0: &[f64], prior_lb_b0: &[f64], prior_ub_b0: &[f64],
     prior_mean_b1: &[f64], prior_sd_b1: &[f64], prior_lb_b1: &[f64], prior_ub_b1: &[f64],
     prior_mean_deltas: List, prior_sd_deltas: List, prior_lb_deltas: List, prior_ub_deltas: List,
@@ -337,6 +338,8 @@ fn run_mcmc_re(
     if p_om.len() == 1 && p_om[0] == -1 { p_om = &[]; }
     if p_rho.len() == 1 && p_rho[0] == -1 { p_rho = &[]; }
     if group_b0.len() == 1 && group_b0[0] == -1 { group_b0 = &[]; }
+
+    let nc_om_bool: Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
 
     let n = y.len();
     let n_bp = p_deltas.len();
@@ -401,13 +404,13 @@ fn run_mcmc_re(
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
                 let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &|_,_,_,_,_| {})
+                run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_bool, &|_,_,_,_,_| {})
             }).collect()
         })
     } else {
         (0..n_chains).map(|c| {
             let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-            run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &|_,_,_,_,_| {})
+            run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_bool, &|_,_,_,_,_| {})
         }).collect()
     };
 
@@ -436,6 +439,7 @@ fn run_mcmc_re_ss(
     group_b0: &[i32],
     n_groups_b0: i32,
     re_mask_om: List,
+    nc_om: &[i32],
     prior_mean_b0: &[f64], prior_sd_b0: &[f64], prior_lb_b0: &[f64], prior_ub_b0: &[f64],
     prior_mean_b1: &[f64], prior_sd_b1: &[f64], prior_lb_b1: &[f64], prior_ub_b1: &[f64],
     prior_mean_deltas: List, prior_sd_deltas: List, prior_lb_deltas: List, prior_ub_deltas: List,
@@ -474,6 +478,7 @@ fn run_mcmc_re_ss(
     if group_b0.len() == 1 && group_b0[0] == -1 { group_b0 = &[]; }
     if b1_spike_mask.len() == 1 && b1_spike_mask[0] == -1 { b1_spike_mask = &[]; }
 
+    let nc_om_bool: Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
     let n = y.len();
     let n_bp = p_deltas.len();
 
@@ -545,13 +550,13 @@ fn run_mcmc_re_ss(
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
                 let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &|_,_,_,_,_| {})
+                run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_bool, &|_,_,_,_,_| {})
             }).collect()
         })
     } else {
         (0..n_chains).map(|c| {
             let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-            run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &|_,_,_,_,_| {})
+            run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_bool, &|_,_,_,_,_| {})
         }).collect()
     };
 
