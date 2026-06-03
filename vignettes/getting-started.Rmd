@@ -405,3 +405,54 @@ fitted(fit1, newdata = newdata_marginal)
 # Subject-specific predictions
 fitted(fit1, newdata = data.frame(tau = seq(0, 6, by = 0.1), subject = "1"))
 ```
+
+---
+
+## Manuscript-ready reporting
+
+`model_methods()` and `model_results()` generate structured, self-contained
+text reports from a fitted model. Both functions are designed to be readily
+adapted for use in a manuscript or report, **or** passed to a large language model (LLM): the
+output includes the full algebraic specification with every symbol defined and
+every parameter value or prior stated explicitly, so no package documentation
+is needed to interpret the report.
+
+The return value of each function is the complete report as an invisible
+character string, so you can capture it for programmatic use:
+
+```{r capture-example, eval=FALSE}
+methods_txt <- model_methods(fit1)
+results_txt <- model_results(fit1)
+```
+
+### Statistical Analysis section — `model_methods()`
+
+`model_methods()` describes *how* the analysis was done. It produces:
+
+- a narrative paragraph readily adapted for use in the Methods section,
+- the formula syntax and structural equation with all symbols defined,
+- the prior distribution for every parameter,
+- the MCMC algorithm details (sampler type, chains, iterations, seed), and
+- a convergence summary and the full posterior estimates table.
+
+```{r model-methods}
+model_methods(fit1)
+```
+
+### Results section — `model_results()`
+
+`model_results()` describes *what was found*. It produces:
+
+- a narrative paragraph readily adapted for use in the Results section,
+- the fitted model equation with posterior mean coefficients substituted to
+  3 d.p. (both the algebraic form and the fully numerical version),
+- the asymptotic pre- and post-breakpoint slopes derived from $b1$ and
+  $\delta_k$,
+- per-breakpoint summaries (location, sharpness, slope change, all with 95%
+  credible intervals),
+- the full posterior estimates table, and
+- convergence diagnostics.
+
+```{r model-results}
+model_results(fit1)
+```
