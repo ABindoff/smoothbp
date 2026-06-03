@@ -21,7 +21,7 @@ for $K$ change-points is:
 $$
 \mu_i = b0_i + b1_i(\tau_i - \omega_{1i}) +
   \sum_{k=1}^{K} \delta_{ki}(\tau_i - \omega_{ki})\,
-  \sigma\!\left[(\tau_i - \omega_{ki})\rho_{ki}\right]
+  \text{logistic}\!\left[(\tau_i - \omega_{ki})\rho_{ki}\right]
 $$
 
 where
@@ -425,6 +425,11 @@ methods_txt <- model_methods(fit1)
 results_txt <- model_results(fit1)
 ```
 
+`model_methods()` also emits a brief convergence note: if any Rhat values
+exceed 1.05, effective sample sizes fall below 100, or divergent transitions
+are present, a warning is printed with suggested diagnostics so that
+model-specification issues can be caught before results are reported.
+
 ### Statistical Analysis section — `model_methods()`
 
 `model_methods()` describes *how* the analysis was done. It produces:
@@ -433,7 +438,8 @@ results_txt <- model_results(fit1)
 - the formula syntax and structural equation with all symbols defined,
 - the prior distribution for every parameter,
 - the MCMC algorithm details (sampler type, chains, iterations, seed), and
-- a convergence summary and the full posterior estimates table.
+- a convergence note: silent when all diagnostics pass, prominent when
+  Rhat, ESS, or divergent transitions indicate a potential problem.
 
 ```{r model-methods}
 model_methods(fit1)

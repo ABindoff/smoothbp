@@ -63,7 +63,7 @@ Outside of R, hierarchical segmented modeling typically requires custom implemen
 Consider longitudinal observations $y_{ij}$ for subject $j \in \{1, \dots, J\}$ at time point $\tau_{ij}$. A model with $K$ potential breakpoints is defined as:
 
 \begin{equation}
-y_{ij} = b_0 + u_{0j} + b_1 \tau_{ij} + \sum_{k=1}^K \delta_{k} \cdot (\tau_{ij} - \omega_{kj}) \cdot \sigma\left( \rho_k (\tau_{ij} - \omega_{kj}) \right) + \epsilon_{ij}
+y_{ij} = b_0 + u_{0j} + b_1 \tau_{ij} + \sum_{k=1}^K \delta_{k} \cdot (\tau_{ij} - \omega_{kj}) \cdot \text{logistic}\left( \rho_k (\tau_{ij} - \omega_{kj}) \right) + \epsilon_{ij}
 \end{equation}
 
 where:
@@ -73,7 +73,7 @@ where:
     \item $\delta_k$ is the magnitude of the change in slope at breakpoint $k$.
     \item $\omega_{kj}$ is the location (timing) of breakpoint $k$.
     \item $\rho_k$ is the sharpness of the transition.
-    \item $\sigma(x) = (1 + \exp(-x))^{-1}$ is the logistic sigmoid function.
+    \item $\text{logistic}(x) = (1 + \exp(-x))^{-1}$ is the logistic function.
     \item $\epsilon_{ij} \sim \mathcal{N}(0, \sigma^2)$ is the observation error.
 \end{itemize}
 

@@ -9,11 +9,11 @@
 #' The data-generating model for \eqn{K} breakpoints is:
 #' \deqn{
 #'   y_{ij} = (b_0 + u_j) + b_1 (\tau_{ij} - \omega_1)
-#'            + \sum_{k=1}^{K} \delta_k \, d_{ijk} \, \sigma(d_{ijk} \, \rho_k)
+#'            + \sum_{k=1}^{K} \delta_k \, d_{ijk} \, \text{logistic}(d_{ijk} \, \rho_k)
 #'            + \varepsilon_{ij}
 #' }
-#' where \eqn{d_{ijk} = \tau_{ij} - \omega_k} and \eqn{\sigma(\cdot)} is the
-#' logistic sigmoid.  The pre-break slope \eqn{b_1} is centred at the first
+#' where \eqn{d_{ijk} = \tau_{ij} - \omega_k} and \eqn{\text{logistic}(\cdot)} is the
+#' logistic function \eqn{\text{logistic}(x) = (1 + e^{-x})^{-1}}.  The pre-break slope \eqn{b_1} is centred at the first
 #' change-point \eqn{\omega_1}, so \eqn{b_0} represents the conditional mean
 #' at \eqn{\tau = \omega_1} (consistent with the fitted model).
 #'

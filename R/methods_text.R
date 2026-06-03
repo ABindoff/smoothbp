@@ -16,10 +16,6 @@
 #' and the output reflects this accordingly.
 #'
 #' @param object A \code{smoothbp_fit} or \code{smoothbp_ss_fit} object.
-#' @param digits Integer; decimal places used for numerical values in the
-#'   prior and estimate tables (default \code{3}).
-#' @param include_estimates Logical; if \code{TRUE} (default), appends the
-#'   fixed-effects posterior summary table.
 #' @param width Integer; line-wrap width for the narrative paragraph (default
 #'   \code{80}).
 #' @param ... Unused.
@@ -40,7 +36,7 @@
 #' fit <- smoothbp(y ~ tau, b0 = ~ 1 + (1 | subject), data = dat,
 #'                 chains = 4L, iter = 2000L, warmup = 1000L, seed = 42L)
 #' model_methods(fit)
-#' txt <- model_methods(fit, include_estimates = FALSE)
+#' txt <- model_methods(fit)
 #' cat(txt)
 #' }
 #'
@@ -50,9 +46,7 @@ model_methods <- function(object, ...) UseMethod("model_methods")
 #' @rdname model_methods
 #' @export
 model_methods.smoothbp_fit <- function(object,
-                                        digits            = 3,
-                                        include_estimates = TRUE,
-                                        width             = 80,
+                                        width = 80,
                                         ...) {
 
   # ---- 0. Feature detection -------------------------------------------
@@ -213,10 +207,10 @@ model_methods.smoothbp_fit <- function(object,
   } else {
     slope_term <- sprintf("b_1 * (%s - omega_1)", time)
     smooth_terms <- if (K == 1L) {
-      sprintf("delta_1 * (%s - omega_1) * sigma(rho_1 * (%s - omega_1))", time, time)
+      sprintf("delta_1 * (%s - omega_1) * logistic(rho_1 * (%s - omega_1))", time, time)
     } else {
       sprintf(
-        "sum_{k=1}^{%d} [ delta_k * (%s - omega_k) * sigma(rho_k * (%s - omega_k)) ]",
+        "sum_{k=1}^{%d} [ delta_k * (%s - omega_k) * logistic(rho_k * (%s - omega_k)) ]",
         K, time, time
       )
     }
@@ -263,7 +257,7 @@ model_methods.smoothbp_fit <- function(object,
     if (has_re_om)  "  sigma_re_omega_k : SD of random change-point timing (per breakpoint)" else NULL,
     if (has_re_b1)  "  sigma_re_b1 : SD of random slopes (b_1)" else NULL,
     if (has_re_del) "  sigma_re_delta_k : SD of random slope-change parameters (per breakpoint)" else NULL,
-    if (!is_linear) "  sigma(x) : 1 / (1 + exp(-x))  [logistic sigmoid]" else NULL,
+    if (!is_linear) "  logistic(x) : 1 / (1 + exp(-x))  [logistic function]" else NULL,
     "  epsilon_{ij} ~ Normal(0, sigma^2)"
   )
 
@@ -382,54 +376,73 @@ model_methods.smoothbp_fit <- function(object,
     sprintf("  Seed         : %d", object$seed)
   )
 
-  # ---- 6. Convergence diagnostics -------------------------------------
+  # ---- 6. Convergence check (warn on pathologies) ---------------------
   s_all <- tryCatch(summary(object, effects = "all"), error = function(e) NULL)
 
-  conv_lines <- character(0L)
+  # Collect pathologies
+  max_rhat  <- NA_real_
+  min_ebulk <- NA_real_
+  min_etail <- NA_real_
   if (!is.null(s_all) && nrow(s_all) > 0L) {
-    .conv_stat <- function(col_name, label, fmt, warn_fn) {
-      if (!col_name %in% names(s_all)) return(NULL)
-      v <- as.numeric(s_all[[col_name]]); v <- v[is.finite(v)]
-      if (!length(v)) return(NULL)
-      sprintf("  %-20s: %s  %s", label, fmt(v),
-              if (warn_fn(v)) "[WARNING]" else "[OK]")
+    .vget <- function(col) {
+      if (!col %in% names(s_all)) return(numeric(0L))
+      v <- as.numeric(s_all[[col]]); v[is.finite(v)]
     }
-    conv_lines <- c(conv_lines,
-      .conv_stat("Rhat",     "Max Rhat",
-                 function(v) sprintf("%.3f", max(v)),
-                 function(v) max(v) > 1.05),
-      .conv_stat("Bulk_ESS", "Min bulk ESS",
-                 function(v) as.character(as.integer(min(v))),
-                 function(v) min(v) < 100L),
-      .conv_stat("Tail_ESS", "Min tail ESS",
-                 function(v) as.character(as.integer(min(v))),
-                 function(v) min(v) < 100L)
+    rv <- .vget("Rhat");     if (length(rv)) max_rhat  <- max(rv)
+    eb <- .vget("Bulk_ESS"); if (length(eb)) min_ebulk <- min(eb)
+    et <- .vget("Tail_ESS"); if (length(et)) min_etail <- min(et)
+  }
+  n_diverg <- object$n_divergent
+
+  rhat_warn  <- !is.na(max_rhat)  && max_rhat  > 1.05
+  ebulk_warn <- !is.na(min_ebulk) && min_ebulk < 100L
+  etail_warn <- !is.na(min_etail) && min_etail < 100L
+  divg_warn  <- n_diverg > 0L
+  any_warn   <- rhat_warn || ebulk_warn || etail_warn || divg_warn
+
+  if (!any_warn) {
+    conv_lines <- c(
+      "  No convergence concerns detected.",
+      sprintf("  Max Rhat = %.3f,  min bulk ESS = %d,  min tail ESS = %d,  divergent transitions = %d.",
+              if (is.na(max_rhat)) 0 else max_rhat,
+              if (is.na(min_ebulk)) 0L else as.integer(min_ebulk),
+              if (is.na(min_etail)) 0L else as.integer(min_etail),
+              n_diverg),
+      "  Use model_results() for the full posterior summary."
     )
-    conv_lines <- conv_lines[!sapply(conv_lines, is.null)]
-  }
-  conv_lines <- c(conv_lines,
-    sprintf("  %-20s: %d  %s",
-            "Divergent transitions", object$n_divergent,
-            if (object$n_divergent > 0L) "[WARNING: check step sizes]" else "[OK]")
-  )
+  } else {
+    issues <- character(0L)
+    if (rhat_warn)
+      issues <- c(issues,
+        sprintf("  * Max Rhat = %.3f  (threshold 1.05) -- chains may not have mixed.", max_rhat))
+    if (ebulk_warn)
+      issues <- c(issues,
+        sprintf("  * Min bulk ESS = %d  (threshold 100) -- posterior bulk may be poorly sampled.",
+                as.integer(min_ebulk)))
+    if (etail_warn)
+      issues <- c(issues,
+        sprintf("  * Min tail ESS = %d  (threshold 100) -- posterior tails may be poorly sampled.",
+                as.integer(min_etail)))
+    if (divg_warn)
+      issues <- c(issues,
+        sprintf("  * %d divergent transition%s -- possible model misspecification or geometry problem.",
+                n_diverg, if (n_diverg == 1L) "" else "s"))
 
-  # ---- 7. Posterior estimates (fixed effects) -------------------------
-  est_lines <- character(0L)
-  if (include_estimates) {
-    s_fix <- tryCatch(summary(object, effects = "fixed"), error = function(e) NULL)
-    if (!is.null(s_fix) && nrow(s_fix) > 0L) {
-      s_fmt <- s_fix
-      num_cols <- sapply(s_fmt, is.numeric)
-      s_fmt[num_cols] <- lapply(s_fmt[num_cols], round, digits)
-      est_lines <- c(
-        "  [posterior mean, SD, 95% credible interval, Rhat, ESS]",
-        "",
-        paste0("  ", utils::capture.output(print(s_fmt, row.names = FALSE)))
-      )
-    }
+    conv_lines <- c(
+      "  !! CONVERGENCE WARNING !!",
+      "  The following issues were detected; consider whether the model is",
+      "  correctly specified before reporting results:",
+      "",
+      issues,
+      "",
+      "  Suggested diagnostics: trace_plot(fit), pp_check(fit).",
+      "  Common causes: poorly chosen priors on omega/rho, insufficient warmup,",
+      "  or a breakpoint location prior that extends beyond the data range.",
+      "  Use model_results() for the full posterior summary."
+    )
   }
 
-  # ---- 8. Reproducibility code snippet --------------------------------
+  # ---- 7. Reproducibility code snippet --------------------------------
   fn_call <- if (is_ss) "smoothbp_ss" else "smoothbp"
   repro_lines <- c(
     sprintf("library(smoothbp)  # version %s", pkg_version),
@@ -475,19 +488,10 @@ model_methods.smoothbp_fit <- function(object,
     "",
     algo_lines,
     "",
-    .section("CONVERGENCE DIAGNOSTICS"),
+    .section("CONVERGENCE NOTE"),
     "",
     conv_lines
   )
-
-  if (length(est_lines)) {
-    report <- c(report,
-      "",
-      .section("POSTERIOR ESTIMATES  (population-level fixed effects)"),
-      "",
-      est_lines
-    )
-  }
 
   report <- c(report,
     "",

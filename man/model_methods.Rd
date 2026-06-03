@@ -7,18 +7,12 @@
 \usage{
 model_methods(object, ...)
 
-\method{model_methods}{smoothbp_fit}(object, digits = 3, include_estimates = TRUE, width = 80, ...)
+\method{model_methods}{smoothbp_fit}(object, width = 80, ...)
 }
 \arguments{
 \item{object}{A \code{smoothbp_fit} or \code{smoothbp_ss_fit} object.}
 
 \item{...}{Unused.}
-
-\item{digits}{Integer; decimal places used for numerical values in the
-prior and estimate tables (default \code{3}).}
-
-\item{include_estimates}{Logical; if \code{TRUE} (default), appends the
-fixed-effects posterior summary table.}
 
 \item{width}{Integer; line-wrap width for the narrative paragraph (default
 \code{80}).}
@@ -48,7 +42,7 @@ and the output reflects this accordingly.
 fit <- smoothbp(y ~ tau, b0 = ~ 1 + (1 | subject), data = dat,
                 chains = 4L, iter = 2000L, warmup = 1000L, seed = 42L)
 model_methods(fit)
-txt <- model_methods(fit, include_estimates = FALSE)
+txt <- model_methods(fit)
 cat(txt)
 }
 

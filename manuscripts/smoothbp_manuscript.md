@@ -46,7 +46,7 @@ Outside of R, hierarchical segmented modeling typically requires custom implemen
 Consider longitudinal observations $y_{ij}$ for subject $j \in \{1, \dots, J\}$ at time point $\tau_{ij}$. A model with $K$ potential breakpoints is defined as:
 
 $$
-y_{ij} = b_0 + u_{0j} + b_1 \tau_{ij} + \sum_{k=1}^K \delta_{k} \cdot (\tau_{ij} - \omega_{kj}) \cdot \sigma\left( \rho_k (\tau_{ij} - \omega_{kj}) \right) + \epsilon_{ij}
+y_{ij} = b_0 + u_{0j} + b_1 \tau_{ij} + \sum_{k=1}^K \delta_{k} \cdot (\tau_{ij} - \omega_{kj}) \cdot \text{logistic}\left( \rho_k (\tau_{ij} - \omega_{kj}) \right) + \epsilon_{ij}
 $$
 
 where:
@@ -55,7 +55,7 @@ where:
 * $\delta_k$ is the magnitude of the change in slope at breakpoint $k$.
 * $\omega_{kj}$ is the location (timing) of breakpoint $k$.
 * $\rho_k$ is the sharpness of the transition.
-* $\sigma(x) = (1 + \exp(-x))^{-1}$ is the logistic sigmoid function.
+* $\text{logistic}(x) = (1 + \exp(-x))^{-1}$ is the logistic function.
 * $\epsilon_{ij} \sim \mathcal{N}(0, \sigma^2)$ is the observation error.
 
 As $\rho_k \to \infty$, the sigmoid converges to a Heaviside step function, recovering a traditional hard-kink piecewise model. Estimating $\rho_k$ explicitly accounts for gradual transitions. By centering the breakpoint terms on $\omega_{kj}$, the baseline slope $b_1$ applies universally before any shifts.

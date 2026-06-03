@@ -76,7 +76,7 @@ fit_market <- smoothbp(
 ### The Point of Maximum Structural Curvature
 
 The `smoothbp` mean function is:
-$$\mu(\tau) = b_0 + b_1(\tau - \omega_1) + \sum_{k=1}^K \delta_k (\tau - \omega_k)\, \sigma(\rho_k(\tau - \omega_k))$$
+$$\mu(\tau) = b_0 + b_1(\tau - \omega_1) + \sum_{k=1}^K \delta_k (\tau - \omega_k)\, \text{logistic}(\rho_k(\tau - \omega_k))$$
 
 The $k$-th breakpoint contributes a smooth, S-shaped transition in slope centred on $\omega_k$. The second derivative $f''(\tau)$ — measuring the *rate of bending* — has its maximum **exactly at $\tau = \omega_k$** by the symmetry of the logistic function. This holds regardless of the sign of $\delta_k$: a breakpoint that accelerates a rally and one that decelerates it both have their maximum curvature at $\omega_k$.
 

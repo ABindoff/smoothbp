@@ -295,12 +295,12 @@ model_results.smoothbp_fit <- function(object,
     re_str <- if (has_re_b0) " + u_{j}" else ""
     if (K == 1L) {
       gen_form <- sprintf(
-        "  %s_{ij} = (b0%s) + b1*(tau - omega_1) + delta_1*(tau - omega_1)*sigma(rho_1*(tau - omega_1)) + epsilon_{ij}",
+        "  %s_{ij} = (b0%s) + b1*(tau - omega_1) + delta_1*(tau - omega_1)*logistic(rho_1*(tau - omega_1)) + epsilon_{ij}",
         resp, re_str
       )
     } else {
       gen_form <- sprintf(
-        "  %s_{ij} = (b0%s) + b1*(tau - omega_1) + sum_{k=1}^{%d}[ delta_k*(tau - omega_k)*sigma(rho_k*(tau - omega_k)) ] + epsilon_{ij}",
+        "  %s_{ij} = (b0%s) + b1*(tau - omega_1) + sum_{k=1}^{%d}[ delta_k*(tau - omega_k)*logistic(rho_k*(tau - omega_k)) ] + epsilon_{ij}",
         resp, re_str, K
       )
     }
@@ -375,7 +375,7 @@ model_results.smoothbp_fit <- function(object,
 
       d_str   <- sprintf("(%s)", del_lp)
       om_str  <- sprintf("(%s - %s)", time, om_lp)
-      rho_str <- sprintf("sigma(%s * (%s - %s))", rho_lp, time, om_lp)
+      rho_str <- sprintf("logistic(%s * (%s - %s))", rho_lp, time, om_lp)
       sub_lines <- c(sub_lines,
         sprintf("  %s + %s * %s * %s", pad, d_str, om_str, rho_str)
       )
@@ -388,7 +388,7 @@ model_results.smoothbp_fit <- function(object,
 
   if (!is_linear)
     sub_lines <- c(sub_lines,
-      sprintf("  %s  where sigma(x) = 1/(1+exp(-x))", pad))
+      sprintf("  %s  where logistic(x) = 1/(1+exp(-x))", pad))
 
   if (any_cov)
     sub_lines <- c(sub_lines,

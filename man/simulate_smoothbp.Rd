@@ -9,7 +9,7 @@ simulate_smoothbp(
   n_obs = 8L,
   b0 = 5,
   b1 = -0.3,
-  b2 = 1.2,
+  delta = 1.2,
   omega = 3,
   rho = 4,
   sigma = 0.4,
@@ -25,16 +25,19 @@ simulate_smoothbp(
 \item{n_obs}{Observations per subject.  May be a scalar (same for all
 subjects) or a length-\code{n_subj} integer vector for unbalanced designs.}
 
-\item{b0}{Overall intercept.}
+\item{b0}{Overall intercept (conditional mean at \eqn{\tau = \omega_1}).}
 
-\item{b1}{Pre-change-point slope.}
+\item{b1}{Pre-change-point slope (evaluated relative to \eqn{\omega_1}).}
 
-\item{b2}{Change in slope at the change-point.}
+\item{delta}{Change in slope at each change-point.  A numeric vector of
+length \eqn{K}; a scalar is treated as \eqn{K = 1}.}
 
-\item{omega}{Change-point location (must be positive).}
+\item{omega}{Change-point location(s).  A numeric vector of length
+\eqn{K}, in ascending order.  A scalar is treated as \eqn{K = 1}.}
 
-\item{rho}{Sharpness of the transition (must be positive; larger values
-give a sharper kink).}
+\item{rho}{Sharpness of each transition.  A numeric vector of length
+\eqn{K} (all values must be positive); a scalar is recycled to length
+\eqn{K}.}
 
 \item{sigma}{Residual standard deviation.}
 
@@ -57,30 +60,53 @@ A \code{data.frame} with columns:
 \item{\code{y}}{Observed response.}
 }
 The attribute \code{"true_params"} is a named list containing the
-data-generating values of \code{b0}, \code{b1}, \code{b2}, \code{omega},
+data-generating values of \code{b0}, \code{b1}, \code{delta}, \code{omega},
 \code{rho}, \code{sigma}, \code{sigma_u}, the vector of subject-level
 deviations \code{u}, and the \code{seed} used.
 }
 \description{
 Generates synthetic data from the model used by \code{\link{smoothbp}},
-including optional between-subject random intercepts.  True parameter values
-are stored as the \code{"true_params"} attribute so they can be compared
-against posterior estimates.
+including optional between-subject random intercepts.  Supports any number
+of breakpoints \eqn{K \geq 1}.  True parameter values are stored as the
+\code{"true_params"} attribute so they can be compared against posterior
+estimates.
 }
 \details{
-The data-generating model is:
-\deqn{y_{ij} = (b0 + u_j) + b1 \cdot d_{ij} + b2 \cdot d_{ij} \cdot \sigma(d_{ij} \cdot \rho) + \varepsilon_{ij}}
-where \eqn{d_{ij} = \tau_{ij} - \omega} and \eqn{\sigma(\cdot)} is the
-logistic sigmoid.
+The data-generating model for \eqn{K} breakpoints is:
+\deqn{
+  y_{ij} = (b_0 + u_j) + b_1 (\tau_{ij} - \omega_1)
+           + \sum_{k=1}^{K} \delta_k \, d_{ijk} \, \text{logistic}(d_{ijk} \, \rho_k)
+           + \varepsilon_{ij}
+}
+where \eqn{d_{ijk} = \tau_{ij} - \omega_k} and \eqn{\text{logistic}(\cdot)} is the
+logistic function \eqn{\text{logistic}(x) = (1 + e^{-x})^{-1}}.  The pre-break slope \eqn{b_1} is centred at the first
+change-point \eqn{\omega_1}, so \eqn{b_0} represents the conditional mean
+at \eqn{\tau = \omega_1} (consistent with the fitted model).
+
+For a single breakpoint (\eqn{K = 1}), scalar values of \code{omega},
+\code{rho}, and \code{delta} are accepted for backward compatibility.
 }
 \examples{
-dat <- simulate_smoothbp(
+# Single breakpoint (K = 1)
+dat1 <- simulate_smoothbp(
   n_subj = 20, n_obs = 8,
-  b0 = 5, b1 = -0.3, b2 = 1.2,
+  b0 = 5, b1 = -0.3, delta = 1.2,
   omega = 3, rho = 4, sigma = 0.4, sigma_u = 0.5,
   seed = 42
 )
-head(dat)
-attr(dat, "true_params")
+head(dat1)
+attr(dat1, "true_params")
+
+# Two breakpoints (K = 2)
+dat2 <- simulate_smoothbp(
+  n_subj = 20, n_obs = 12,
+  b0 = 5, b1 = -0.3,
+  delta = c(1.2, -0.8),
+  omega = c(2, 4),
+  rho   = c(4, 4),
+  sigma = 0.4, sigma_u = 0.5,
+  seed = 42
+)
+head(dat2)
 
 }
