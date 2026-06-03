@@ -105,17 +105,15 @@ ggplot(dat, aes(x = tau, y = y, group = subject, colour = subject)) +
 
 ---
 
-> **Experimental feature.** Random effects on change-point location
-> (`omega = list(~ 1 + (1 | subject))`) are functional but the sampler
-> geometry for this parameter block is still under active development.
-> The centred parameterisation (`reparameterise = "none"`, the default)
-> runs correctly and will converge given sufficient iterations, but may
-> require longer chains than other model configurations due to the
-> well-known hierarchical funnel.  The non-centred reparameterisation
-> (`reparameterise = "omega"`) is available but currently exhibits
-> worse-than-expected mixing in some settings and should be used with
-> careful convergence checking.  All other `smoothbp` features are
-> unaffected.
+> **Note on convergence.** The centred parameterisation
+> (`reparameterise = "none"`, the default) can exhibit slow mixing on the
+> population-level intercept `omega1_(Intercept)` when between-subject
+> variability (`sigma_re_omega`) is large — a well-known property of
+> centred hierarchical models.  In such cases, prefer
+> `reparameterise = "omega"`, which uses a non-centred parameterisation
+> for the per-subject deviations and typically yields substantially higher
+> ESS for the variance components.  As with any hierarchical model,
+> always inspect trace plots and Rhat values before reporting results.
 
 ---
 
