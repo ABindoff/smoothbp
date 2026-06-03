@@ -22,6 +22,8 @@ smoothbp(
   target_accept = 0.65,
   cores = getOption("smoothbp.cores", 1L),
   hierarchical = NULL,
+  reparameterise = c("none", "omega"),
+  re_fraction = NULL,
   .verbose = TRUE
 )
 }
@@ -61,8 +63,11 @@ Can also contain \code{\link{fixed}()} values for fixed sharpness.}
 
 \item{cores}{Number of CPU cores.}
 
-\item{hierarchical}{Character vector; which parameters should be treated as hierarchical.
-Legacy argument, now mostly auto-detected from \code{(1|group)} formula syntax.}
+\item{hierarchical}{\strong{Deprecated.} Character vector; which parameters
+should be treated as hierarchical. This argument is no longer needed:
+random effects on change-point timing are auto-detected from
+\code{(1|group)} formula syntax (e.g. \code{omega = list(~ 1 + (1|group))}).
+Passing a non-\code{NULL} value generates a deprecation warning.}
 
 \item{.verbose}{Print progress.}
 }

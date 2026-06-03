@@ -323,7 +323,7 @@ fn run_mcmc_re(
     group_b0: &[i32],
     n_groups_b0: i32,
     re_mask_om: List,
-    nc_om: &[i32],
+    nc_om_per_group: List,
     re_mask_b1: &[i32],
     re_mask_deltas: List,
     nc_b1: bool,
@@ -365,7 +365,12 @@ fn run_mcmc_re(
     if p_rho.len() == 1 && p_rho[0] == -1 { p_rho = &[]; }
     if group_b0.len() == 1 && group_b0[0] == -1 { group_b0 = &[]; }
 
-    let nc_om_bool:     Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
+    // Per-group NC flags: one Vec<bool> per breakpoint, one entry per RE subject.
+    // Sentinel [-1] means no omega RE for that breakpoint -> empty inner vec.
+    let nc_om_pg: Vec<Vec<bool>> = nc_om_per_group.iter().map(|r| {
+        let v = r.1.as_integer_vector().unwrap();
+        if v.len() == 1 && v[0] == -1 { vec![] } else { v.iter().map(|&x| x > 0).collect() }
+    }).collect();
     let nc_deltas_bool: Vec<bool> = nc_deltas.iter().map(|&v| v != 0).collect();
     // Use v > 0 (not v != 0) so that the sentinel value -1 from R is treated as false.
     let re_mask_b1_bool: Vec<bool> = re_mask_b1.iter().map(|&v| v > 0).collect();
@@ -439,13 +444,13 @@ fn run_mcmc_re(
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
                 let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_bool, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
+                run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_pg, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
             }).collect()
         })
     } else {
         (0..n_chains).map(|c| {
             let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-            run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_bool, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
+            run_chain_re(&data, &priors, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_pg, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
         }).collect()
     };
 
@@ -474,7 +479,7 @@ fn run_mcmc_re_ss(
     group_b0: &[i32],
     n_groups_b0: i32,
     re_mask_om: List,
-    nc_om: &[i32],
+    nc_om_per_group: List,
     re_mask_b1: &[i32],
     re_mask_deltas: List,
     nc_b1: bool,
@@ -523,7 +528,12 @@ fn run_mcmc_re_ss(
     if group_b0.len() == 1 && group_b0[0] == -1 { group_b0 = &[]; }
     if b1_spike_mask.len() == 1 && b1_spike_mask[0] == -1 { b1_spike_mask = &[]; }
 
-    let nc_om_bool:     Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
+    // Per-group NC flags: one Vec<bool> per breakpoint, one entry per RE subject.
+    // Sentinel [-1] means no omega RE for that breakpoint -> empty inner vec.
+    let nc_om_pg: Vec<Vec<bool>> = nc_om_per_group.iter().map(|r| {
+        let v = r.1.as_integer_vector().unwrap();
+        if v.len() == 1 && v[0] == -1 { vec![] } else { v.iter().map(|&x| x > 0).collect() }
+    }).collect();
     let nc_deltas_bool: Vec<bool> = nc_deltas.iter().map(|&v| v != 0).collect();
     // Use v > 0 (not v != 0) so that the sentinel value -1 from R is treated as false.
     let re_mask_b1_bool: Vec<bool> = re_mask_b1.iter().map(|&v| v > 0).collect();
@@ -604,13 +614,13 @@ fn run_mcmc_re_ss(
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
                 let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-                run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_bool, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
+                run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, false, c, n_chains, &nc_om_pg, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
             }).collect()
         })
     } else {
         (0..n_chains).map(|c| {
             let seed = base_seed.wrapping_add(c as u64 * 1_000_003);
-            run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_bool, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
+            run_chain_re_ss(&data, &priors, &ss, n_iter, n_warmup, step_om, step_rho, target_accept, seed, verbose, c, n_chains, &nc_om_pg, nc_b1, &nc_deltas_bool, &|_,_,_,_,_| {})
         }).collect()
     };
 

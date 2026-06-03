@@ -1034,7 +1034,7 @@ fn joint_subject_nuts(
     rng: &mut StdRng,
     nc_b1: bool,
     nc_deltas: &[bool],
-    nc_omega: &[bool],
+    nc_omega: &[Vec<bool>],
 ) {
     let n = data.n;
     let nb = data.n_breakpoints;
@@ -1156,7 +1156,9 @@ fn joint_subject_nuts(
             }
             for k in 0..nb {
                 if has_re_omega[k] && s < re_cols_omega[k].len() {
-                    nc_flags.push(if k < nc_omega.len() { nc_omega[k] } else { false });
+                    // Per-subject NC flag: nc_omega[k][s] if available, else centred.
+                    let flag = k < nc_omega.len() && s < nc_omega[k].len() && nc_omega[k][s];
+                    nc_flags.push(flag);
                     idx += 1;
                 }
             }
@@ -1426,7 +1428,7 @@ pub fn run_chain_re(
     data: &ModelData, priors: &Priors, n_iter: usize, n_warmup: usize,
     step_om_init: f64, step_rho_init: f64, target_accept: f64,
     seed: u64, verbose: bool, chain_id: usize, n_chains: usize,
-    nc_om: &[bool],
+    nc_om: &[Vec<bool>],
     nc_b1: bool,
     nc_deltas: &[bool],
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
@@ -1531,7 +1533,7 @@ pub fn run_chain_re_ss(
     data: &ModelData, priors: &Priors, ss: &SpikeSlabConfig, n_iter: usize, n_warmup: usize,
     step_om_init: f64, step_rho_init: f64, target_accept: f64,
     seed: u64, verbose: bool, chain_id: usize, n_chains: usize,
-    nc_om: &[bool],
+    nc_om: &[Vec<bool>],
     nc_b1: bool,
     nc_deltas: &[bool],
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),

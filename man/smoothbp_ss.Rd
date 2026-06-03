@@ -24,6 +24,8 @@ smoothbp_ss(
   step_rho = 0.3,
   target_accept = 0.65,
   cores = getOption("smoothbp.cores", 1L),
+  reparameterise = c("none", "omega"),
+  re_fraction = NULL,
   .verbose = TRUE
 )
 }

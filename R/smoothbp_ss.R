@@ -42,6 +42,7 @@ smoothbp_ss <- function(
     target_accept = 0.65,
     cores    = getOption("smoothbp.cores", 1L),
     reparameterise = c("none", "omega"),
+    re_fraction = NULL,
     .verbose = TRUE
 ) {
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -126,10 +127,7 @@ smoothbp_ss <- function(
     if (length(re_mask_om) == 0) re_mask_om <- list(as.integer(-1))
 
     reparameterise <- match.arg(reparameterise)
-    nc_om <- sapply(seq_along(dm$X_om), function(k) {
-      mask <- attr(dm$X_om[[k]], "re_mask")
-      as.integer(reparameterise == "omega" && !is.null(mask) && any(mask == 1L))
-    })
+    nc_om_per_group <- .build_nc_om_per_group(dm, reparameterise, re_fraction, has_re_om)
 
     re_mask_b1_vec <- if (has_re_b1) {
       m <- attr(dm$X_b1, "re_mask"); if (is.null(m)) as.integer(-1) else as.integer(m)
@@ -168,9 +166,9 @@ smoothbp_ss <- function(
       p_rho         = p_rho_safe,
       group_b0      = group_b0_safe,
       n_groups_b0   = dm$n_groups_b0,
-      re_mask_om    = re_mask_om,
-      nc_om         = nc_om,
-      re_mask_b1    = re_mask_b1_vec,
+      re_mask_om      = re_mask_om,
+      nc_om_per_group = nc_om_per_group,
+      re_mask_b1      = re_mask_b1_vec,
       re_mask_deltas = re_mask_deltas_list,
       nc_b1         = nc_b1,
       nc_deltas     = nc_deltas,
@@ -316,6 +314,7 @@ smoothbp_ss <- function(
       priors        = priors,
       spike         = spike,
       hierarchical  = hierarchical,
+      re_fraction   = re_fraction,
       n_divergent   = as.integer(sum(raw$n_divergent))
     ),
     class = c("smoothbp_ss_fit", "smoothbp_fit")

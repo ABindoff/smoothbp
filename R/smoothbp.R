@@ -47,6 +47,7 @@ smoothbp <- function(
     cores    = getOption("smoothbp.cores", 1L),
     hierarchical = NULL,
     reparameterise = c("none", "omega"),
+    re_fraction = NULL,
     .verbose = TRUE
 ) {
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -111,10 +112,7 @@ smoothbp <- function(
     if (length(re_mask_om) == 0) re_mask_om <- list(as.integer(-1))
 
     reparameterise <- match.arg(reparameterise)
-    nc_om <- sapply(seq_along(dm$X_om), function(k) {
-      mask <- attr(dm$X_om[[k]], "re_mask")
-      as.integer(reparameterise == "omega" && !is.null(mask) && any(mask == 1L))
-    })
+    nc_om_per_group <- .build_nc_om_per_group(dm, reparameterise, re_fraction, has_re_om)
 
     # b1 and delta RE masks
     re_mask_b1_vec <- if (has_re_b1) {
@@ -163,9 +161,9 @@ smoothbp <- function(
       p_rho         = p_rho_safe,
       group_b0      = group_b0_safe,
       n_groups_b0   = dm$n_groups_b0,
-      re_mask_om    = re_mask_om,
-      nc_om         = nc_om,
-      re_mask_b1    = re_mask_b1_vec,
+      re_mask_om      = re_mask_om,
+      nc_om_per_group = nc_om_per_group,
+      re_mask_b1      = re_mask_b1_vec,
       re_mask_deltas = re_mask_deltas_list,
       nc_b1         = nc_b1,
       nc_deltas     = nc_deltas,
@@ -289,6 +287,7 @@ smoothbp <- function(
       step_rho      = step_rho,
       target_accept = target_accept,
       priors        = priors,
+      re_fraction   = re_fraction,
       n_divergent   = as.integer(sum(raw$n_divergent))
     ),
     class = "smoothbp_fit"
@@ -321,6 +320,7 @@ update.smoothbp_fit <- function(
     chains, iter, warmup, seed,
     step_om, step_rho, target_accept,
     cores,
+    re_fraction,
     .verbose = TRUE,
     ...
 ) {
@@ -340,6 +340,7 @@ update.smoothbp_fit <- function(
   if (missing(step_om))        step_om        <- object$step_om
   if (missing(step_rho))       step_rho       <- object$step_rho
   if (missing(target_accept))  target_accept  <- object$target_accept
+  if (missing(re_fraction))    re_fraction    <- object$re_fraction
 
   smoothbp(
     formula       = formula,
@@ -358,6 +359,7 @@ update.smoothbp_fit <- function(
     step_rho      = step_rho,
     target_accept = target_accept,
     cores         = cores,
+    re_fraction   = re_fraction,
     .verbose      = .verbose
   )
 }
