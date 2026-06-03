@@ -60,7 +60,7 @@ test_that("smoothbp matches brms on intercept-only model", {
   set.seed(31)
   dat <- simulate_smoothbp(
     n_subj = 25, n_obs = 10,
-    b0 = 5.0, b1 = -0.4, b2 = 1.4,
+    b0 = 5.0, b1 = -0.4, delta = 1.4,
     omega = 3.2, rho = 4.0,
     sigma = 0.4, sigma_u = 0.7,
     seed = 31L

@@ -23,9 +23,9 @@ utils::globalVariables(c(
 
   # Accept fibr advice objects directly
   if (inherits(re_fraction, "fibr_smoothbp_advice")) {
-    if (!requireNamespace("fibr", quietly = TRUE))
+    if (!eval(call("requireNamespace", "fibr", quietly = TRUE)))
       stop("Install the 'fibr' package to use a fibr_smoothbp_advice with re_fraction.")
-    re_fraction <- fibr::as_smoothbp_re_fraction(re_fraction)
+    re_fraction <- asNamespace("fibr")$as_smoothbp_re_fraction(re_fraction)
   }
 
   lapply(seq_along(dm$X_om), function(k) {

@@ -135,6 +135,9 @@ tab_smoothbp <- function(...,
   # ---- Render --------------------------------------------------------------
   if (!requireNamespace("gt", quietly = TRUE)) {
     message("Install the 'gt' package for a richer table. Falling back to knitr::kable().")
+    if (!requireNamespace("knitr", quietly = TRUE)) {
+      stop("Install 'knitr' for the fallback table renderer, or install 'gt' for the full table.")
+    }
     return(knitr::kable(tbl_out,
                         col.names = c("Block", "Parameter", labels),
                         row.names = FALSE,

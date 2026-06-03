@@ -9,7 +9,7 @@ test_that("PIP is moderate/low when b2 covariate has no true effect", {
 
   dat <- simulate_smoothbp(
     n_subj = 1, n_obs = 80,
-    b0 = 5, b1 = -0.4, b2 = 1.2,
+    b0 = 5, b1 = -0.4, delta = 1.2,
     omega = 3, rho = 4,
     sigma = 0.4, sigma_u = 0,
     seed = 7710L
@@ -45,7 +45,7 @@ test_that("PIP is high when b2 covariate has a strong true effect", {
 
   dat <- simulate_smoothbp(
     n_subj = 1, n_obs = 120,
-    b0 = 5, b1 = -0.4, b2 = 1.2,
+    b0 = 5, b1 = -0.4, delta = 1.2,
     omega = 3, rho = 4,
     sigma = 0.4, sigma_u = 0,
     seed = 8820L
@@ -83,7 +83,7 @@ test_that("omega covariate is exactly zero when gamma is zero", {
 
   dat <- simulate_smoothbp(
     n_subj = 1, n_obs = 60,
-    b0 = 5, b1 = -0.4, b2 = 1.2,
+    b0 = 5, b1 = -0.4, delta = 1.2,
     omega = 3, rho = 4,
     sigma = 0.4, sigma_u = 0,
     seed = 9930L
@@ -129,7 +129,7 @@ test_that("smoothbp_ss returns correct class", {
 
   dat <- simulate_smoothbp(
     n_subj = 1, n_obs = 40,
-    b0 = 5, b1 = -0.4, b2 = 1.2,
+    b0 = 5, b1 = -0.4, delta = 1.2,
     omega = 3, rho = 4,
     sigma = 0.4, sigma_u = 0,
     seed = 3340L

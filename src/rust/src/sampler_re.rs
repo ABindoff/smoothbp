@@ -678,14 +678,10 @@ fn hmc_step_om(
     let (q_new, accept) = nuts_sample(&q0, energy_fn, adapt, rng, &lb, &ub);
 
     // Write back: active columns only.
-    for (qi, &j) in active_idx.iter().enumerate() {
-        state.beta_om[k][j] = if do_nc && data.re_mask_om[k][j] {
-            q_new[qi] * sigma_re
-        } else {
-            q_new[qi]
-        };
+    for (i, &j) in active_idx.iter().enumerate() {
+        state.beta_om[k][j] = if do_nc && data.re_mask_om[k][j] { q_new[i] * sigma_re }
+                               else                            { q_new[i] };
     }
-
     adapt.update_epsilon(accept);
 }
 
@@ -1417,6 +1413,80 @@ fn joint_subject_nuts(
         }
 
         adapt_per_subject[s].update_epsilon(accept);
+        if adapt_per_subject[s].adapting {
+            adapt_per_subject[s].observe(&q_new);
+            if adapt_per_subject[s].da_count % 500 == 0 {
+                adapt_per_subject[s].refresh_mass_matrix();
+            }
+        }
+    }
+}
+
+fn sample_truncated_normal(mean: f64, sd: f64, lb: f64, ub: f64, rng: &mut StdRng) -> f64 {
+    let normal = rand_distr::Normal::new(mean, sd).unwrap();
+    for _ in 0..1000 {
+        let val = normal.sample(rng);
+        if val >= lb && val <= ub {
+            return val;
+        }
+    }
+    normal.sample(rng).clamp(lb, ub)
+}
+
+fn omega_translation_step(
+    data: &ModelData,
+    priors: &Priors,
+    state: &mut State,
+    k: usize,
+    rng: &mut StdRng,
+    nc_om: &[Vec<bool>],
+) {
+    let has_re = data.re_mask_om[k].iter().any(|&m| m);
+    if !has_re { return; }
+
+    let n_sub = data.n_subjects;
+    if n_sub == 0 { return; }
+
+    let re_cols: Vec<usize> = data.re_mask_om[k].iter().enumerate()
+        .filter_map(|(j, &m)| if m { Some(j) } else { None }).collect();
+
+    if re_cols.len() != n_sub { return; }
+
+    let omega_bar = state.beta_om[k][0];
+    let mean_bar = priors.om_mean[k][0];
+    let sd_bar = priors.om_sd[k][0];
+
+    let sigma_re = state.sigma_re_om[k];
+    if sigma_re <= 1e-10 { return; }
+
+    let mut sum_u = 0.0;
+    for s in 0..n_sub {
+        let j = re_cols[s];
+        let val = state.beta_om[k][j];
+        let is_nc_s = k < nc_om.len() && s < nc_om[k].len() && nc_om[k][s];
+        let u_s = if is_nc_s { val * sigma_re } else { val };
+        sum_u += u_s;
+    }
+
+    let prec = 1.0 / (sd_bar * sd_bar) + (n_sub as f64) / (sigma_re * sigma_re);
+    let var_c = 1.0 / prec;
+    let sd_c = var_c.sqrt();
+    let mean_c = var_c * ( (mean_bar - omega_bar) / (sd_bar * sd_bar) + sum_u / (sigma_re * sigma_re) );
+
+    let lb_c = priors.om_lb[k][0] - omega_bar;
+    let ub_c = priors.om_ub[k][0] - omega_bar;
+
+    let c = sample_truncated_normal(mean_c, sd_c, lb_c, ub_c, rng);
+
+    state.beta_om[k][0] += c;
+    for s in 0..n_sub {
+        let j = re_cols[s];
+        let is_nc_s = k < nc_om.len() && s < nc_om[k].len() && nc_om[k][s];
+        if is_nc_s {
+            state.beta_om[k][j] -= c / sigma_re;
+        } else {
+            state.beta_om[k][j] -= c;
+        }
     }
 }
 
@@ -1448,11 +1518,10 @@ pub fn run_chain_re(
         .collect();
 
     // Per-breakpoint adapters for the fixed-only omega update.
-    // Dimension = number of non-RE columns so the adapter matches the reduced
-    // q vector that hmc_step_om(skip_re=true) actually proposes.
+    // Dimension = number of fixed (non-RE) columns in x_om
     let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints)
         .map(|k| {
-            let p_fixed = data.re_mask_om[k].iter().filter(|&&m| !m).count().max(1);
+            let p_fixed = data.x_om[k].ncols() - data.re_mask_om[k].iter().filter(|&&m| m).count();
             HmcAdapt::new(p_fixed, step_om_init, target_accept)
         })
         .collect();
@@ -1475,13 +1544,12 @@ pub fn run_chain_re(
         joint_subject_nuts(data, priors, &mut state, &mut adapt_subj, &mut rng,
                            nc_b1, nc_deltas, nc_om);
 
-        // Fixed-only omega update: only non-RE columns are proposed; RE columns
-        // remain at the values just set by joint_subject_nuts, eliminating the
-        // (omega_bar + c, u_j - c) null direction.
         for k in 0..data.n_breakpoints {
             let cache_k = LinearCache::build(&state, data);
+            let nc_flag = k < nc_om.len() && nc_om[k].iter().any(|&x| x);
             hmc_step_om(data, priors, &mut state, k, &cache_k, &mut adapt_om[k], &mut rng,
-                        false, true);
+                        nc_flag, true);
+            omega_translation_step(data, priors, &mut state, k, &mut rng, nc_om);
         }
 
         // Rho update (conditions on current omega)
@@ -1499,13 +1567,13 @@ pub fn run_chain_re(
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
-                // Observe only the fixed columns (matches adapter dimension).
-                let p_full = data.x_om[k].ncols();
-                let fixed_vals: Vec<f64> = (0..p_full)
-                    .filter(|&j| !data.re_mask_om[k][j])
-                    .map(|j| state.beta_om[k][j])
-                    .collect();
-                adapt_om[k].observe(&DVector::from_vec(fixed_vals));
+                let fixed_om = DVector::from_iterator(
+                    adapt_om[k].p,
+                    state.beta_om[k].iter().enumerate()
+                        .filter(|&(j, _)| !data.re_mask_om[k][j])
+                        .map(|(_, &v)| v)
+                );
+                adapt_om[k].observe(&fixed_om);
                 if (iter + 1) % 500 == 0 { adapt_om[k].refresh_mass_matrix(); }
                 adapt_rho[k].observe(&state.beta_rho[k]);
                 if (iter + 1) % 500 == 0 { adapt_rho[k].refresh_mass_matrix(); }
@@ -1524,9 +1592,11 @@ pub fn run_chain_re(
             for (col, &val) in draw.iter().enumerate() { draws[(row, col)] = val; }
         }
     }
-    let n_div = adapt_subj.iter().map(|h| h.n_divergent).sum::<usize>()
-              + adapt_om.iter().map(|h| h.n_divergent).sum::<usize>()
-              + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
+    let div_subj = adapt_subj.iter().map(|h| h.n_divergent).sum::<usize>();
+    let div_om = adapt_om.iter().map(|h| h.n_divergent).sum::<usize>();
+    let div_rho = adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
+    println!("Chain {} finished. Divergences - Subj: {}, Om: {}, Rho: {}", chain_id, div_subj, div_om, div_rho);
+    let n_div = div_subj + div_om + div_rho;
     (draws, n_div)
 }
 pub fn run_chain_re_ss(
@@ -1554,7 +1624,7 @@ pub fn run_chain_re_ss(
         .collect();
     let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints)
         .map(|k| {
-            let p_fixed = data.re_mask_om[k].iter().filter(|&&m| !m).count().max(1);
+            let p_fixed = data.x_om[k].ncols() - data.re_mask_om[k].iter().filter(|&&m| m).count();
             HmcAdapt::new(p_fixed, step_om_init, target_accept)
         })
         .collect();
@@ -1575,11 +1645,12 @@ pub fn run_chain_re_ss(
         joint_subject_nuts(data, priors, &mut state, &mut adapt_subj, &mut rng,
                            nc_b1, nc_deltas, nc_om);
 
-        // Fixed-only omega update (skip_re=true keeps RE columns frozen).
         for k in 0..data.n_breakpoints {
             let cache_k = LinearCache::build(&state, data);
+            let nc_flag = k < nc_om.len() && nc_om[k].iter().any(|&x| x);
             hmc_step_om(data, priors, &mut state, k, &cache_k, &mut adapt_om[k], &mut rng,
-                        false, true);
+                        nc_flag, true);
+            omega_translation_step(data, priors, &mut state, k, &mut rng, nc_om);
         }
 
         let cache = LinearCache::build(&state, data);
@@ -1598,12 +1669,13 @@ pub fn run_chain_re_ss(
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
-                let p_full = data.x_om[k].ncols();
-                let fixed_vals: Vec<f64> = (0..p_full)
-                    .filter(|&j| !data.re_mask_om[k][j])
-                    .map(|j| state.beta_om[k][j])
-                    .collect();
-                adapt_om[k].observe(&DVector::from_vec(fixed_vals));
+                let fixed_om = DVector::from_iterator(
+                    adapt_om[k].p,
+                    state.beta_om[k].iter().enumerate()
+                        .filter(|&(j, _)| !data.re_mask_om[k][j])
+                        .map(|(_, &v)| v)
+                );
+                adapt_om[k].observe(&fixed_om);
                 if (iter + 1) % 500 == 0 { adapt_om[k].refresh_mass_matrix(); }
                 adapt_rho[k].observe(&state.beta_rho[k]);
                 if (iter + 1) % 500 == 0 { adapt_rho[k].refresh_mass_matrix(); }

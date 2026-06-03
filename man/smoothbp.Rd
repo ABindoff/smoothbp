@@ -69,6 +69,15 @@ random effects on change-point timing are auto-detected from
 \code{(1|group)} formula syntax (e.g. \code{omega = list(~ 1 + (1|group))}).
 Passing a non-\code{NULL} value generates a deprecation warning.}
 
+\item{reparameterise}{Character specifying the parameterisation for random change-points:
+\code{"none"} (centred) or \code{"omega"} (fully non-centred). Default is \code{"none"}.
+Only used if random effects are present.}
+
+\item{re_fraction}{Optional per-group prior mixing fraction for partial non-centring.
+Can be a list of numeric vectors between 0 and 1 (one per breakpoint, with one value per subject group),
+or a \code{fibr_smoothbp_advice} object. If \code{NULL} (default), uses the global
+\code{reparameterise} setting.}
+
 \item{.verbose}{Print progress.}
 }
 \value{

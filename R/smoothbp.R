@@ -24,6 +24,13 @@
 #'   random effects on change-point timing are auto-detected from
 #'   \code{(1|group)} formula syntax (e.g. \code{omega = list(~ 1 + (1|group))}).
 #'   Passing a non-\code{NULL} value generates a deprecation warning.
+#' @param reparameterise Character specifying the parameterisation for random change-points:
+#'   \code{"none"} (centred) or \code{"omega"} (fully non-centred). Default is \code{"none"}.
+#'   Only used if random effects are present.
+#' @param re_fraction Optional per-group prior mixing fraction for partial non-centring.
+#'   Can be a list of numeric vectors between 0 and 1 (one per breakpoint, with one value per subject group),
+#'   or a \code{fibr_smoothbp_advice} object. If \code{NULL} (default), uses the global
+#'   \code{reparameterise} setting.
 #' @param .verbose Print progress.
 #'
 #' @return A \code{smoothbp_fit} object.
@@ -301,12 +308,12 @@ smoothbp <- function(
 #' unspecified.
 #'
 #' @param object A \code{smoothbp_fit} object.
-#' @param formula,b0,b1,deltas,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
+#' @param formula,b0,b1,deltas,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,re_fraction,.verbose
 #'   Replacements for the corresponding arguments of \code{\link{smoothbp}}.
 #'   Any argument not supplied is taken from \code{object}, including the
 #'   original \code{seed} and sampler tuning parameters (\code{step_om},
 #'   \code{step_rho}, \code{target_accept}).  To use a fresh seed or different
-#'   tuning, supply them explicitly.
+#'   tuning, supply them explicitly. For \code{re_fraction}, see \code{\link{smoothbp}}.
 #' @param ... Ignored.
 #'
 #' @return A new \code{smoothbp_fit} object.

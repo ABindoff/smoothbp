@@ -69,7 +69,7 @@ set.seed(2026)
 # Simulate a two-group dataset where the change-point shifts by group.
 make_two_group_data <- function(n_subj_per = 20, n_obs = 10,
                                  omega_a = 2.5, omega_b = 4.0,
-                                 b0 = 5, b1 = -0.4, b2 = 1.3,
+                                 b0 = 5, b1 = -0.4, delta = 1.3,
                                  rho = 4, sigma = 0.4, sigma_u = 0.6,
                                  seed = 11L) {
   set.seed(seed)
@@ -80,7 +80,7 @@ make_two_group_data <- function(n_subj_per = 20, n_obs = 10,
     for (j in seq_len(n_subj_per)) {
       tj <- seq(0, 6, length.out = n_obs)
       d  <- tj - omega_g
-      mu <- (b0 + u[j]) + b1 * d + b2 * d * sigmoid(d * rho)
+      mu <- (b0 + u[j]) + b1 * d + delta * d * sigmoid(d * rho)
       yj <- mu + rnorm(n_obs, 0, sigma)
       rows[[j]] <- tibble::tibble(
         subject = factor(sid_offset + j),
@@ -111,7 +111,7 @@ fit_cov <- smoothbp(
   formula = y ~ tau,
   b0      = ~ 1 + group + (1 | subject),
   b1      = ~ 1,
-  b2      = ~ 1,
+  deltas  = list(~ 1),
   omega   = ~ 1 + group,
   rho     = ~ 1,
   data    = dat,
@@ -163,7 +163,7 @@ fit_int <- smoothbp(
   formula = y ~ tau,
   b0      = ~ 1 + (1 | subject),
   b1      = ~ 1,
-  b2      = ~ 1,
+  deltas  = list(~ 1),
   omega   = ~ 1,
   rho     = ~ 1,
   data    = dat,

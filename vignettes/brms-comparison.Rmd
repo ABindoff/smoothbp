@@ -83,7 +83,7 @@ if (!have_mcp && NOT_CRAN) {
 set.seed(31)
 dat <- simulate_smoothbp(
   n_subj = 25, n_obs = 10,
-  b0 = 5.0, b1 = -0.4, delta = 1.4,
+  b0 = 5.0, b1 = -0.4, b2 = 1.4,
   omega = 3.2, rho = 4.0,
   sigma = 0.4, sigma_u = 0.7,
   seed = 31L
@@ -566,7 +566,7 @@ dat_mcp <- simulate_smoothbp(
   n_obs     = 150,
   b0        = 5.0,
   b1        = -0.4,
-  delta     =  1.4,
+  b2        =  1.4,
   omega     =  3.2,
   rho       =  5.0,   # moderately sharp — should agree well with mcp
   sigma     =  0.4,
@@ -1037,4 +1037,40 @@ ggplot(draws_long_multi, aes(x = value, fill = package, colour = package)) +
 
 ## What to look for
 
-- **Density ove
+- **Density overlap**: the blue (smoothbp) and red (brms) curves should be
+  nearly indistinguishable for every parameter. Meaningful separation
+  would indicate a bug in one of the implementations.
+- **True value coverage**: dashed lines should fall inside or very near
+  the high-density region of both posteriors.
+- **Timing**: smoothbp's Rust sampler should be substantially faster than
+  brms/Stan, especially at larger $n$.
+
+```{r ess-multi, eval = have_brms}
+ess_sbp_multi <- posterior::summarise_draws(
+  fit_sbp_multi$draws[, , sbp_names_multi], ess_bulk = posterior::ess_bulk
+) |>
+  dplyr::transmute(parameter = variable,
+                   smoothbp_ess_per_sec = ess_bulk / time_sbp_multi)
+
+ess_brms_multi <- posterior::summarise_draws(
+  posterior::as_draws_df(fit_brms_multi), ess_bulk = posterior::ess_bulk
+) |>
+  dplyr::filter(variable %in% brms_names_multi) |>
+  dplyr::mutate(parameter = sbp_names_multi[match(variable, brms_names_multi)]) |>
+  dplyr::transmute(parameter, brms_ess_per_sec = ess_bulk / time_brms_multi)
+
+dplyr::full_join(ess_sbp_multi, ess_brms_multi, by = "parameter") |>
+  knitr::kable(digits = 1,
+               caption = "ESS/second: smoothbp vs brms (two-breakpoint model).")
+```
+
+```{r timing-s4, eval = have_brms}
+data.frame(
+  package      = c("smoothbp", "brms (Stan/NUTS)"),
+  wall_clock_s = round(c(time_sbp_multi, time_brms_multi), 1),
+  speedup       = c(sprintf("%.0fx faster", time_brms_multi / time_sbp_multi), "reference")
+) |>
+  knitr::kable(col.names = c("Package", "Wall-clock (s)", "Relative speed"),
+               caption   = "Scenario 4 wall-clock time. Two-breakpoint hierarchical model.")
+```
+

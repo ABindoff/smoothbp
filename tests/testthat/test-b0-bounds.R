@@ -8,7 +8,7 @@ test_that("b0 bounds are respected in posterior draws", {
 
   dat <- simulate_smoothbp(
     n_subj = 20, n_obs = 8,
-    b0 = 5.0, b1 = -0.4, b2 = 1.2,
+    b0 = 5.0, b1 = -0.4, delta = 1.2,
     omega = 3.0, rho = 4.0,
     sigma = 0.4, sigma_u = 0.6,
     seed = 4271L

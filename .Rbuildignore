@@ -19,5 +19,6 @@
 ^manuscripts$
 ^\.repro$
 ^CRAN-SUBMISSION$
-^src/vendor$
 ^src/rust/vendor$
+^build_rc_vignette\.R$
+

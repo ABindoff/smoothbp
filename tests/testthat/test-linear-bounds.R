@@ -19,7 +19,7 @@ test_that("b1 bounds are respected (no random effects)", {
 
   dat <- simulate_smoothbp(
     n_subj = 1, n_obs = 40,
-    b0 = 5.0, b1 = -0.4, b2 = 1.2,
+    b0 = 5.0, b1 = -0.4, delta = 1.2,
     omega = 3.0, rho = 4.0,
     sigma = 0.4, sigma_u = 0.0,
     seed = 1101L
@@ -63,7 +63,7 @@ test_that("b2 bounds are respected (no random effects)", {
 
   dat <- simulate_smoothbp(
     n_subj = 1, n_obs = 40,
-    b0 = 5.0, b1 = -0.4, b2 = 1.2,
+    b0 = 5.0, b1 = -0.4, delta = 1.2,
     omega = 3.0, rho = 4.0,
     sigma = 0.4, sigma_u = 0.0,
     seed = 2202L
@@ -107,7 +107,7 @@ test_that("b1 and b2 bounds are respected with random intercepts", {
 
   dat <- simulate_smoothbp(
     n_subj = 20, n_obs = 8,
-    b0 = 5.0, b1 = -0.4, b2 = 1.2,
+    b0 = 5.0, b1 = -0.4, delta = 1.2,
     omega = 3.0, rho = 4.0,
     sigma = 0.4, sigma_u = 0.6,
     seed = 3303L
@@ -156,7 +156,7 @@ test_that("b1/b2 bounds do not degenerate the posterior when truth is interior",
 
   dat <- simulate_smoothbp(
     n_subj = 20, n_obs = 10,
-    b0 = 5.0, b1 = -0.4, b2 = 1.2,
+    b0 = 5.0, b1 = -0.4, delta = 1.2,
     omega = 3.0, rho = 4.0,
     sigma = 0.4, sigma_u = 0.5,
     seed = 4404L

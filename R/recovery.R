@@ -59,9 +59,9 @@ recovery_plot <- function(fit, dat, level = 0.95) {
   param_map <- c(
     b0      = "b0_(Intercept)",
     b1      = "b1_(Intercept)",
-    b2      = "b2_(Intercept)",
-    omega   = "omega_(Intercept)",
-    rho     = "rho_(Intercept)",
+    delta   = "delta1_(Intercept)",
+    omega   = "omega1_(Intercept)",
+    rho     = "rho1_(Intercept)",
     sigma   = "sigma",
     sigma_u = "sigma_u"
   )
@@ -70,7 +70,7 @@ recovery_plot <- function(fit, dat, level = 0.95) {
   pretty_labels <- c(
     b0      = expression(b[0]),
     b1      = expression(b[1]),
-    b2      = expression(b[2]),
+    delta   = expression(delta[1]),
     omega   = expression(omega),
     rho     = expression(rho),
     sigma   = expression(sigma),

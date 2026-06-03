@@ -25,15 +25,15 @@ test_that("Hierarchical shrinkage works", {
     data.frame(ticker = ticker_name, month = tau, y = y)
   }))
 
-  # Fit model WITH hierarchical shrinkage
-  fit_hier <- smoothbp(
+  # Fit model WITH hierarchical shrinkage (using deprecated argument intentionally)
+  fit_hier <- suppressWarnings(smoothbp(
     formula = y ~ month,
     omega = list(~ ticker),
     data = sim_data,
     hierarchical = "omega",
     iter = 1000, warmup = 500, chains = 2,
     .verbose = FALSE
-  )
+  ))
   
   expect_s3_class(fit_hier, "smoothbp_fit")
   expect_true("sigma_re_omega1" %in% posterior::variables(fit_hier$draws))
