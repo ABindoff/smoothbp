@@ -23,7 +23,9 @@ vignettes/*.R
 
 # Paper draft (work in progress, not part of the R package)
 paper/
-m a n u s c r i p t s /  
+manuscripts/
+scratch/
+sandbox/
  
 # AI Reproducibility Auditor
 .repro/
