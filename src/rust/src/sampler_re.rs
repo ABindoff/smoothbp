@@ -539,16 +539,27 @@ fn hmc_step_om(
     cache: &LinearCache,
     adapt: &mut HmcAdapt,
     rng: &mut StdRng,
-    nc: bool,   // use non-centred reparameterisation for RE columns at this breakpoint
+    nc: bool,
+    // When true, only update fixed (non-RE) columns.  RE columns are treated
+    // as frozen offsets so that joint_subject_nuts has exclusive ownership of
+    // the RE directions, eliminating the (omega_bar + c, u_j - c) null
+    // direction that causes mode-switching when both steps update the same
+    // columns.
+    skip_re: bool,
 ) {
-    let p = adapt.p;
+    let p_full = data.x_om[k].ncols();
 
-    // If all prior SDs are 0, this parameter block is fixed.
-    let mut all_fixed = true;
-    for j in 0..p {
-        if !data.re_mask_om[k][j] && priors.om_sd[k][j] > 0.0 { all_fixed = false; break; }
-        if data.re_mask_om[k][j] { all_fixed = false; break; }
-    }
+    // Which columns are active in this call?
+    let active_idx: Vec<usize> = (0..p_full)
+        .filter(|&j| !skip_re || !data.re_mask_om[k][j])
+        .collect();
+    let p = active_idx.len();
+    if p == 0 { return; }
+
+    // Return early if all active columns are fixed (sd == 0, not an RE column).
+    let all_fixed = active_idx.iter().all(|&j| {
+        !data.re_mask_om[k][j] && priors.om_sd[k][j] == 0.0
+    });
     if all_fixed { return; }
 
     let sigma    = state.sigma;
@@ -556,42 +567,52 @@ fn hmc_step_om(
     let mu_base  = cache.mu_without_segment(data, state, k);
     let is_om1   = k == 0 && data.n_breakpoints > 0;
 
-    // Non-centred only when nc=true and sigma_re is non-degenerate.
-    // In NC mode, HMC operates on z[j] = beta_om[j] / sigma_re for RE columns.
-    let do_nc = nc && sigma_re > 1e-10;
+    // NC is only meaningful when RE columns are included in the active set.
+    let do_nc = !skip_re && nc && sigma_re > 1e-10;
 
-    // Initial q in HMC space
-    let q0: DVector<f64> = if do_nc {
-        let mut z = state.beta_om[k].clone();
-        for j in 0..p { if data.re_mask_om[k][j] { z[j] /= sigma_re; } }
-        z
+    // Pre-compute the frozen RE offset: contribution of RE columns at their
+    // current values.  Only non-zero when skip_re=true.
+    let re_offset: Vec<f64> = if skip_re {
+        (0..data.n).map(|i| {
+            (0..p_full)
+                .filter(|&j| data.re_mask_om[k][j])
+                .map(|j| data.x_om[k][(i, j)] * state.beta_om[k][j])
+                .sum::<f64>()
+        }).collect()
     } else {
-        state.beta_om[k].clone()
+        vec![0.0f64; data.n]
     };
 
-    // Bounds in HMC space (z-space for NC RE columns)
-    let lb: Vec<f64> = (0..p).map(|j| {
+    // Build q0 from active columns, applying NC transform where applicable.
+    let q0 = DVector::from_vec(
+        active_idx.iter().map(|&j| {
+            if do_nc && data.re_mask_om[k][j] { state.beta_om[k][j] / sigma_re }
+            else                               { state.beta_om[k][j] }
+        }).collect::<Vec<_>>()
+    );
+
+    // Bounds in HMC space.
+    let lb: Vec<f64> = active_idx.iter().map(|&j| {
         if do_nc && data.re_mask_om[k][j] { priors.om_lb[k][j] / sigma_re }
         else { priors.om_lb[k][j] }
     }).collect();
-    let ub: Vec<f64> = (0..p).map(|j| {
+    let ub: Vec<f64> = active_idx.iter().map(|&j| {
         if do_nc && data.re_mask_om[k][j] { priors.om_ub[k][j] / sigma_re }
         else { priors.om_ub[k][j] }
     }).collect();
 
     let energy_fn = |q: &DVector<f64>| -> (f64, DVector<f64>) {
-        // Convert q (HMC space) → beta_om for likelihood.
-        // For NC RE columns: beta_om[j] = z[j] * sigma_re.
-        let beta_om: DVector<f64> = if do_nc {
-            let mut b = q.clone();
-            for j in 0..p { if data.re_mask_om[k][j] { b[j] = q[j] * sigma_re; } }
-            b
-        } else {
-            q.clone()
-        };
+        // om_k[i] = frozen RE offset + active columns × q (with NC undo)
+        let om_k: Vec<f64> = (0..data.n).map(|i| {
+            let active_contrib: f64 = active_idx.iter().enumerate().map(|(qi, &j)| {
+                let beta_j = if do_nc && data.re_mask_om[k][j] { q[qi] * sigma_re }
+                             else { q[qi] };
+                data.x_om[k][(i, j)] * beta_j
+            }).sum();
+            re_offset[i] + active_contrib
+        }).collect();
 
-        let om_k   = &data.x_om[k] * &beta_om;
-        let rho_k  = state.rho_vec(k, &data.x_rho[k]);
+        let rho_k   = state.rho_vec(k, &data.x_rho[k]);
         let delta_k = &cache.delta_vals[k];
 
         let mut mu = mu_base.clone();
@@ -604,28 +625,29 @@ fn hmc_step_om(
             mu[i] += delta_k[i] * di * si;
         }
 
-        let r   = &data.y - &mu;
-        let ll  = -0.5 * r.dot(&r) / (sigma * sigma);
+        let r  = &data.y - &mu;
+        let ll = -0.5 * r.dot(&r) / (sigma * sigma);
 
-        // Log-prior in q-space and bounds check
+        // Log-prior over active columns; bounds check.
         let mut lp = 0.0;
         let log_sqrt2pi = 0.5 * std::f64::consts::TAU.ln();
-        for j in 0..p {
-            let v = q[j];
-            if v < lb[j] || v > ub[j] { return (f64::INFINITY, DVector::<f64>::zeros(p)); }
+        for (qi, &j) in active_idx.iter().enumerate() {
+            let v = q[qi];
+            if v < lb[qi] || v > ub[qi] {
+                return (f64::INFINITY, DVector::<f64>::zeros(p));
+            }
             if do_nc && data.re_mask_om[k][j] {
-                // z ~ N(0,1): unnormalised log-prior = -0.5 z^2
                 lp -= 0.5 * v * v;
             } else {
                 let sd = if data.re_mask_om[k][j] { sigma_re } else { priors.om_sd[k][j] };
-                let z = (v - priors.om_mean[k][j]) / sd;
+                let z  = (v - priors.om_mean[k][j]) / sd;
                 lp -= 0.5 * z * z + sd.ln() + log_sqrt2pi;
             }
         }
 
-        // Likelihood gradient w.r.t. beta_om
+        // Likelihood gradient w.r.t. active columns only.
         let inv_s2 = 1.0 / (sigma * sigma);
-        let mut grad_beta = DVector::<f64>::zeros(p);
+        let mut grad_active = vec![0.0f64; p];
         for i in 0..data.n {
             let di  = data.tau[i] - om_k[i];
             let si  = sigmoid(di * rho_k[i]);
@@ -634,21 +656,19 @@ fn hmc_step_om(
             let mut dmu_dom = -(bi * si + di * ri * si * (1.0 - si) * bi);
             if is_om1 { dmu_dom -= cache.b1_vals[i]; }
             let factor = r[i] * inv_s2 * dmu_dom;
-            for j in 0..p { grad_beta[j] -= factor * data.x_om[k][(i, j)]; }
+            for (qi, &j) in active_idx.iter().enumerate() {
+                grad_active[qi] -= factor * data.x_om[k][(i, j)];
+            }
         }
 
-        // Transform gradient to q-space and add prior gradient
+        // Convert to q-space and add prior gradient.
         let mut grad = DVector::<f64>::zeros(p);
-        for j in 0..p {
+        for (qi, &j) in active_idx.iter().enumerate() {
             if do_nc && data.re_mask_om[k][j] {
-                // Chain rule: dU_lik/dz = sigma_re * dU_lik/d(beta_om)
-                grad[j] = sigma_re * grad_beta[j];
-                // N(0,1) prior: d(-log N(0,1))/dz = z
-                grad[j] += q[j];
+                grad[qi] = sigma_re * grad_active[qi] + q[qi];
             } else {
-                grad[j] = grad_beta[j];
                 let sd = if data.re_mask_om[k][j] { sigma_re } else { priors.om_sd[k][j] };
-                grad[j] += (q[j] - priors.om_mean[k][j]) / (sd * sd);
+                grad[qi] = grad_active[qi] + (q[qi] - priors.om_mean[k][j]) / (sd * sd);
             }
         }
 
@@ -657,14 +677,13 @@ fn hmc_step_om(
 
     let (q_new, accept) = nuts_sample(&q0, energy_fn, adapt, rng, &lb, &ub);
 
-    // Convert q_new back to beta_om space
-    if do_nc {
-        for j in 0..p {
-            state.beta_om[k][j] = if data.re_mask_om[k][j] { q_new[j] * sigma_re }
-                                   else { q_new[j] };
-        }
-    } else {
-        state.beta_om[k] = q_new;
+    // Write back: active columns only.
+    for (qi, &j) in active_idx.iter().enumerate() {
+        state.beta_om[k][j] = if do_nc && data.re_mask_om[k][j] {
+            q_new[qi] * sigma_re
+        } else {
+            q_new[qi]
+        };
     }
 
     adapt.update_epsilon(accept);
@@ -1108,8 +1127,11 @@ fn joint_subject_nuts(
             if has_re_omega[k] && s < re_cols_omega[k].len() {
                 let j = re_cols_omega[k][s];
                 q_s_vals.push(state.beta_om[k][j]);
-                lb_s.push(priors.om_lb[k][j]);
-                ub_s.push(priors.om_ub[k][j]);
+                // RE columns are deviations from the population intercept: they
+                // are unconstrained (prior is N(0, sigma_re^2)).  The user's
+                // omega prior bounds (lb/ub) apply only to the fixed intercept.
+                lb_s.push(f64::NEG_INFINITY);
+                ub_s.push(f64::INFINITY);
                 sigma_re_s.push(state.sigma_re_om[k]);
             }
         }
@@ -1423,12 +1445,14 @@ pub fn run_chain_re(
         .map(|_| HmcAdapt::new(d_s.max(1), step_om_init, target_accept))
         .collect();
 
-    // Per-breakpoint adapters for the population-level omega update (fixed + RE columns).
-    // joint_subject_nuts handles per-subject RE deviations; hmc_step_om updates the fixed
-    // intercept and re-explores the full omega space jointly.  Without this step the
-    // fixed intercept is never updated and chains diverge.
+    // Per-breakpoint adapters for the fixed-only omega update.
+    // Dimension = number of non-RE columns so the adapter matches the reduced
+    // q vector that hmc_step_om(skip_re=true) actually proposes.
     let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints)
-        .map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept))
+        .map(|k| {
+            let p_fixed = data.re_mask_om[k].iter().filter(|&&m| !m).count().max(1);
+            HmcAdapt::new(p_fixed, step_om_init, target_accept)
+        })
         .collect();
 
     let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints)
@@ -1449,12 +1473,13 @@ pub fn run_chain_re(
         joint_subject_nuts(data, priors, &mut state, &mut adapt_subj, &mut rng,
                            nc_b1, nc_deltas, nc_om);
 
-        // Population-level omega update (fixed intercept + all RE columns jointly).
-        // Build a fresh cache after joint_subject_nuts has moved the RE columns.
+        // Fixed-only omega update: only non-RE columns are proposed; RE columns
+        // remain at the values just set by joint_subject_nuts, eliminating the
+        // (omega_bar + c, u_j - c) null direction.
         for k in 0..data.n_breakpoints {
             let cache_k = LinearCache::build(&state, data);
             hmc_step_om(data, priors, &mut state, k, &cache_k, &mut adapt_om[k], &mut rng,
-                        nc_om.get(k).copied().unwrap_or(false));
+                        false, true);
         }
 
         // Rho update (conditions on current omega)
@@ -1472,7 +1497,13 @@ pub fn run_chain_re(
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
-                adapt_om[k].observe(&state.beta_om[k]);
+                // Observe only the fixed columns (matches adapter dimension).
+                let p_full = data.x_om[k].ncols();
+                let fixed_vals: Vec<f64> = (0..p_full)
+                    .filter(|&j| !data.re_mask_om[k][j])
+                    .map(|j| state.beta_om[k][j])
+                    .collect();
+                adapt_om[k].observe(&DVector::from_vec(fixed_vals));
                 if (iter + 1) % 500 == 0 { adapt_om[k].refresh_mass_matrix(); }
                 adapt_rho[k].observe(&state.beta_rho[k]);
                 if (iter + 1) % 500 == 0 { adapt_rho[k].refresh_mass_matrix(); }
@@ -1520,7 +1551,10 @@ pub fn run_chain_re_ss(
         .map(|_| HmcAdapt::new(d_s.max(1), step_om_init, target_accept))
         .collect();
     let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints)
-        .map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept))
+        .map(|k| {
+            let p_fixed = data.re_mask_om[k].iter().filter(|&&m| !m).count().max(1);
+            HmcAdapt::new(p_fixed, step_om_init, target_accept)
+        })
         .collect();
     let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints)
         .map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept))
@@ -1539,11 +1573,11 @@ pub fn run_chain_re_ss(
         joint_subject_nuts(data, priors, &mut state, &mut adapt_subj, &mut rng,
                            nc_b1, nc_deltas, nc_om);
 
-        // Population-level omega update (fixed intercept + all RE columns jointly)
+        // Fixed-only omega update (skip_re=true keeps RE columns frozen).
         for k in 0..data.n_breakpoints {
             let cache_k = LinearCache::build(&state, data);
             hmc_step_om(data, priors, &mut state, k, &cache_k, &mut adapt_om[k], &mut rng,
-                        nc_om.get(k).copied().unwrap_or(false));
+                        false, true);
         }
 
         let cache = LinearCache::build(&state, data);
@@ -1562,7 +1596,12 @@ pub fn run_chain_re_ss(
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
-                adapt_om[k].observe(&state.beta_om[k]);
+                let p_full = data.x_om[k].ncols();
+                let fixed_vals: Vec<f64> = (0..p_full)
+                    .filter(|&j| !data.re_mask_om[k][j])
+                    .map(|j| state.beta_om[k][j])
+                    .collect();
+                adapt_om[k].observe(&DVector::from_vec(fixed_vals));
                 if (iter + 1) % 500 == 0 { adapt_om[k].refresh_mass_matrix(); }
                 adapt_rho[k].observe(&state.beta_rho[k]);
                 if (iter + 1) % 500 == 0 { adapt_rho[k].refresh_mass_matrix(); }
@@ -1609,9 +1648,15 @@ pub fn init_state_re(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> Sta
             let m = priors.delta_mean[k][i];
             if priors.delta_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
         })));
-        beta_om.push(DVector::from_iterator(data.x_om[k].ncols(), (0..data.x_om[k].ncols()).map(|i| {
-            let m = priors.om_mean[k][i];
-            if priors.om_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+        beta_om.push(DVector::from_iterator(data.x_om[k].ncols(), (0..data.x_om[k].ncols()).map(|j| {
+            if data.re_mask_om[k][j] {
+                // RE columns are deviations from the intercept: prior is N(0, sigma_re^2).
+                // Initialise near 0, not at the user's omega prior mean.
+                jitter.sample(rng)
+            } else {
+                let m = priors.om_mean[k][j];
+                if priors.om_sd[k][j] > 0.0 { m + jitter.sample(rng) } else { m }
+            }
         })));
         beta_rho.push(DVector::from_iterator(data.x_rho[k].ncols(), (0..data.x_rho[k].ncols()).map(|i| {
             let m = priors.rho_mean[k][i];
