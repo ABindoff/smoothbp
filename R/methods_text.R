@@ -112,7 +112,7 @@ model_methods.smoothbp_fit <- function(object,
       "transitions and Kuo & Mallick (1998) spike-and-slab variable selection"
     )
   } else {
-    "Bayesian hierarchical piecewise regression with logistic-smoothed transitions"
+    "Bayesian hierarchical piecewise regression with logistic-smoothed transitions (adapted from Bacon & Watts, 1971)"
   }
 
   bp_str <- if (is_linear) {
@@ -176,9 +176,7 @@ model_methods.smoothbp_fit <- function(object,
     if (n_obs != 1L) "s" else "",
     if (has_re_b0) sprintf(" from %d groups", n_grp) else "",
     " using the smoothbp R package (version ", pkg_version,
-    "; Bindoff, 2026), powered by a Rust-based Metropolis-within-Gibbs sampler",
-    if (!is_linear) " (Bacon & Watts, 1971)" else "",
-    ".",
+    "; Bindoff, 2026), powered by a Rust-based Metropolis-within-Gibbs sampler.",
     bp_dim_sent,
     re_sent,
     fixed_sent,
