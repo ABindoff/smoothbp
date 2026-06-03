@@ -1146,10 +1146,10 @@ fn joint_subject_nuts(
 
         // Clone what the closure needs
         let obs_s = obs.clone();
-        let mu_base_s: Vec<f64> = obs_s.iter().map(|&i| mu_no_re[i]).collect();
-        let tau_s: Vec<f64>   = obs_s.iter().map(|&i| data.tau[i]).collect();
-        let y_s: Vec<f64>     = obs_s.iter().map(|&i| data.y[i]).collect();
+        let tau_s: Vec<f64> = obs_s.iter().map(|&i| data.tau[i]).collect();
+        let y_s: Vec<f64>   = obs_s.iter().map(|&i| data.y[i]).collect();
         let n_s = obs_s.len();
+
 
         // Design column slices for this subject in each RE block
         let x_b1_s: Vec<f64> = if has_re_b1 && s < re_cols_b1.len() {
@@ -1206,6 +1206,22 @@ fn joint_subject_nuts(
             }
             let d_vec = &data.x_deltas[k] * &bd_eff;
             obs_s.iter().map(|&i| d_vec[i]).collect()
+        }).collect();
+
+        // b0_only_s: mu_no_re[i] minus the fixed b1 and delta contributions computed at
+        // omega_fixed (RE = 0). The energy closure recomputes these at the proposed omega_s,
+        // so the baseline must be pure b0 to avoid double-counting at the wrong omega.
+        let b0_only_s: Vec<f64> = obs_s.iter().enumerate().map(|(li, &i)| {
+            let mut b0 = mu_no_re[i];
+            if nb > 0 {
+                b0 -= b1_fixed_s[li] * (data.tau[i] - om_fixed_s[0][li]);
+            }
+            for k in 0..nb {
+                let d_old = data.tau[i] - om_fixed_s[k][li];
+                let s_old = sigmoid(d_old * rho_s[k][li]);
+                b0 -= delta_fixed_s[k][li] * d_old * s_old;
+            }
+            b0
         }).collect();
 
         let sigma_re_s_clone = sigma_re_s.clone();
@@ -1268,7 +1284,7 @@ fn joint_subject_nuts(
                     }
                 }
 
-                let mu_i = mu_base_s[li] + b1_contrib + delta_contrib;
+                let mu_i = b0_only_s[li] + b1_contrib + delta_contrib;
                 let r_i  = y_i - mu_i;
                 ll += -0.5 * r_i * r_i * inv_s2;
 
@@ -1407,6 +1423,14 @@ pub fn run_chain_re(
         .map(|_| HmcAdapt::new(d_s.max(1), step_om_init, target_accept))
         .collect();
 
+    // Per-breakpoint adapters for the population-level omega update (fixed + RE columns).
+    // joint_subject_nuts handles per-subject RE deviations; hmc_step_om updates the fixed
+    // intercept and re-explores the full omega space jointly.  Without this step the
+    // fixed intercept is never updated and chains diverge.
+    let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints)
+        .map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept))
+        .collect();
+
     let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints)
         .map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept))
         .collect();
@@ -1425,7 +1449,15 @@ pub fn run_chain_re(
         joint_subject_nuts(data, priors, &mut state, &mut adapt_subj, &mut rng,
                            nc_b1, nc_deltas, nc_om);
 
-        // Rho still uses its own per-breakpoint NUTS (rho has no subject-level RE)
+        // Population-level omega update (fixed intercept + all RE columns jointly).
+        // Build a fresh cache after joint_subject_nuts has moved the RE columns.
+        for k in 0..data.n_breakpoints {
+            let cache_k = LinearCache::build(&state, data);
+            hmc_step_om(data, priors, &mut state, k, &cache_k, &mut adapt_om[k], &mut rng,
+                        nc_om.get(k).copied().unwrap_or(false));
+        }
+
+        // Rho update (conditions on current omega)
         let cache = LinearCache::build(&state, data);
         for k in 0..data.n_breakpoints {
             hmc_step_rho(data, priors, &mut state, k, &cache, &mut adapt_rho[k], &mut rng);
@@ -1440,11 +1472,16 @@ pub fn run_chain_re(
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
+                adapt_om[k].observe(&state.beta_om[k]);
+                if (iter + 1) % 500 == 0 { adapt_om[k].refresh_mass_matrix(); }
                 adapt_rho[k].observe(&state.beta_rho[k]);
                 if (iter + 1) % 500 == 0 { adapt_rho[k].refresh_mass_matrix(); }
             }
         } else if iter == n_warmup {
-            for k in 0..data.n_breakpoints { adapt_rho[k].freeze(); }
+            for k in 0..data.n_breakpoints {
+                adapt_om[k].freeze();
+                adapt_rho[k].freeze();
+            }
             for s in 0..data.n_subjects { adapt_subj[s].freeze(); }
         }
 
@@ -1455,6 +1492,7 @@ pub fn run_chain_re(
         }
     }
     let n_div = adapt_subj.iter().map(|h| h.n_divergent).sum::<usize>()
+              + adapt_om.iter().map(|h| h.n_divergent).sum::<usize>()
               + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
     (draws, n_div)
 }
@@ -1481,6 +1519,9 @@ pub fn run_chain_re_ss(
     let mut adapt_subj: Vec<HmcAdapt> = (0..data.n_subjects)
         .map(|_| HmcAdapt::new(d_s.max(1), step_om_init, target_accept))
         .collect();
+    let mut adapt_om: Vec<HmcAdapt> = (0..data.n_breakpoints)
+        .map(|k| HmcAdapt::new(data.x_om[k].ncols(), step_om_init, target_accept))
+        .collect();
     let mut adapt_rho: Vec<HmcAdapt> = (0..data.n_breakpoints)
         .map(|k| HmcAdapt::new(data.x_rho[k].ncols(), step_rho_init, target_accept))
         .collect();
@@ -1498,6 +1539,13 @@ pub fn run_chain_re_ss(
         joint_subject_nuts(data, priors, &mut state, &mut adapt_subj, &mut rng,
                            nc_b1, nc_deltas, nc_om);
 
+        // Population-level omega update (fixed intercept + all RE columns jointly)
+        for k in 0..data.n_breakpoints {
+            let cache_k = LinearCache::build(&state, data);
+            hmc_step_om(data, priors, &mut state, k, &cache_k, &mut adapt_om[k], &mut rng,
+                        nc_om.get(k).copied().unwrap_or(false));
+        }
+
         let cache = LinearCache::build(&state, data);
         for k in 0..data.n_breakpoints {
             hmc_step_rho(data, priors, &mut state, k, &cache, &mut adapt_rho[k], &mut rng);
@@ -1514,11 +1562,16 @@ pub fn run_chain_re_ss(
 
         if iter < n_warmup {
             for k in 0..data.n_breakpoints {
+                adapt_om[k].observe(&state.beta_om[k]);
+                if (iter + 1) % 500 == 0 { adapt_om[k].refresh_mass_matrix(); }
                 adapt_rho[k].observe(&state.beta_rho[k]);
                 if (iter + 1) % 500 == 0 { adapt_rho[k].refresh_mass_matrix(); }
             }
         } else if iter == n_warmup {
-            for k in 0..data.n_breakpoints { adapt_rho[k].freeze(); }
+            for k in 0..data.n_breakpoints {
+                adapt_om[k].freeze();
+                adapt_rho[k].freeze();
+            }
             for s in 0..data.n_subjects { adapt_subj[s].freeze(); }
         }
 
@@ -1529,6 +1582,7 @@ pub fn run_chain_re_ss(
         }
     }
     let n_div = adapt_subj.iter().map(|h| h.n_divergent).sum::<usize>()
+              + adapt_om.iter().map(|h| h.n_divergent).sum::<usize>()
               + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
     (draws, n_div)
 }

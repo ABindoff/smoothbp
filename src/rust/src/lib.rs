@@ -367,9 +367,10 @@ fn run_mcmc_re(
 
     let nc_om_bool:     Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
     let nc_deltas_bool: Vec<bool> = nc_deltas.iter().map(|&v| v != 0).collect();
-    let re_mask_b1_bool: Vec<bool> = re_mask_b1.iter().map(|&v| v != 0).collect();
+    // Use v > 0 (not v != 0) so that the sentinel value -1 from R is treated as false.
+    let re_mask_b1_bool: Vec<bool> = re_mask_b1.iter().map(|&v| v > 0).collect();
     let re_mask_deltas_bool: Vec<Vec<bool>> = re_mask_deltas.iter()
-        .map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v != 0).collect()).collect();
+        .map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v > 0).collect()).collect();
     let mut group_re_vec = group_re.to_vec();
     if group_re_vec.len() == 1 && group_re_vec[0] == -1 { group_re_vec = vec![-1_i32; y.len()]; }
 
@@ -524,9 +525,10 @@ fn run_mcmc_re_ss(
 
     let nc_om_bool:     Vec<bool> = nc_om.iter().map(|&v| v != 0).collect();
     let nc_deltas_bool: Vec<bool> = nc_deltas.iter().map(|&v| v != 0).collect();
-    let re_mask_b1_bool: Vec<bool> = re_mask_b1.iter().map(|&v| v != 0).collect();
+    // Use v > 0 (not v != 0) so that the sentinel value -1 from R is treated as false.
+    let re_mask_b1_bool: Vec<bool> = re_mask_b1.iter().map(|&v| v > 0).collect();
     let re_mask_deltas_bool: Vec<Vec<bool>> = re_mask_deltas.iter()
-        .map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v != 0).collect()).collect();
+        .map(|r| r.1.as_integer_vector().unwrap().iter().map(|&v| v > 0).collect()).collect();
     let mut group_re_vec = group_re.to_vec();
     if group_re_vec.len() == 1 && group_re_vec[0] == -1 { group_re_vec = vec![-1_i32; y.len()]; }
     let n = y.len();
