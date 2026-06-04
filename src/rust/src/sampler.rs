@@ -789,8 +789,13 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
     }));
     let u_b0 = DVector::zeros(data.n_groups_b0);
     let beta_b1 = DVector::from_iterator(data.x_b1.ncols(), (0..data.x_b1.ncols()).map(|i| {
-        let m = priors.b1_mean[i];
-        if priors.b1_sd[i] > 0.0 { m + jitter.sample(rng) } else { m }
+        let is_re = i < data.re_mask_b1.len() && data.re_mask_b1[i];
+        if is_re {
+            jitter.sample(rng)
+        } else {
+            let m = priors.b1_mean[i];
+            if priors.b1_sd[i] > 0.0 { m + jitter.sample(rng) } else { m }
+        }
     }));
     let mut beta_deltas = Vec::new();
     let mut beta_om = Vec::new();
@@ -799,12 +804,22 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
 
     for k in 0..data.n_breakpoints {
         beta_deltas.push(DVector::from_iterator(data.x_deltas[k].ncols(), (0..data.x_deltas[k].ncols()).map(|i| {
-            let m = priors.delta_mean[k][i];
-            if priors.delta_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+            let is_re = k < data.re_mask_deltas.len() && i < data.re_mask_deltas[k].len() && data.re_mask_deltas[k][i];
+            if is_re {
+                jitter.sample(rng)
+            } else {
+                let m = priors.delta_mean[k][i];
+                if priors.delta_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+            }
         })));
         beta_om.push(DVector::from_iterator(data.x_om[k].ncols(), (0..data.x_om[k].ncols()).map(|i| {
-            let m = priors.om_mean[k][i];
-            if priors.om_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+            let is_re = k < data.re_mask_om.len() && i < data.re_mask_om[k].len() && data.re_mask_om[k][i];
+            if is_re {
+                jitter.sample(rng)
+            } else {
+                let m = priors.om_mean[k][i];
+                if priors.om_sd[k][i] > 0.0 { m + jitter.sample(rng) } else { m }
+            }
         })));
         beta_rho.push(DVector::from_iterator(data.x_rho[k].ncols(), (0..data.x_rho[k].ncols()).map(|i| {
             let m = priors.rho_mean[k][i];

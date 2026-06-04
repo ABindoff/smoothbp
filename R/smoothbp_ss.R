@@ -195,16 +195,13 @@ smoothbp_ss <- function(
       prior_sd_rho      = lapply(pv$rho, `[[`, "sd"),
       prior_lb_rho      = lapply(pv$rho, `[[`, "lb"),
       prior_ub_rho      = lapply(pv$rho, `[[`, "ub"),
-      sigma_shape   = priors$sigma$shape,
-      sigma_scale   = priors$sigma$scale,
-      sigma_u_shape = priors$sigma_u$shape,
-      sigma_u_scale = priors$sigma_u$scale,
-      sigma_re_om_shape     = priors$sigma_re_om$shape,
-      sigma_re_om_scale     = priors$sigma_re_om$scale,
-      sigma_re_b1_shape     = priors$sigma_re_b1$shape,
-      sigma_re_b1_scale     = priors$sigma_re_b1$scale,
-      sigma_re_deltas_shape = priors$sigma_re_deltas$shape,
-      sigma_re_deltas_scale = priors$sigma_re_deltas$scale,
+      hyper_priors = as.double(c(
+        priors$sigma$shape, priors$sigma$scale,
+        priors$sigma_u$shape, priors$sigma_u$scale,
+        priors$sigma_re_om$shape, priors$sigma_re_om$scale,
+        priors$sigma_re_b1$shape, priors$sigma_re_b1$scale,
+        priors$sigma_re_deltas$shape, priors$sigma_re_deltas$scale
+      )),
       step_om  = step_om,
       step_rho = step_rho,
       target_accept = as.double(target_accept),
@@ -213,12 +210,10 @@ smoothbp_ss <- function(
       pi_init       = as.double(spike$pi[1]),
       pi_beta_a     = if (isTRUE(spike$learn_pi)) spike$a else 0.0,
       pi_beta_b     = if (isTRUE(spike$learn_pi)) spike$b else 0.0,
-      chains   = as.integer(chains),
-      iter     = as.integer(iter),
-      warmup   = as.integer(warmup),
-      seed     = as.integer(seed),
-      verbose  = isTRUE(.verbose),
-      n_cores  = as.integer(max(1L, cores))
+      mcmc_control  = as.integer(c(
+        chains, iter, warmup, seed,
+        isTRUE(.verbose), max(1L, cores)
+      ))
     )
   } else {
     raw <- run_mcmc_ss(

@@ -486,13 +486,22 @@ fn sample_linear_coefs(data: &ModelData, priors: &Priors, state: &mut State, rng
     let y = cholesky.l().transpose().solve_upper_triangular(&z).expect("Failed to solve upper triangular system");
     let theta = mean + y;
 
-    // Export back to state
+    // Export back to state: copy only fixed-effect columns for b1 and deltas,
+    // preserving the random effects updated by joint_subject_nuts.
     state.beta_b0.copy_from(&theta.rows(0, p_b0));
-    state.beta_b1.copy_from(&theta.rows(p_b0, p_b1));
+    for j in 0..p_b1 {
+        if !data.re_mask_b1[j] {
+            state.beta_b1[j] = theta[p_b0 + j];
+        }
+    }
     offset = p_b0 + p_b1;
     for k in 0..data.n_breakpoints {
         let pk = data.x_deltas[k].ncols();
-        state.beta_deltas[k].copy_from(&theta.rows(offset, pk));
+        for j in 0..pk {
+            if !data.re_mask_deltas[k][j] {
+                state.beta_deltas[k][j] = theta[offset + j];
+            }
+        }
         offset += pk;
     }
 }
@@ -1249,6 +1258,11 @@ fn joint_subject_nuts(
         let has_re_del_s: Vec<bool> = (0..nb).map(|k| has_re_deltas[k] && s < re_cols_deltas[k].len()).collect();
         let has_re_om_s:  Vec<bool> = (0..nb).map(|k| has_re_omega[k]  && s < re_cols_omega[k].len()).collect();
 
+        let g_b1 = if has_re_b1_s { state.gamma_b1[re_cols_b1[s]] } else { false };
+        let g_del: Vec<bool> = (0..nb).map(|k| {
+            if has_re_del_s[k] { state.gamma_deltas[k][re_cols_deltas[k][s]] } else { false }
+        }).collect();
+
         // ── Energy function for subject s ──────────────────────────────────
         // q = [u_b1_s?, u_delta_1_s?, ..., u_omega_1_s?, ...]  in NC or centred coords
         let energy_fn = |q: &DVector<f64>| -> (f64, DVector<f64>) {
@@ -1293,13 +1307,13 @@ fn joint_subject_nuts(
                 let om1_i = if nb > 0 { omega_i[0] } else { 0.0 };
                 let b1_scale = if nb > 0 { tau_i - om1_i } else { tau_i };
                 let b1_contrib = b1_fixed_s[li] * b1_scale
-                    + if has_re_b1_s { u_b1_s * x_b1_s[li] * b1_scale } else { 0.0 };
+                    + if has_re_b1_s && g_b1 { u_b1_s * x_b1_s[li] * b1_scale } else { 0.0 };
 
                 // delta contributions
                 let mut delta_contrib = 0.0f64;
                 for k in 0..nb {
                     delta_contrib += delta_fixed_s[k][li] * d_ki[k] * s_ki[k];
-                    if has_re_del_s[k] {
+                    if has_re_del_s[k] && g_del[k] {
                         delta_contrib += u_del_s[k] * x_delta_s[k][li] * d_ki[k] * s_ki[k];
                     }
                 }
@@ -1313,7 +1327,7 @@ fn joint_subject_nuts(
 
                 // dmu/d(u_b1_s)
                 if has_re_b1_s {
-                    let dmu = x_b1_s[li] * b1_scale;
+                    let dmu = if g_b1 { x_b1_s[li] * b1_scale } else { 0.0 };
                     grad_beta[qi] -= r_i * inv_s2 * dmu;
                     qi += 1;
                 }
@@ -1321,7 +1335,7 @@ fn joint_subject_nuts(
                 // dmu/d(u_delta_k_s)
                 for k in 0..nb {
                     if has_re_del_s[k] {
-                        let dmu = x_delta_s[k][li] * d_ki[k] * s_ki[k];
+                        let dmu = if g_del[k] { x_delta_s[k][li] * d_ki[k] * s_ki[k] } else { 0.0 };
                         grad_beta[qi] -= r_i * inv_s2 * dmu;
                         qi += 1;
                     }
@@ -1331,11 +1345,11 @@ fn joint_subject_nuts(
                 for k in 0..nb {
                     if has_re_om_s[k] {
                         let bi = delta_fixed_s[k][li]
-                            + if has_re_del_s[k] { u_del_s[k] * x_delta_s[k][li] } else { 0.0 };
+                            + if has_re_del_s[k] && g_del[k] { u_del_s[k] * x_delta_s[k][li] } else { 0.0 };
                         let ri_k = rho_s[k][li];
                         let mut dmu_dom = -(bi * s_ki[k] + d_ki[k] * ri_k * s_ki[k] * (1.0 - s_ki[k]) * bi);
                         if k == 0 {
-                            let b1_i = b1_fixed_s[li] + if has_re_b1_s { u_b1_s * x_b1_s[li] } else { 0.0 };
+                            let b1_i = b1_fixed_s[li] + if has_re_b1_s && g_b1 { u_b1_s * x_b1_s[li] } else { 0.0 };
                             dmu_dom -= b1_i;
                         }
                         grad_beta[qi] -= r_i * inv_s2 * dmu_dom * x_om_s[k][li];

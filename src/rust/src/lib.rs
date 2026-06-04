@@ -491,16 +491,7 @@ fn run_mcmc_re_ss(
     prior_mean_deltas: List, prior_sd_deltas: List, prior_lb_deltas: List, prior_ub_deltas: List,
     prior_mean_om: List, prior_sd_om: List, prior_lb_om: List, prior_ub_om: List,
     prior_mean_rho: List, prior_sd_rho: List, prior_lb_rho: List, prior_ub_rho: List,
-    sigma_shape: f64,
-    sigma_scale: f64,
-    sigma_u_shape: f64,
-    sigma_u_scale: f64,
-    sigma_re_om_shape: f64,
-    sigma_re_om_scale: f64,
-    sigma_re_b1_shape: f64,
-    sigma_re_b1_scale: f64,
-    sigma_re_deltas_shape: f64,
-    sigma_re_deltas_scale: f64,
+    hyper_priors: &[f64],
     step_om: f64,
     step_rho: f64,
     target_accept: f64,
@@ -509,13 +500,25 @@ fn run_mcmc_re_ss(
     pi_init: f64,
     pi_beta_a: f64,
     pi_beta_b: f64,
-    chains: i32,
-    iter: i32,
-    warmup: i32,
-    seed: i32,
-    verbose: bool,
-    n_cores: i32,
+    mcmc_control: &[i32],
 ) -> List {
+    let sigma_shape = hyper_priors[0];
+    let sigma_scale = hyper_priors[1];
+    let sigma_u_shape = hyper_priors[2];
+    let sigma_u_scale = hyper_priors[3];
+    let sigma_re_om_shape = hyper_priors[4];
+    let sigma_re_om_scale = hyper_priors[5];
+    let sigma_re_b1_shape = hyper_priors[6];
+    let sigma_re_b1_scale = hyper_priors[7];
+    let sigma_re_deltas_shape = hyper_priors[8];
+    let sigma_re_deltas_scale = hyper_priors[9];
+
+    let chains = mcmc_control[0];
+    let iter = mcmc_control[1];
+    let warmup = mcmc_control[2];
+    let seed = mcmc_control[3];
+    let verbose = mcmc_control[4] != 0;
+    let n_cores = mcmc_control[5];
     let mut p_deltas = p_deltas;
     let mut p_om = p_om;
     let mut p_rho = p_rho;
