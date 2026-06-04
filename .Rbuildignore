@@ -21,4 +21,4 @@
 ^CRAN-SUBMISSION$
 ^src/rust/vendor$
 ^build_rc_vignette\.R$
-
+^vignettes/fibr-diagnostics\.Rmd$

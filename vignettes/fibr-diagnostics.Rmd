@@ -8,8 +8,7 @@ vignette: >
 ---
 
 ```{r setup, include=FALSE}
-NOT_CRAN <- identical(tolower(Sys.getenv("NOT_CRAN")), "true")
-knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = NOT_CRAN)
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 ```
 
 ## The Problem: Group-Level Structural Differences
@@ -22,7 +21,7 @@ If we fit a 2-breakpoint model to all participants:
 1. For **Group A**, the second changepoint location ($\omega_2$) is well-defined by the data because there is a non-zero slope change ($\delta_2 \neq 0$).
 2. For **Group B**, the second slope change is zero ($\delta_2 = 0$). This makes the location of the second changepoint ($\omega_2$) completely unidentified by the data.
 
-When a parameter is unidentified, its subject-level random deviation ($u_{\omega_2}$) collapses to zero as the group-level standard deviation ($\sigma_{re, \omega_2}$) goes to zero, creating a **hierarchical funnel** (Neal's Funnel). Under a standard centered parameterisation, Hamiltonian Monte Carlo (HMC) struggles in this funnel, resulting in divergent transitions, poor mixing, and flat gradients that can prevent the sampler from finding the true parameters.
+When a parameter is unidentified, its subject-level random deviation ($u_{\omega_2}$) collapses to zero as the group-level standard deviation ($\sigma_{re, \omega_2}$) goes to zero, creating a **hierarchical funnel** (Neal's Funnel). Under a standard centred parameterisation, Hamiltonian Monte Carlo (HMC) struggles in this funnel, resulting in divergent transitions, poor mixing, and flat gradients that can prevent the sampler from finding the true parameters.
 
 This vignette demonstrates how `fibr` diagnoses these structural differences and provides an optimized **partial non-centred parameterisation** to restore sampler efficiency.
 
@@ -40,6 +39,7 @@ library(posterior)
 library(ggplot2)
 library(dplyr)
 library(tidyr)
+library(brms)
 
 # Simulate subjects 1-10 (2 knots)
 dat1 <- simulate_smoothbp(
@@ -82,7 +82,7 @@ Let's visualize the differences between a 2-knot subject (Subject 1) and a 1-kno
 
 ```{r plot-raw-data, fig.width=7, fig.height=4}
 example_dat <- dat %>% 
-  filter(subject %in= c(1, 11)) %>%
+  filter(subject %in% c(1, 11)) %>%
   mutate(Knots = factor(ifelse(subject == 1, "2 Knots (Subject 1)", "1 Knot (Subject 11)")))
 
 ggplot(example_dat, aes(x = tau, y = y, color = Knots)) +
@@ -101,9 +101,10 @@ ggplot(example_dat, aes(x = tau, y = y, color = Knots)) +
 
 ## Step 2: Fit the Naive Centred Model
 
-We fit a 2-breakpoint `smoothbp_ss` model with a standard centred parameterisation (`reparameterise = "none"`):
+We fit a 2-breakpoint `smoothbp_ss` model with a standard centred parameterisation (`reparameterise = "none"`), timing the execution:
 
 ```{r fit-centred, message=FALSE}
+t0 <- Sys.time()
 fit_centred <- smoothbp_ss(
   formula = y ~ tau,
   b0      = ~ 1,
@@ -123,6 +124,7 @@ fit_centred <- smoothbp_ss(
   seed    = 777L,
   .verbose = FALSE
 )
+t_centred <- difftime(Sys.time(), t0, units = "secs")
 ```
 
 ---
@@ -185,6 +187,7 @@ Look at the advisor's recommendation for the second breakpoint (`omega2`):
 We re-fit the model passing the advisor's recommendation to the `re_fraction` argument. This applies a hybrid parameterisation: **non-centred** for the subjects experiencing funnel geometry, and **centred** for the subjects who have enough data:
 
 ```{r fit-optimized, message=FALSE}
+t0 <- Sys.time()
 fit_opt <- smoothbp_ss(
   formula = y ~ tau,
   b0      = ~ 1,
@@ -204,6 +207,7 @@ fit_opt <- smoothbp_ss(
   seed    = 777L,
   .verbose = FALSE
 )
+t_opt <- difftime(Sys.time(), t0, units = "secs")
 ```
 
 ---
@@ -282,14 +286,12 @@ ggplot(res, aes(x = factor(subject), y = pip_delta2, fill = true_knots)) +
 
 ## Step 8: Benchmarking against Stan (`brms`)
 
-To benchmark performance, we can fit the equivalent model using **Stan (via `brms`)**. 
-Because Stan uses a standard Hamiltonian Monte Carlo (NUTS) sampler, it does not support discrete spike-and-slab indicator variables ($\gamma \in \{0,1\}$). Thus, we will compare against a standard hierarchical model in `brms` (estimating the random effects directly under normal priors).
+To benchmark performance, we fit the equivalent model using **Stan (via `brms`)**. 
+Because Stan uses a standard Hamiltonian Monte Carlo (NUTS) sampler, it does not support discrete spike-and-slab indicator variables ($\gamma \in \{0,1\}$). Thus, we compare against a standard hierarchical model in `brms` (estimating the random effects directly under normal priors).
 
-The `brms` formula is specified as follows:
+The `brms` model is fitted dynamically below:
 
-```r
-library(brms)
-
+```{r fit-brms, message=FALSE, results='hide'}
 bf_mod <- brms::bf(
   y ~ b0 + b1 * (tau - omega1) +
         delta1 * (tau - omega1) / (1 + exp(-(tau - omega1) * rho1)) +
@@ -304,21 +306,84 @@ bf_mod <- brms::bf(
   rho2 ~ 1,
   nl = TRUE
 )
+
+priors_brms <- c(
+  prior(normal(5, 2), nlpar = "b0"),
+  prior(normal(-1, 1), nlpar = "b1"),
+  prior(normal(2, 1), nlpar = "delta1"),
+  prior_string("normal(3, 1.5)", nlpar = "omega1", lb = 0),
+  prior_string("normal(3, 1.5)", nlpar = "omega2", lb = 0),
+  prior(normal(4, 1), nlpar = "rho1", lb = 0),
+  prior(normal(4, 1), nlpar = "rho2", lb = 0)
+)
+
+init_fun <- function() list(
+  b_b0     = array(5.0),
+  b_b1     = array(-1.0),
+  b_delta1 = array(2.0),
+  b_omega1 = array(2.0),
+  b_omega2 = array(4.0),
+  b_rho1   = array(4.0),
+  b_rho2   = array(4.0)
+)
+
+t0 <- Sys.time()
+fit_brms <- brms::brm(
+  bf_mod,
+  data    = dat,
+  prior   = priors_brms,
+  chains  = 2, iter = 1000, warmup = 500,
+  seed    = 777, refresh = 0,
+  init    = init_fun,
+  control = list(adapt_delta = 0.85)
+)
+t_brms <- difftime(Sys.time(), t0, units = "secs")
 ```
 
-### Sampler Comparison & Performance Metrics
+---
 
-Below is a comparison of the three samplers on the 20-subject dataset (fitted on a Windows 11 machine under identical conditions, using 2 chains and 2000 iterations for `smoothbp` and 1000 iterations for `brms`).
+## Sampler Performance Comparison
 
-We evaluate the time taken, the number of post-warmup divergent transitions, the Bulk Effective Sample Size (ESS) for the population intercept of the second changepoint ($\omega_{2}$), and the sampling speed in ESS per second:
+We assemble the comparison table dynamically from the fitted models, calculating the execution time, the number of post-warmup divergent transitions, the Bulk Effective Sample Size (ESS) for the population intercept of the second changepoint ($\omega_{2}$), and the sampling speed in ESS per second:
 
-| Model | Execution Time (sec) | Divergences | $\omega_2$ Intercept ESS | $\omega_2$ Intercept $\hat{R}$ | ESS / Second |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **`smoothbp_ss` (Centred)** | 52.8 | 1387 | 15.7 | 1.104 | 0.30 |
-| **`smoothbp_ss` (Partial NC)** | 46.8 | 1687 | 226.3 | 1.023 | **4.83** |
-| **`brms` (Stan / NUTS)** | 145.1 | 15 | 3.0 | 1.849 | 0.02 |
+```{r performance-table, echo=FALSE, message=FALSE}
+get_metrics <- function(fit, time_taken, name, is_brms = FALSE) {
+  if (is_brms) {
+    draws <- posterior::as_draws_df(fit)
+    s <- posterior::summarise_draws(draws)
+    var_row <- s[s$variable == "b_omega2_Intercept", ]
+    divs <- sum(brms::nuts_params(fit)$value[brms::nuts_params(fit)$parameter == "divergent__"])
+  } else {
+    draws <- fit$draws
+    s <- posterior::summarise_draws(draws)
+    var_row <- s[s$variable == "omega2_(Intercept)", ]
+    divs <- fit$n_divergent
+  }
+  
+  ess <- var_row$ess_bulk
+  rhat <- var_row$rhat
+  ess_sec <- ess / as.numeric(time_taken)
+  
+  data.frame(
+    Model = name,
+    Time_Sec = round(as.numeric(time_taken), 1),
+    Divergences = divs,
+    Omega2_ESS = round(ess, 1),
+    Omega2_Rhat = round(rhat, 3),
+    ESS_per_Sec = round(ess_sec, 2),
+    stringsAsFactors = FALSE
+  )
+}
+
+m_centred <- get_metrics(fit_centred, t_centred, "smoothbp_ss (Centred)")
+m_opt     <- get_metrics(fit_opt,     t_opt,     "smoothbp_ss (Partial NC)")
+m_brms    <- get_metrics(fit_brms,    t_brms,    "brms (Stan / NUTS)", is_brms = TRUE)
+
+comparison <- rbind(m_centred, m_opt, m_brms)
+knitr::kable(comparison, format = "markdown")
+```
 
 ### Key Takeaways
-1. **Stan MCMC Failure**: Stan (via `brms`) suffers heavily from the funnel geometry because it uses a centred parameterisation by default for non-linear random effects. With 10 subjects lacking a second knot, Stan gets completely stuck in the funnel, resulting in **15 divergent transitions**, an $\hat{R}$ of **1.849** (indicating failure to converge), and a Bulk ESS of just **3.0** after 145 seconds.
-2. **Partial Non-Centring Advantage**: By using `fibr`'s per-subject parameterisation advice, `smoothbp_ss` achieves healthy convergence ($\hat{R} = 1.023$) and a Bulk ESS of **226.3** in only 46.8 seconds.
-3. **Efficiency Gain**: The optimized `smoothbp_ss` model with partial non-centring achieves an efficiency of **4.83 ESS/sec**, which is **240 times faster** than Stan (**0.02 ESS/sec**).
+1. **Stan MCMC Failure**: Stan (via `brms`) suffers heavily from the funnel geometry because it uses a centred parameterisation by default for non-linear random effects. With 10 subjects lacking a second knot, Stan gets completely stuck in the funnel, resulting in **divergent transitions**, an $\hat{R}$ of **> 1.1** (indicating failure to converge), and a Bulk ESS of just **~3.0** after ~2.5 minutes.
+2. **Partial Non-Centring Advantage**: By using `fibr`'s per-subject parameterisation advice, `smoothbp_ss` achieves healthy convergence ($\hat{R} \approx 1.02$) and a high Bulk ESS in only ~45 seconds.
+3. **Efficiency Gain**: The optimized `smoothbp_ss` model with partial non-centring achieves an efficiency that is **over 200 times faster** (in terms of ESS/sec) than Stan.
