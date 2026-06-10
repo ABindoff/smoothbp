@@ -73,18 +73,28 @@ smoothbp <- function(
 
   y   <- as.double(data[[response_name]])
   tau <- as.double(data[[time_name]])
-  
+
+  if (anyNA(y))   stop(sprintf("Response variable '%s' contains NA values. Remove or impute missing observations before fitting.", response_name))
+  if (anyNA(tau)) stop(sprintf("Time variable '%s' contains NA values.", time_name))
+
   if (length(tau) == 0L) {
     stop(sprintf("Time variable '%s' is empty or not found. A valid time/covariate column is required on the RHS of the formula.", time_name))
   }
   if (length(tau) != length(y)) {
     stop("Length of time variable (tau) does not match length of response variable (y).")
   }
-  
+
   if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1L)
 
   if (.verbose) message("Building design matrices...")
   dm <- .build_design_matrices(b0, b1, deltas, omega, rho, data)
+
+  if (nrow(dm$X_b0) != length(y)) {
+    stop(sprintf(
+      "Design matrices have %d rows but data has %d observations. This is usually caused by NA values in predictor variables. Remove or impute missing values before fitting.",
+      nrow(dm$X_b0), length(y)
+    ))
+  }
   pv <- .build_prior_vectors(priors, dm)
 
   if (!is.null(hierarchical)) {

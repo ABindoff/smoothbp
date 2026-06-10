@@ -279,10 +279,9 @@ fn sample_gamma(data: &ModelData, _priors: &Priors, ss: &SpikeSlabConfig, state:
         let r1 = &data.y - &mu1;
         let log_p1 = -0.5 * r1.dot(&r1) / sigma2 + pi.ln();
         let log_p0 = -0.5 * r0.dot(&r0) / sigma2 + (1.0 - pi).ln();
-        let max_lp = f64::max(log_p1, log_p0);
-        let p1 = (log_p1 - max_lp).exp();
-        let p0 = (log_p0 - max_lp).exp();
-        *g = rng.gen_bool(p1 / (p1 + p0));
+        let log_odds = log_p1 - log_p0;
+        let prob = if log_odds.is_nan() { 0.5 } else { sigmoid(log_odds) };
+        *g = rng.gen_bool(prob);
     };
 
     let mut current_mu = mu_full;

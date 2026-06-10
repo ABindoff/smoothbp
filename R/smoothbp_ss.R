@@ -68,7 +68,10 @@ smoothbp_ss <- function(
 
   y   <- as.double(data[[response_name]])
   tau <- as.double(data[[time_name]])
-  
+
+  if (anyNA(y))   stop(sprintf("Response variable '%s' contains NA values. Remove or impute missing observations before fitting.", response_name))
+  if (anyNA(tau)) stop(sprintf("Time variable '%s' contains NA values.", time_name))
+
   if (length(tau) == 0L) {
     stop(sprintf("Time variable '%s' is empty or not found. A valid time/covariate column is required on the RHS of the formula.", time_name))
   }
@@ -80,6 +83,13 @@ smoothbp_ss <- function(
 
   if (.verbose) message("Building design matrices...")
   dm <- .build_design_matrices(b0, b1, deltas, omega, rho, data)
+
+  if (nrow(dm$X_b0) != length(y)) {
+    stop(sprintf(
+      "Design matrices have %d rows but data has %d observations. This is usually caused by NA values in predictor variables. Remove or impute missing values before fitting.",
+      nrow(dm$X_b0), length(y)
+    ))
+  }
   
   # Effective priors: override slab components
   priors_effective <- priors
