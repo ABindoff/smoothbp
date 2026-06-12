@@ -29,7 +29,7 @@ models:
 | Source | Mechanism | Remedy |
 |---|---|---|
 | **Random timing** | Subject change-points vary around a population mean; funnel geometry in $(\sigma_{\mathrm{re}}, u_j)$ space when $\sigma_{\mathrm{re}}$ is small | `reparameterise = "omega"` (NC), diagnosed via fibr |
-| **Structural differences** | Some subjects lack a breakpoint entirely; the unidentified location collapses to the prior, creating an extreme funnel | `reparameterise = "omega"` (NC); fibr `prior_frac` and holonomy both flag it |
+| **Structural differences** | Some subjects lack a breakpoint entirely; the unidentified location collapses to the prior, creating an extreme funnel | `reparameterise = "omega"` (NC); fibr `prior_frac` flags it |
 
 This vignette works through both scenarios in order, using fibr diagnostics to
 connect geometry to remedy.
@@ -314,7 +314,7 @@ df_funnel <- data.frame(
 
 ggplot(df_funnel, aes(x = u, y = log_sigma_re, colour = Subject)) +
   geom_point(alpha = 0.4, size = 1.2) +
-  facet_wrap(~ Subject, scales = "free_x") +
+  facet_wrap(~ Subject) +
   labs(title = "Funnel geometry in centred parameterisation",
        x = "Subject random effect (u)", y = "log(sigma_re)") +
   theme_minimal() + scale_colour_brewer(palette = "Set1") +
@@ -331,22 +331,6 @@ print(advice_B)
 The advisor flags subjects 11–20 (Group B) at breakpoint 2 with high `prior_frac`:
 their second change-point location is unidentified and trapped in the funnel.
 Subjects 1–10 (Group A) are fine — their second knot is data-identified.
-
-The holonomy diagnostic measures the geometric obstruction directly by estimating
-how much the fiber variables "remember" after a loop in base-space
-$(\omega_2, \sigma_{\mathrm{re},\omega_2})$:
-
-```{r fibr-B-holonomy, eval = requireNamespace("fibr", quietly = TRUE), fig.height = 5, fig.cap = "Eigenspectrum of the transport map H for omega2. A dominant eigenvalue near 1 confirms strong fiber memory — the sampler cannot move freely in the funnel."}
-hd <- fibr::holonomy_diagnostic(
-  chain             = fit_B_cent$draws,
-  base_vars         = c("omega2_(Intercept)", "sigma_re_omega2"),
-  fiber_vars        = paste0("omega2_re_subject_", 1:20),
-  min_gap           = 3L, n_bootstrap = 100L,
-  residualize_fiber = TRUE
-)
-print(hd)
-plot(hd)
-```
 
 ### Full NC fit
 
@@ -507,13 +491,11 @@ knitr::kable(comparison, format = "markdown")
 |---|---|---|---|
 | A: Random timing, data-rich | Clean convergence | `prior_frac` low | None needed |
 | A: Random timing, few obs / small $\sigma_{\mathrm{re}}$ | Funnel: high Rhat, low ESS | `prior_frac` high | `reparameterise = "omega"` |
-| B: Structural differences | Severe funnel, divergences | `prior_frac` high + holonomy ≈ 1 | `reparameterise = "omega"` |
+| B: Structural differences | Severe funnel, divergences | `prior_frac` high in the unidentified groups | `reparameterise = "omega"` |
 
 The recommended workflow:
 
 1. Fit centred (`reparameterise = "none"`, the default).
 2. Check `fit$n_divergent` and key Rhat/ESS values.
-3. Run `fibr::smoothbp_advisor()` — if any subjects show high `prior_frac`,
-   refit with `reparameterise = "omega"`.
-4. For structural differences (spike-and-slab models), the holonomy diagnostic
-   provides additional confirmation.
+3. Run `fibr::smoothbp_advisor()` — if any subjects (at any breakpoint) show
+   high `prior_frac`, refit with `reparameterise = "omega"`.
