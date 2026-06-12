@@ -1,99 +1,98 @@
 ---
-title: "Hierarchical change-points: random slopes and change-point locations"
+title: "Hierarchical change-points: random timing, structural differences, and geometry"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{Hierarchical change-points: random slopes and change-point locations}
+  %\VignetteIndexEntry{Hierarchical change-points: random timing, structural differences, and geometry}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
 
 ```{r setup, include = FALSE}
-NOT_CRAN <- identical(tolower(Sys.getenv("NOT_CRAN")), "true")
-HAS_FIBR <- NOT_CRAN && requireNamespace("fibr", quietly = TRUE)
 knitr::opts_chunk$set(
   collapse  = TRUE,
   comment   = "#>",
-  eval      = NOT_CRAN,
   fig.width = 7,
   fig.height = 5
 )
 library(smoothbp)
 library(posterior)
 library(ggplot2)
+library(dplyr)
+library(tidyr)
 ```
 
-## Why random change-points?
+## Overview
 
-Hierarchical piecewise models are common in longitudinal and clinical data: a
-treatment effect kicks in, a developmental milestone occurs, a patient
-transitions between disease states.  The timing of that transition — the
-change-point $\omega$ — often varies meaningfully between subjects.  Fitting a
-single population change-point ignores this variation, inflates residual
-variance, and gives biased estimates of slope change.
+Two distinct sources of sampling difficulty arise in hierarchical change-point
+models:
 
-The standard Bayesian solution is a hierarchical prior:
-
-$$
-\omega_j = \bar\omega + u_j, \quad u_j \sim \mathcal{N}(0, \sigma_{\mathrm{re}}^2)
-$$
-
-This introduces a well-known sampling difficulty: the **funnel geometry** of
-$(\sigma_{\mathrm{re}}, u_j)$ space.  When $\sigma_{\mathrm{re}}$ is small,
-the posterior concentrates in a narrow neck that HMC must traverse with a
-tiny step size, degrading mixing.
-
-This vignette demonstrates three approaches to the funnel, in increasing
-sophistication:
-
-| Approach | When to use | Key argument |
+| Source | Mechanism | Remedy |
 |---|---|---|
-| **Centred** (default) | Many obs per subject, large $\sigma_{\mathrm{re}}$ | `reparameterise = "none"` |
-| **Full NC** | Any funnel regime flagged by fibr | `reparameterise = "omega"` |
+| **Random timing** | Subject change-points vary around a population mean; funnel geometry in $(\sigma_{\mathrm{re}}, u_j)$ space when $\sigma_{\mathrm{re}}$ is small | `reparameterise = "omega"` (NC), diagnosed via fibr |
+| **Structural differences** | Some subjects lack a breakpoint entirely; the unidentified location collapses to the prior, creating an extreme funnel | `reparameterise = "omega"` (NC); fibr `prior_frac` and holonomy both flag it |
+
+This vignette works through both scenarios in order, using fibr diagnostics to
+connect geometry to remedy.
 
 ---
 
-## Simulating heterogeneous change-points
+## Scenario A: Random change-point timing
 
-```{r simulate}
+### Why random change-points?
+
+Hierarchical piecewise models are common in longitudinal and clinical data: a
+treatment effect kicks in, a developmental milestone occurs, a patient transitions
+between disease states.  When the timing of that transition — the change-point
+$\omega$ — varies meaningfully between subjects, fitting a single population
+change-point inflates residual variance and biases slope estimates.
+
+The standard Bayesian solution is a hierarchical prior:
+
+$$\omega_j = \bar\omega + u_j, \quad u_j \sim \mathcal{N}(0, \sigma_{\mathrm{re}}^2)$$
+
+The key quantity for sampling difficulty is `prior_frac` — the fraction of
+information about each subject's change-point that comes from the prior rather
+than the data:
+
+$$\text{prior\_frac}_j = \frac{\sigma_{\mathrm{re}}^{-2}}
+  {\sigma_{\mathrm{re}}^{-2} + \sigma^{-2}\sum_{i \in j}
+  \!\left(\tfrac{\partial\mu_i}{\partial\omega_{j,i}}\right)^{\!2}}$$
+
+- `prior_frac` → 1: prior dominates → funnel regime → NC recommended
+- `prior_frac` → 0: data dominates → centred parameterisation is efficient
+
+### Simulating heterogeneous change-points
+
+```{r sim-A}
 set.seed(42)
-J      <- 15L          # subjects
-n_j    <- 12L          # observations per subject
+J      <- 15L
+n_j    <- 12L
 N      <- J * n_j
 
-# True parameters
 omega_bar_true <- 3.0
 sigma_re_true  <- 0.9   # meaningful subject variation
-delta_true     <- 1.8   # slope change at changepoint
-rho_true       <- 2.5   # transition sharpness
+delta_true     <- 1.8
+rho_true       <- 2.5
 sigma_y_true   <- 0.4
 
-# Simulate
 u_omega_true <- rnorm(J, 0, sigma_re_true)
 subject_id   <- rep(seq_len(J), each = n_j)
 tau_vals     <- rep(seq(0.5, 5.5, length.out = n_j), times = J)
 
 omega_i <- omega_bar_true + u_omega_true[subject_id]
 d_i     <- tau_vals - omega_i
-mu_i    <- delta_true * d_i * plogis(rho_true * d_i)
-y_i     <- mu_i + rnorm(N, 0, sigma_y_true)
+y_i     <- delta_true * d_i * plogis(rho_true * d_i) + rnorm(N, 0, sigma_y_true)
 
-dat <- data.frame(
-  subject = factor(subject_id),
-  tau     = tau_vals,
-  y       = y_i
-)
+dat_A <- data.frame(subject = factor(subject_id), tau = tau_vals, y = y_i)
 
-cat(sprintf(
-  "N = %d  |  J = %d  |  true sigma_re = %.2f  |  omega range [%.1f, %.1f]\n",
+cat(sprintf("N = %d  |  J = %d  |  true sigma_re = %.2f  |  omega range [%.1f, %.1f]\n",
   N, J, sigma_re_true,
-  min(omega_bar_true + u_omega_true),
-  max(omega_bar_true + u_omega_true)
-))
+  min(omega_bar_true + u_omega_true), max(omega_bar_true + u_omega_true)))
 ```
 
-```{r plot-data, fig.cap = "Observed trajectories. Dashed vertical lines mark the true per-subject change-points."}
+```{r plot-A, fig.cap = "Observed trajectories. Dashed vertical lines mark the true per-subject change-points."}
 true_omega <- omega_bar_true + u_omega_true
-ggplot(dat, aes(x = tau, y = y, group = subject, colour = subject)) +
+ggplot(dat_A, aes(x = tau, y = y, group = subject, colour = subject)) +
   geom_line(alpha = 0.5, linewidth = 0.5) +
   geom_vline(
     data = data.frame(subject = factor(seq_len(J)), omega = true_omega),
@@ -101,42 +100,36 @@ ggplot(dat, aes(x = tau, y = y, group = subject, colour = subject)) +
     linetype = "dashed", alpha = 0.6, linewidth = 0.4
   ) +
   scale_colour_viridis_d(guide = "none") +
-  labs(title = "Simulated data — heterogeneous change-points",
+  labs(title = "Scenario A — heterogeneous change-points",
        x = "tau", y = "y") +
   theme_minimal(base_size = 12)
 ```
 
----
+### Centred parameterisation (default)
 
-## Step 1 — Centred parameterisation (default)
-
-We start with the default centred parameterisation.  The `(1 | subject)`
-syntax in the `omega` formula specifies that each subject has its own
-change-point location, distributed around a shared population mean.
-
-```{r fit-cent}
-priors_used <- smoothbp_priors(
+```{r fit-A-cent}
+priors_A <- smoothbp_priors(
   omega       = prior_normal(3, 1.5, lb = 0),
   sigma_re_om = prior_invgamma(2, 1)
 )
 
-fit_cent <- smoothbp(
+fit_A_cent <- smoothbp(
   y ~ tau,
   b0     = ~ 1 + (1 | subject),
   omega  = list(~ 1 + (1 | subject)),
   deltas = list(~ 1),
-  data   = dat,
-  priors = priors_used,
+  data   = dat_A,
+  priors = priors_A,
   chains = 4L, iter = 2000L, warmup = 1000L,
-  reparameterise = "none",   # centred (default)
-  seed = 42L
+  reparameterise = "none",
+  seed = 42L, .verbose = FALSE
 )
-cat(sprintf("Centred  — divergences: %d\n", fit_cent$n_divergent))
+cat(sprintf("Centred — divergences: %d\n", fit_A_cent$n_divergent))
 ```
 
-```{r cent-summary}
-s_cent <- summary(fit_cent, effects = "fixed")
-re_cent <- summary(fit_cent, effects = "ran_pars")
+```{r summ-A-cent}
+s_cent <- summary(fit_A_cent, effects = "fixed")
+re_cent <- summary(fit_A_cent, effects = "ran_pars")
 key_vars <- c("omega1_(Intercept)", "delta1_(Intercept)", "rho1_(Intercept)", "sigma")
 print(s_cent[s_cent$variable %in% key_vars,
              c("variable", "mean", "Q2.5", "Q97.5", "Rhat", "Bulk_ESS")],
@@ -151,147 +144,56 @@ In this data-rich regime — many observations per subject and substantial
 between-subject variation — the centred parameterisation converges cleanly.
 Rhat and ESS should both be healthy.
 
----
+### Diagnosing geometry with fibr
 
-## Step 2 — Diagnose geometry with fibr
+Even when the centred fit looks clean, it is worth running the fibr diagnostic —
+particularly if your own data has fewer observations per subject or smaller
+between-subject variation.
 
-Even when the centred fit looks clean, it is worth running the **fibr**
-diagnostic — particularly if your own data has fewer observations per subject
-or smaller between-subject variation.  The **fibr** package (Bindoff, 2026)
-computes the Fisher information decomposition at each posterior draw.  The key
-diagnostic is `prior_frac`: the fraction of information about each subject's
-change-point that comes from the prior rather than the data.
-
-$$
-\text{prior\_frac}_j = \frac{\sigma_{\mathrm{re}}^{-2}}
-  {\sigma_{\mathrm{re}}^{-2} + \sigma^{-2}\sum_{i \in j}
-  \!\left(\tfrac{\partial\mu_i}{\partial\omega_{j,i}}\right)^{\!2}}
-$$
-
-- `prior_frac` → 1: prior dominates → funnel regime → NC recommended
-- `prior_frac` → 0: data dominates → centred is efficient
-
-`delta_j = sqrt(prior_frac_j)` is the recommended per-group NC mixing
-fraction (from the Gaussian partial-NC theory of Papaspiliopoulos et al. 2007).
-
-```{r advisor, eval = HAS_FIBR}
+```{r fibr-A, eval = requireNamespace("fibr", quietly = TRUE)}
 library(fibr)
-
-advice <- smoothbp_advisor(fit_cent, n_draws = 200L)
-print(advice)
+advice_A <- smoothbp_advisor(fit_A_cent, n_draws = 200L)
+print(advice_A)
 ```
 
-```{r advisor-plot, eval = HAS_FIBR, fig.cap = "Prior fraction per subject at breakpoint 1. Groups with prior_frac above the red threshold are in the funnel regime and benefit from non-centred parameterisation."}
-plot(advice)
+```{r fibr-A-plot, eval = requireNamespace("fibr", quietly = TRUE), fig.cap = "Prior fraction per subject. Values below the blue threshold confirm centred is efficient in this regime."}
+plot(advice_A)
 ```
 
-In this data-rich example `prior_frac` will be low for most subjects —
-the likelihood dominates and the centred parameterisation is efficient.
-In your own data, if subjects are flagged with high `prior_frac` (fewer
-observations, noisier measurements, or tighter between-subject variation),
-refit with `reparameterise = "omega"`.
+In this data-rich example `prior_frac` is low for most subjects — the likelihood
+dominates and centred is efficient.  If your data flags subjects above the red
+threshold (e.g. fewer observations, noisier measurements, or tighter
+between-subject variation), refit with `reparameterise = "omega"`.
 
----
+### Full NC parameterisation
 
-## Step 3 — Full NC: non-centred for all groups
+For reference — and to illustrate the syntax for when fibr does flag a problem:
 
-If `smoothbp_advisor()` flags high `prior_frac` in your data, apply NC
-uniformly.  This replaces $u_j$ with $z_j = u_j / \sigma_{\mathrm{re}}$,
-where $z_j \sim N(0,1)$ independently of $\sigma_{\mathrm{re}}$, removing
-the funnel geometry from the sampler entirely.
-
-```{r fit-nc}
-fit_nc <- smoothbp(
+```{r fit-A-nc}
+fit_A_nc <- smoothbp(
   y ~ tau,
   b0     = ~ 1 + (1 | subject),
   omega  = list(~ 1 + (1 | subject)),
   deltas = list(~ 1),
-  data   = dat,
-  priors = priors_used,
+  data   = dat_A,
+  priors = priors_A,
   chains = 4L, iter = 2000L, warmup = 1000L,
-  reparameterise = "omega",   # NC for all groups
-  seed = 42L
+  reparameterise = "omega",
+  seed = 42L, .verbose = FALSE
 )
-cat(sprintf("Full NC  — divergences: %d\n", fit_nc$n_divergent))
+cat(sprintf("Full NC — divergences: %d\n", fit_A_nc$n_divergent))
 ```
 
----
+### Parameter recovery
 
-## Comparing mixing across parameterisations
-
-In this data-rich regime both parameterisations converge well.  The benefit
-of NC becomes clear when `prior_frac` is high — try reducing `n_j` or
-`sigma_re_true` in the simulation above to see the funnel regime.
-
-```{r compare-mixing, fig.cap = "Bulk ESS for the population-level omega intercept and sigma_re. In data-rich regimes both parameterisations perform similarly."}
-fmt_row <- function(fit, label) {
-  s  <- summary(fit, effects = "fixed")
-  re <- summary(fit, effects = "ran_pars")
-  om <- s[s$variable == "omega1_(Intercept)", ]
-  sr <- re[re$variable == "sigma_re_omega1", ]
-  data.frame(
-    parameterisation = label,
-    parameter        = c("omega1_(Intercept)", "sigma_re_omega1"),
-    Rhat             = c(om$Rhat, sr$Rhat),
-    Bulk_ESS         = c(as.integer(om$Bulk_ESS), as.integer(sr$Bulk_ESS)),
-    stringsAsFactors = FALSE
-  )
-}
-
-rows <- list(fmt_row(fit_cent, "Centred"),
-             fmt_row(fit_nc,   "Full NC"))
-comp <- do.call(rbind, rows)
-comp$parameterisation <- factor(comp$parameterisation,
-  levels = c("Centred", "Full NC"))
-
-print(comp, row.names = FALSE)
-```
-
-```{r compare-ess-plot, fig.cap = "ESS for all per-subject omega RE across the three parameterisations."}
-ess_rows <- function(fit, label) {
-  vars <- paste0("omega1_re_subject_", seq_len(J))
-  s <- summarise_draws(subset_draws(fit$draws, variable = vars), "ess_bulk")
-  data.frame(parameterisation = label, ESS = s$ess_bulk)
-}
-
-ess_rows_list <- list(ess_rows(fit_cent, "Centred"),
-                      ess_rows(fit_nc,   "Full NC"))
-ess_df <- do.call(rbind, ess_rows_list)
-ess_df$parameterisation <- factor(ess_df$parameterisation,
-  levels = c("Centred", "Full NC"))
-
-pal <- c("Centred" = "#B22222",
-         "Full NC" = "#2E8B57")
-
-ggplot(ess_df, aes(x = parameterisation, y = ESS, fill = parameterisation)) +
-  geom_boxplot(width = 0.45, alpha = 0.85) +
-  geom_jitter(width = 0.12, alpha = 0.45, size = 1.5) +
-  geom_hline(yintercept = 400, linetype = "dashed", colour = "grey40") +
-  scale_fill_manual(values = pal, guide = "none") +
-  labs(title = "Bulk ESS for per-subject changepoints",
-       subtitle = "Dashed line = recommended minimum (400)",
-       x = NULL, y = "Bulk ESS") +
-  theme_minimal(base_size = 12)
-```
-
----
-
-## Parameter recovery
-
-```{r recovery, fig.cap = "Posterior medians and 90% credible intervals for per-subject changepoints vs true values (full NC fit). The geometry-aware sampler recovers individual changepoints accurately."}
-# Use the full NC fit for the recovery plot
+```{r recovery-A, fig.cap = "Posterior medians and 90% credible intervals for per-subject change-points vs true values (NC fit)."}
 omega_posts <- summarise_draws(
-  subset_draws(fit_nc$draws,
+  subset_draws(fit_A_nc$draws,
                variable = paste0("omega1_re_subject_", seq_len(J))),
-  "median",
-  ~quantile(.x, c(0.05, 0.95))
+  "median", ~quantile(.x, c(0.05, 0.95))
 )
-
-omega_bar_post <- median(
-  as.vector(as_draws_matrix(
-    subset_draws(fit_nc$draws, variable = "omega1_(Intercept)")
-  ))
-)
+omega_bar_post <- median(as.vector(as_draws_matrix(
+  subset_draws(fit_A_nc$draws, variable = "omega1_(Intercept)"))))
 
 recovery_df <- data.frame(
   subject     = seq_len(J),
@@ -306,47 +208,312 @@ ggplot(recovery_df, aes(x = true_omega)) +
   geom_errorbar(aes(ymin = post_q05, ymax = post_q95),
                 width = 0.04, colour = "#2E8B57", alpha = 0.7) +
   geom_point(aes(y = post_median), colour = "#2E8B57", size = 2.5) +
-  labs(title = "Changepoint recovery: true vs posterior (full NC)",
+  labs(title = "Scenario A — change-point recovery",
        subtitle = "Points = posterior median; bars = 90% CI",
-       x = "True omega_j", y = "Posterior estimate of omega_j") +
-  coord_equal() +
-  theme_minimal(base_size = 12)
+       x = "True omega_j", y = "Posterior estimate") +
+  coord_equal() + theme_minimal(base_size = 12)
 ```
 
-```{r hyperparams}
-s_hyper <- summarise_draws(
-  subset_draws(fit_nc$draws,
-               variable = c("omega1_(Intercept)", "sigma_re_omega1",
-                            "delta1_(Intercept)", "rho1_(Intercept)")),
-  "mean", "sd", ~quantile(.x, c(0.05, 0.95))
+---
+
+## Scenario B: Structural group differences
+
+### The problem
+
+A subtler but more severe funnel arises when subjects differ not just in *when*
+a change-point occurs but in *whether* it occurs at all.  Consider a 2-breakpoint
+model fitted to a mixed cohort:
+
+- **Group A** (subjects 1–10): two genuine structural breaks — $\delta_2 \neq 0$,
+  so $\omega_2$ is identified by the data.
+- **Group B** (subjects 11–20): only one break — $\delta_2 = 0$, so $\omega_2$ is
+  completely unidentified.  Its subject-level deviation $u_{\omega_2}$ collapses
+  to zero as $\sigma_{\mathrm{re},\omega_2} \to 0$, creating a severe Neal funnel.
+
+Under centred parameterisation, HMC cannot traverse this funnel efficiently:
+chains get stuck, divergences accumulate, and the spike-and-slab indicator for
+$\delta_2$ fails to classify subjects correctly.
+
+### Simulating structurally heterogeneous data
+
+```{r sim-B, message = FALSE, warning = FALSE}
+# Group A: two knots
+dat_B1 <- simulate_smoothbp(
+  n_subj    = 10L, n_obs = 15L,
+  b0 = 5.0, b1 = -1.0,
+  delta = c(2.0, -2.0), omega = c(2.0, 4.0), rho = c(4.0, 4.0),
+  sigma = 0.15, sigma_u = 0.0, tau_range = c(0.5, 5.5), seed = 123L
 )
-truth_row <- c(omega_bar_true, sigma_re_true, delta_true, rho_true)
-s_hyper$truth <- truth_row
-print(s_hyper[, c("variable", "mean", "sd", "5%", "95%", "truth")])
+dat_B1$subject <- as.integer(as.character(dat_B1$subject))
+
+# Group B: one knot (delta2 = 0)
+dat_B2 <- simulate_smoothbp(
+  n_subj    = 10L, n_obs = 15L,
+  b0 = 5.0, b1 = -1.0,
+  delta = c(2.0, 0.0), omega = c(2.0, 4.0), rho = c(4.0, 4.0),
+  sigma = 0.15, sigma_u = 0.0, tau_range = c(0.5, 5.5), seed = 456L
+)
+dat_B2$subject <- as.integer(as.character(dat_B2$subject)) + 10L
+
+dat_B <- rbind(dat_B1, dat_B2)
+dat_B$subject <- factor(dat_B$subject)
+```
+
+```{r plot-B, fig.height = 4, fig.cap = "Subject 1 (2 knots) vs Subject 11 (1 knot). The second structural break is absent in Group B."}
+example_dat <- dat_B |>
+  filter(subject %in% c(1, 11)) |>
+  mutate(Group = factor(ifelse(subject == 1,
+    "2 Knots (Subject 1)", "1 Knot (Subject 11)")))
+
+ggplot(example_dat, aes(x = tau, y = y, colour = Group)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_line(aes(y = mu), linewidth = 1) +
+  labs(title = "Scenario B — structural differences between groups",
+       subtitle = "Solid lines show the true underlying trajectories",
+       x = "tau", y = "y") +
+  theme_minimal() + scale_colour_brewer(palette = "Set1")
+```
+
+### Centred fit (naive)
+
+```{r fit-B-cent, message = FALSE}
+t0 <- Sys.time()
+fit_B_cent <- smoothbp_ss(
+  y ~ tau, b0 = ~ 1, b1 = ~ 1,
+  deltas  = list(~ 1 + (1 | subject), ~ 0 + (1 | subject)),
+  omega   = list(~ 1 + (1 | subject), ~ 1 + (1 | subject)),
+  rho     = list(~ 1, ~ 1),
+  data    = dat_B,
+  priors  = smoothbp_priors(omega = prior_normal(3.0, 1.5, lb = 0.0)),
+  spike   = prior_spike_slab(pi = 0.5),
+  reparameterise = "none",
+  chains = 2L, iter = 2000L, warmup = 1000L,
+  seed = 777L, .verbose = FALSE
+)
+t_cent <- difftime(Sys.time(), t0, units = "secs")
+cat(sprintf("Centred — divergences: %d\n", fit_B_cent$n_divergent))
+```
+
+### Visualising the funnel
+
+The unidentified $u_{\omega_2}$ for Group B subjects collapses toward zero as
+$\sigma_{\mathrm{re}}$ shrinks, forming the classic funnel shape:
+
+```{r plot-funnel, fig.height = 4, fig.cap = "Subject 1's omega2 RE is data-identified (no funnel). Subject 11's collapses to 0 as log(sigma_re) decreases — Neal's funnel."}
+draws_cent <- as_draws_df(fit_B_cent$draws)
+
+df_funnel <- data.frame(
+  log_sigma_re = log(draws_cent$sigma_re_omega2),
+  u_subj_1     = draws_cent$omega2_re_subject_1,
+  u_subj_11    = draws_cent$omega2_re_subject_11
+) |>
+  pivot_longer(c(u_subj_1, u_subj_11), names_to = "Subject", values_to = "u") |>
+  mutate(Subject = factor(ifelse(Subject == "u_subj_1",
+    "Subject 1 (2 Knots — Identified)",
+    "Subject 11 (1 Knot — Unidentified)")))
+
+ggplot(df_funnel, aes(x = u, y = log_sigma_re, colour = Subject)) +
+  geom_point(alpha = 0.4, size = 1.2) +
+  facet_wrap(~ Subject, scales = "free_x") +
+  labs(title = "Funnel geometry in centred parameterisation",
+       x = "Subject random effect (u)", y = "log(sigma_re)") +
+  theme_minimal() + scale_colour_brewer(palette = "Set1") +
+  theme(legend.position = "none")
+```
+
+### fibr diagnostics
+
+```{r fibr-B, eval = requireNamespace("fibr", quietly = TRUE)}
+advice_B <- fibr::smoothbp_advisor(fit_B_cent)
+print(advice_B)
+```
+
+The advisor flags subjects 11–20 (Group B) at breakpoint 2 with high `prior_frac`:
+their second change-point location is unidentified and trapped in the funnel.
+Subjects 1–10 (Group A) are fine — their second knot is data-identified.
+
+The holonomy diagnostic measures the geometric obstruction directly by estimating
+how much the fiber variables "remember" after a loop in base-space
+$(\omega_2, \sigma_{\mathrm{re},\omega_2})$:
+
+```{r fibr-B-holonomy, eval = requireNamespace("fibr", quietly = TRUE), fig.height = 5, fig.cap = "Eigenspectrum of the transport map H for omega2. A dominant eigenvalue near 1 confirms strong fiber memory — the sampler cannot move freely in the funnel."}
+hd <- fibr::holonomy_diagnostic(
+  chain             = fit_B_cent$draws,
+  base_vars         = c("omega2_(Intercept)", "sigma_re_omega2"),
+  fiber_vars        = paste0("omega2_re_subject_", 1:20),
+  min_gap           = 3L, n_bootstrap = 100L,
+  residualize_fiber = TRUE
+)
+print(hd)
+plot(hd)
+```
+
+### Full NC fit
+
+```{r fit-B-nc, message = FALSE}
+t0 <- Sys.time()
+fit_B_nc <- smoothbp_ss(
+  y ~ tau, b0 = ~ 1, b1 = ~ 1,
+  deltas  = list(~ 1 + (1 | subject), ~ 0 + (1 | subject)),
+  omega   = list(~ 1 + (1 | subject), ~ 1 + (1 | subject)),
+  rho     = list(~ 1, ~ 1),
+  data    = dat_B,
+  priors  = smoothbp_priors(omega = prior_normal(3.0, 1.5, lb = 0.0)),
+  spike   = prior_spike_slab(pi = 0.5),
+  reparameterise = "omega",
+  chains = 2L, iter = 2000L, warmup = 1000L,
+  seed = 777L, .verbose = FALSE
+)
+t_nc <- difftime(Sys.time(), t0, units = "secs")
+cat(sprintf("Full NC — divergences: %d\n", fit_B_nc$n_divergent))
+```
+
+### Traceplot comparison
+
+```{r plot-traces, fig.height = 5, fig.cap = "Population intercept omega2 before and after NC reparameterisation. NC resolves the sticky chains caused by the funnel."}
+draws_nc <- as_draws_df(fit_B_nc$draws)
+
+df_trace <- data.frame(
+  Iteration = rep(1:1000, 4),
+  Chain = factor(rep(rep(1:2, each = 1000), 2)),
+  Value = c(
+    draws_cent$`omega2_(Intercept)`[draws_cent$.chain == 1],
+    draws_cent$`omega2_(Intercept)`[draws_cent$.chain == 2],
+    draws_nc$`omega2_(Intercept)`[draws_nc$.chain == 1],
+    draws_nc$`omega2_(Intercept)`[draws_nc$.chain == 2]
+  ),
+  Parameterisation = rep(c("Centred", "Full NC (reparameterise = 'omega')"),
+                         each = 2000)
+)
+
+ggplot(df_trace, aes(x = Iteration, y = Value, colour = Chain)) +
+  geom_line(alpha = 0.6) +
+  facet_wrap(~ Parameterisation, scales = "free_y", ncol = 1) +
+  labs(title = "Traceplot — population intercept omega2",
+       x = "Post-warmup iteration", y = "Parameter value") +
+  theme_minimal() + scale_colour_brewer(palette = "Set2")
+```
+
+### Posterior inclusion probabilities
+
+With the geometry resolved, the spike-and-slab indicator correctly classifies
+subjects. Subjects 1–10 (two knots) should have PIP ≈ 1 for $\delta_2$;
+subjects 11–20 (one knot) should have PIP ≈ 0.
+
+```{r pips-B}
+pips <- pip(fit_B_nc)
+res <- data.frame(
+  subject    = 1:20,
+  true_knots = c(rep("2 Knots", 10), rep("1 Knot", 10)),
+  pip_delta2 = sapply(1:20, function(s)
+    pips$pip[pips$parameter == paste0("delta2_re_subject_", s)])
+)
+print(res)
+```
+
+```{r plot-pips, fig.height = 4, fig.cap = "PIP for the second breakpoint. A 0.5 threshold perfectly classifies the two groups."}
+ggplot(res, aes(x = factor(subject), y = pip_delta2, fill = true_knots)) +
+  geom_col(width = 0.7, alpha = 0.8) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", colour = "red") +
+  labs(title = "Posterior inclusion probabilities — second breakpoint (delta2)",
+       x = "Subject", y = "PIP", fill = "True structure") +
+  theme_minimal() + scale_fill_brewer(palette = "Set1")
+```
+
+---
+
+## Stan benchmark
+
+For reference, the same Scenario B model fitted in Stan via `brms`.  Stan's NUTS
+uses a centred parameterisation for non-linear random effects by default, so it
+encounters the same funnel without the geometry-aware per-subject adaptation that
+smoothbp provides.
+
+```{r fit-brms, message = FALSE, results = "hide", eval = requireNamespace("brms", quietly = TRUE) && requireNamespace("cmdstanr", quietly = TRUE)}
+library(brms)
+
+bf_mod <- brms::bf(
+  y ~ b0 + b1 * (tau - omega1) +
+        delta1 * (tau - omega1) / (1 + exp(-(tau - omega1) * rho1)) +
+        delta2 * (tau - omega2) / (1 + exp(-(tau - omega2) * rho2)),
+  b0 ~ 1, b1 ~ 1,
+  delta1 ~ 1 + (1 | subject), delta2 ~ 0 + (1 | subject),
+  omega1 ~ 1 + (1 | subject), omega2 ~ 1 + (1 | subject),
+  rho1 ~ 1, rho2 ~ 1, nl = TRUE
+)
+
+priors_brms <- c(
+  prior(normal(5, 2),    nlpar = "b0"),
+  prior(normal(-1, 1),   nlpar = "b1"),
+  prior(normal(2, 1),    nlpar = "delta1"),
+  prior_string("normal(3, 1.5)", nlpar = "omega1", lb = 0),
+  prior_string("normal(3, 1.5)", nlpar = "omega2", lb = 0),
+  prior(normal(4, 1),    nlpar = "rho1", lb = 0),
+  prior(normal(4, 1),    nlpar = "rho2", lb = 0)
+)
+
+init_fun <- function() list(
+  b_b0 = array(5.0), b_b1 = array(-1.0), b_delta1 = array(2.0),
+  b_omega1 = array(2.0), b_omega2 = array(4.0),
+  b_rho1 = array(4.0), b_rho2 = array(4.0)
+)
+
+t0 <- Sys.time()
+fit_brms <- brms::brm(
+  bf_mod, data = dat_B, prior = priors_brms,
+  chains = 2, iter = 1000, warmup = 500,
+  seed = 777, refresh = 0, init = init_fun,
+  control = list(adapt_delta = 0.85)
+)
+t_brms <- difftime(Sys.time(), t0, units = "secs")
+```
+
+```{r benchmark-table, echo = FALSE, message = FALSE, eval = requireNamespace("brms", quietly = TRUE) && requireNamespace("cmdstanr", quietly = TRUE)}
+get_metrics <- function(fit, time_taken, name, is_brms = FALSE) {
+  if (is_brms) {
+    s <- posterior::summarise_draws(posterior::as_draws_df(fit))
+    var_row <- s[s$variable == "b_omega2_Intercept", ]
+    divs <- sum(brms::nuts_params(fit)$value[
+      brms::nuts_params(fit)$parameter == "divergent__"])
+  } else {
+    s <- posterior::summarise_draws(fit$draws)
+    var_row <- s[s$variable == "omega2_(Intercept)", ]
+    divs <- fit$n_divergent
+  }
+  data.frame(
+    Model       = name,
+    Time_Sec    = round(as.numeric(time_taken), 1),
+    Divergences = divs,
+    Omega2_ESS  = round(var_row$ess_bulk, 1),
+    Omega2_Rhat = round(var_row$rhat, 3),
+    ESS_per_Sec = round(var_row$ess_bulk / as.numeric(time_taken), 2),
+    stringsAsFactors = FALSE
+  )
+}
+
+comparison <- rbind(
+  get_metrics(fit_B_cent, t_cent, "smoothbp_ss (Centred)"),
+  get_metrics(fit_B_nc,   t_nc,   "smoothbp_ss (Full NC)"),
+  get_metrics(fit_brms,   t_brms, "brms / Stan", is_brms = TRUE)
+)
+knitr::kable(comparison, format = "markdown")
 ```
 
 ---
 
 ## Summary
 
-Two independent sources of sampling difficulty arise in random-omega models,
-and smoothbp addresses each separately:
+| Scenario | Centred result | fibr signal | Remedy |
+|---|---|---|---|
+| A: Random timing, data-rich | Clean convergence | `prior_frac` low | None needed |
+| A: Random timing, few obs / small $\sigma_{\mathrm{re}}$ | Funnel: high Rhat, low ESS | `prior_frac` high | `reparameterise = "omega"` |
+| B: Structural differences | Severe funnel, divergences | `prior_frac` high + holonomy ≈ 1 | `reparameterise = "omega"` |
 
-| Problem | Cause | Solution |
-|---|---|---|
-| Within-subject parameter coupling | Off-diagonal Fisher metric between $u_\omega$, $u_\delta$, $u_{b1}$ | Joint per-subject NUTS with analytic mass matrix |
-| Hyperparameter funnel | $(\sigma_{\mathrm{re}}, u_j)$ geometry as $\sigma_{\mathrm{re}} \to 0$ | NC reparameterisation, diagnosed via fibr `prior_frac` |
+The recommended workflow:
 
-Two parameterisation choices:
-
-| Parameterisation | Syntax | Best for |
-|---|---|---|
-| Centred | `reparameterise = "none"` | Data-rich regimes (many obs per subject) |
-| Full NC | `reparameterise = "omega"` | Any funnel regime; use fibr to diagnose |
-
-The recommended workflow: fit centred, diagnose with `fibr::smoothbp_advisor()`,
-and refit with `reparameterise = "omega"` only if groups are flagged with high
-`prior_frac`.  In data-rich regimes the centred parameterisation is typically
-sufficient and NC will make little difference.  The funnel regime — few
-observations per subject, small $\sigma_{\mathrm{re}}$, or noisy measurements
-— is where NC earns its keep.
+1. Fit centred (`reparameterise = "none"`, the default).
+2. Check `fit$n_divergent` and key Rhat/ESS values.
+3. Run `fibr::smoothbp_advisor()` — if any subjects show high `prior_frac`,
+   refit with `reparameterise = "omega"`.
+4. For structural differences (spike-and-slab models), the holonomy diagnostic
+   provides additional confirmation.
