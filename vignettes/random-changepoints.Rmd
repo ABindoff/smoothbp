@@ -147,18 +147,20 @@ cat(sprintf("\nsigma_re_omega1: mean = %.3f  Rhat = %.3f  ESS = %d\n",
             as.integer(re_cent$Bulk_ESS[re_cent$variable == "sigma_re_omega1"])))
 ```
 
-The centred parameterisation recovers the parameters well but can show high
-Rhat for `omega1_(Intercept)` when $\sigma_{\mathrm{re}}$ is substantial —
-a textbook example of the hierarchical funnel.
+In this data-rich regime — many observations per subject and substantial
+between-subject variation — the centred parameterisation converges cleanly.
+Rhat and ESS should both be healthy.
 
 ---
 
 ## Step 2 — Diagnose geometry with fibr
 
-The **fibr** package (Bindoff, 2026) computes the Fisher information
-decomposition at each posterior draw.  The key diagnostic is `prior_frac`:
-the fraction of information about each subject's change-point that comes from
-the prior rather than the data.
+Even when the centred fit looks clean, it is worth running the **fibr**
+diagnostic — particularly if your own data has fewer observations per subject
+or smaller between-subject variation.  The **fibr** package (Bindoff, 2026)
+computes the Fisher information decomposition at each posterior draw.  The key
+diagnostic is `prior_frac`: the fraction of information about each subject's
+change-point that comes from the prior rather than the data.
 
 $$
 \text{prior\_frac}_j = \frac{\sigma_{\mathrm{re}}^{-2}}
@@ -183,17 +185,20 @@ print(advice)
 plot(advice)
 ```
 
-If any subjects are flagged (high `prior_frac`), refit with
-`reparameterise = "omega"` to apply non-centring across all omega random
-effects.
+In this data-rich example `prior_frac` will be low for most subjects —
+the likelihood dominates and the centred parameterisation is efficient.
+In your own data, if subjects are flagged with high `prior_frac` (fewer
+observations, noisier measurements, or tighter between-subject variation),
+refit with `reparameterise = "omega"`.
 
 ---
 
 ## Step 3 — Full NC: non-centred for all groups
 
-When all groups are in the funnel regime, apply NC uniformly.  This replaces
-$u_j$ with $z_j = u_j / \sigma_{\mathrm{re}}$, where $z_j \sim N(0,1)$
-independently of $\sigma_{\mathrm{re}}$.
+If `smoothbp_advisor()` flags high `prior_frac` in your data, apply NC
+uniformly.  This replaces $u_j$ with $z_j = u_j / \sigma_{\mathrm{re}}$,
+where $z_j \sim N(0,1)$ independently of $\sigma_{\mathrm{re}}$, removing
+the funnel geometry from the sampler entirely.
 
 ```{r fit-nc}
 fit_nc <- smoothbp(
@@ -214,7 +219,11 @@ cat(sprintf("Full NC  — divergences: %d\n", fit_nc$n_divergent))
 
 ## Comparing mixing across parameterisations
 
-```{r compare-mixing, fig.cap = "Bulk ESS for the population-level omega intercept and sigma_re across all three parameterisations. Higher ESS indicates better mixing per post-warmup draw."}
+In this data-rich regime both parameterisations converge well.  The benefit
+of NC becomes clear when `prior_frac` is high — try reducing `n_j` or
+`sigma_re_true` in the simulation above to see the funnel regime.
+
+```{r compare-mixing, fig.cap = "Bulk ESS for the population-level omega intercept and sigma_re. In data-rich regimes both parameterisations perform similarly."}
 fmt_row <- function(fit, label) {
   s  <- summary(fit, effects = "fixed")
   re <- summary(fit, effects = "ran_pars")
@@ -249,11 +258,10 @@ ess_rows_list <- list(ess_rows(fit_cent, "Centred"),
                       ess_rows(fit_nc,   "Full NC"))
 ess_df <- do.call(rbind, ess_rows_list)
 ess_df$parameterisation <- factor(ess_df$parameterisation,
-  levels = c("Centred", "Partial-NC (fibr)", "Full NC"))
+  levels = c("Centred", "Full NC"))
 
-pal <- c("Centred"            = "#B22222",
-         "Partial-NC (fibr)"  = "#FF8C00",
-         "Full NC"            = "#2E8B57")
+pal <- c("Centred" = "#B22222",
+         "Full NC" = "#2E8B57")
 
 ggplot(ess_df, aes(x = parameterisation, y = ESS, fill = parameterisation)) +
   geom_boxplot(width = 0.45, alpha = 0.85) +
@@ -264,92 +272,6 @@ ggplot(ess_df, aes(x = parameterisation, y = ESS, fill = parameterisation)) +
        subtitle = "Dashed line = recommended minimum (400)",
        x = NULL, y = "Bulk ESS") +
   theme_minimal(base_size = 12)
-```
-
----
-
-## Comparison with Stan (centred parameterisation)
-
-For reference we fit the same model in Stan using the standard centred
-form.  This illustrates how the funnel affects a general-purpose sampler
-without the geometry-aware Fisher metric mass matrix that smoothbp uses.
-
-```{r stan-model, eval = NOT_CRAN && requireNamespace("cmdstanr", quietly = TRUE)}
-library(cmdstanr)
-
-stan_code <- "
-data {
-  int<lower=0> N;
-  int<lower=1> J;
-  array[N] int<lower=1,upper=J> subject;
-  vector[N] tau;
-  vector[N] y;
-}
-parameters {
-  real delta;
-  real<lower=0> rho;
-  real omega_bar;
-  real<lower=0> sigma_re;
-  real<lower=0> sigma_y;
-  vector[J] u_omega;
-}
-model {
-  delta     ~ normal(0, 3);
-  rho       ~ normal(3, 2);
-  omega_bar ~ normal(3, 1.5);
-  sigma_re  ~ inv_gamma(2, 1);
-  sigma_y   ~ exponential(2);
-  u_omega   ~ normal(0, sigma_re);
-  {
-    vector[N] omega_i = omega_bar + u_omega[subject];
-    vector[N] d = tau - omega_i;
-    vector[N] mu = delta * d .* inv_logit(rho * d);
-    y ~ normal(mu, sigma_y);
-  }
-}
-"
-stan_file <- write_stan_file(stan_code)
-mod_stan  <- cmdstan_model(stan_file)
-
-fit_stan <- mod_stan$sample(
-  data    = list(N = N, J = J, subject = subject_id,
-                 tau = tau_vals, y = y_i),
-  chains  = 4L, parallel_chains = 4L,
-  iter_warmup = 1000L, iter_sampling = 1000L,
-  seed    = 42L, refresh = 0L
-)
-
-cat("Stan sampler diagnostics:\n")
-fit_stan$diagnostic_summary()
-```
-
-```{r comparison, eval = NOT_CRAN && requireNamespace("cmdstanr", quietly = TRUE)}
-draws_stan <- fit_stan$draws()
-
-re_smoothbp <- summarise_draws(
-  subset_draws(fit_nc$draws,
-               variable = c("omega1_(Intercept)", "sigma_re_omega1")),
-  "rhat", "ess_bulk"
-)
-re_stan <- summarise_draws(
-  subset_draws(draws_stan, variable = c("omega_bar", "sigma_re")),
-  "rhat", "ess_bulk"
-)
-
-cat("─── smoothbp Full NC (geometry-aware NUTS) ─────────────────────\n")
-cat(sprintf("  Divergences      : %d\n", fit_nc$n_divergent))
-cat(sprintf("  ESS sigma_re_om  : %.0f\n",
-            re_smoothbp$ess_bulk[re_smoothbp$variable == "sigma_re_omega1"]))
-cat(sprintf("  Rhat sigma_re_om : %.3f\n",
-            re_smoothbp$rhat[re_smoothbp$variable == "sigma_re_omega1"]))
-
-cat("\n─── Stan (centred) ─────────────────────────────────────────────\n")
-n_div_stan <- sum(fit_stan$diagnostic_summary()$num_divergent)
-cat(sprintf("  Divergences      : %d\n", n_div_stan))
-cat(sprintf("  ESS sigma_re     : %.0f\n",
-            re_stan$ess_bulk[re_stan$variable == "sigma_re"]))
-cat(sprintf("  Rhat sigma_re    : %.3f\n",
-            re_stan$rhat[re_stan$variable == "sigma_re"]))
 ```
 
 ---
@@ -412,8 +334,8 @@ and smoothbp addresses each separately:
 
 | Problem | Cause | Solution |
 |---|---|---|
-| Within-subject slope–changepoint coupling | Off-diagonal Fisher metric between $u_\omega$, $u_\delta$, $u_{b1}$ | Joint per-subject NUTS with analytic mass matrix (`joint_subject_nuts`) |
-| Hyperparameter funnel | $(\sigma_{\mathrm{re}}, u_j)$ geometry as $\sigma_{\mathrm{re}} \to 0$ | NC flagged by fibr `prior_frac` diagnostic |
+| Within-subject parameter coupling | Off-diagonal Fisher metric between $u_\omega$, $u_\delta$, $u_{b1}$ | Joint per-subject NUTS with analytic mass matrix |
+| Hyperparameter funnel | $(\sigma_{\mathrm{re}}, u_j)$ geometry as $\sigma_{\mathrm{re}} \to 0$ | NC reparameterisation, diagnosed via fibr `prior_frac` |
 
 Two parameterisation choices:
 
@@ -423,4 +345,8 @@ Two parameterisation choices:
 | Full NC | `reparameterise = "omega"` | Any funnel regime; use fibr to diagnose |
 
 The recommended workflow: fit centred, diagnose with `fibr::smoothbp_advisor()`,
-and if any groups are flagged, refit with `reparameterise = "omega"`.
+and refit with `reparameterise = "omega"` only if groups are flagged with high
+`prior_frac`.  In data-rich regimes the centred parameterisation is typically
+sufficient and NC will make little difference.  The funnel regime — few
+observations per subject, small $\sigma_{\mathrm{re}}$, or noisy measurements
+— is where NC earns its keep.

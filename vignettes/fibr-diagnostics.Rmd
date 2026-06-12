@@ -405,7 +405,7 @@ get_metrics <- function(fit, time_taken, name, is_brms = FALSE) {
 }
 
 m_centred <- get_metrics(fit_centred, t_centred, "smoothbp_ss (Centred)")
-m_opt     <- get_metrics(fit_opt,     t_opt,     "smoothbp_ss (Partial NC)")
+m_opt     <- get_metrics(fit_opt,     t_opt,     "smoothbp_ss (Full NC)")
 m_brms    <- get_metrics(fit_brms,    t_brms,    "brms (Stan / NUTS)", is_brms = TRUE)
 
 comparison <- rbind(m_centred, m_opt, m_brms)
@@ -414,5 +414,5 @@ knitr::kable(comparison, format = "markdown")
 
 ### Key Takeaways
 1. **Stan MCMC Failure**: Stan (via `brms`) suffers heavily from the funnel geometry because it uses a centred parameterisation by default for non-linear random effects. With 10 subjects lacking a second knot, Stan gets completely stuck in the funnel, resulting in **divergent transitions**, an $\hat{R}$ of **> 1.1** (indicating failure to converge), and a Bulk ESS of just **~3.0** after ~2.5 minutes.
-2. **Partial Non-Centring Advantage**: By using `fibr`'s per-subject parameterisation advice, `smoothbp_ss` achieves healthy convergence ($\hat{R} \approx 1.02$) and a high Bulk ESS in only ~45 seconds.
-3. **Efficiency Gain**: The optimized `smoothbp_ss` model with partial non-centring achieves an efficiency that is **over 200 times faster** (in terms of ESS/sec) than Stan.
+2. **Full NC Advantage**: By using `fibr`'s diagnostic to identify the funnel regime and refitting with `reparameterise = "omega"`, `smoothbp_ss` achieves healthy convergence ($\hat{R} \approx 1.02$) and a high Bulk ESS in only ~45 seconds.
+3. **Efficiency Gain**: The optimized `smoothbp_ss` model with full non-centring achieves an efficiency that is **over 200 times faster** (in terms of ESS/sec) than Stan.
