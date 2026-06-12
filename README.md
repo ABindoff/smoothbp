@@ -1,4 +1,4 @@
-# smoothbp
+# smoothbp <img src="man/figures/smoothbp_hexlogo.svg" align="right" height="139" />
 
 Fits smoothed hierarchical piecewise regression with **multiple change-points** using an optimised Metropolis-within-Gibbs sampler implemented in Rust.
 

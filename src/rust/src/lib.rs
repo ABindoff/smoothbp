@@ -134,7 +134,7 @@ fn run_mcmc(
     let base_seed = seed as u64;
     let n_cores = (n_cores as usize).max(1);
 
-    let results: Vec<(DMatrix<f64>, usize)> = if n_cores > 1 && n_chains > 1 {
+    let results: Vec<(DMatrix<f64>, [usize; 4])> = if n_cores > 1 && n_chains > 1 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(n_cores).build().unwrap();
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
@@ -149,15 +149,26 @@ fn run_mcmc(
         }).collect()
     };
 
-    let (chain_results, divergences): (Vec<Robj>, Vec<i32>) = results.into_iter().map(|(draws, n_div)| {
+    let mut chain_results: Vec<Robj> = Vec::with_capacity(results.len());
+    let mut div_total: Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_subj:  Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_om:    Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_rho:   Vec<i32> = Vec::with_capacity(results.len());
+    for (draws, d) in results.into_iter() {
         let nr = draws.nrows();
         let nc = draws.ncols();
         let flat: Vec<f64> = draws.iter().cloned().collect();
-        let mat = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
-        (mat, n_div as i32)
-    }).unzip();
+        let mat: Robj = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
+        chain_results.push(mat);
+        div_total.push(d[0] as i32);  // [total, subj, om, rho]
+        div_subj.push(d[1] as i32);
+        div_om.push(d[2] as i32);
+        div_rho.push(d[3] as i32);
+    }
 
-    list!(draws = chain_results, n_divergent = divergences)
+    list!(draws = chain_results, n_divergent = div_total,
+          n_divergent_subj = div_subj, n_divergent_om = div_om,
+          n_divergent_rho = div_rho)
 }
 
 /// @noRd
@@ -283,7 +294,7 @@ fn run_mcmc_ss(
     let base_seed = seed as u64;
     let n_cores = (n_cores as usize).max(1);
 
-    let results: Vec<(DMatrix<f64>, usize)> = if n_cores > 1 && n_chains > 1 {
+    let results: Vec<(DMatrix<f64>, [usize; 4])> = if n_cores > 1 && n_chains > 1 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(n_cores).build().unwrap();
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
@@ -298,15 +309,26 @@ fn run_mcmc_ss(
         }).collect()
     };
 
-    let (chain_results, divergences): (Vec<Robj>, Vec<i32>) = results.into_iter().map(|(draws, n_div)| {
+    let mut chain_results: Vec<Robj> = Vec::with_capacity(results.len());
+    let mut div_total: Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_subj:  Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_om:    Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_rho:   Vec<i32> = Vec::with_capacity(results.len());
+    for (draws, d) in results.into_iter() {
         let nr = draws.nrows();
         let nc = draws.ncols();
         let flat: Vec<f64> = draws.iter().cloned().collect();
-        let mat = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
-        (mat, n_div as i32)
-    }).unzip();
+        let mat: Robj = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
+        chain_results.push(mat);
+        div_total.push(d[0] as i32);  // [total, subj, om, rho]
+        div_subj.push(d[1] as i32);
+        div_om.push(d[2] as i32);
+        div_rho.push(d[3] as i32);
+    }
 
-    list!(draws = chain_results, n_divergent = divergences)
+    list!(draws = chain_results, n_divergent = div_total,
+          n_divergent_subj = div_subj, n_divergent_om = div_om,
+          n_divergent_rho = div_rho)
 }
 
 /// @noRd
@@ -439,7 +461,7 @@ fn run_mcmc_re(
     let base_seed = seed as u64;
     let n_cores = (n_cores as usize).max(1);
 
-    let results: Vec<(DMatrix<f64>, usize)> = if n_cores > 1 && n_chains > 1 {
+    let results: Vec<(DMatrix<f64>, [usize; 4])> = if n_cores > 1 && n_chains > 1 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(n_cores).build().unwrap();
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
@@ -454,15 +476,26 @@ fn run_mcmc_re(
         }).collect()
     };
 
-    let (chain_results, divergences): (Vec<Robj>, Vec<i32>) = results.into_iter().map(|(draws, n_div)| {
+    let mut chain_results: Vec<Robj> = Vec::with_capacity(results.len());
+    let mut div_total: Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_subj:  Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_om:    Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_rho:   Vec<i32> = Vec::with_capacity(results.len());
+    for (draws, d) in results.into_iter() {
         let nr = draws.nrows();
         let nc = draws.ncols();
         let flat: Vec<f64> = draws.iter().cloned().collect();
-        let mat = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
-        (mat, n_div as i32)
-    }).unzip();
+        let mat: Robj = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
+        chain_results.push(mat);
+        div_total.push(d[0] as i32);  // [total, subj, om, rho]
+        div_subj.push(d[1] as i32);
+        div_om.push(d[2] as i32);
+        div_rho.push(d[3] as i32);
+    }
 
-    list!(draws = chain_results, n_divergent = divergences)
+    list!(draws = chain_results, n_divergent = div_total,
+          n_divergent_subj = div_subj, n_divergent_om = div_om,
+          n_divergent_rho = div_rho)
 }
 
 /// @noRd
@@ -612,7 +645,7 @@ fn run_mcmc_re_ss(
     let base_seed = seed as u64;
     let n_cores = (n_cores as usize).max(1);
 
-    let results: Vec<(DMatrix<f64>, usize)> = if n_cores > 1 && n_chains > 1 {
+    let results: Vec<(DMatrix<f64>, [usize; 4])> = if n_cores > 1 && n_chains > 1 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(n_cores).build().unwrap();
         pool.install(|| {
             (0..n_chains).into_par_iter().map(|c| {
@@ -627,15 +660,26 @@ fn run_mcmc_re_ss(
         }).collect()
     };
 
-    let (chain_results, divergences): (Vec<Robj>, Vec<i32>) = results.into_iter().map(|(draws, n_div)| {
+    let mut chain_results: Vec<Robj> = Vec::with_capacity(results.len());
+    let mut div_total: Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_subj:  Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_om:    Vec<i32> = Vec::with_capacity(results.len());
+    let mut div_rho:   Vec<i32> = Vec::with_capacity(results.len());
+    for (draws, d) in results.into_iter() {
         let nr = draws.nrows();
         let nc = draws.ncols();
         let flat: Vec<f64> = draws.iter().cloned().collect();
-        let mat = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
-        (mat, n_div as i32)
-    }).unzip();
+        let mat: Robj = RMatrix::new_matrix(nr, nc, |r, c| flat[c * nr + r]).into();
+        chain_results.push(mat);
+        div_total.push(d[0] as i32);  // [total, subj, om, rho]
+        div_subj.push(d[1] as i32);
+        div_om.push(d[2] as i32);
+        div_rho.push(d[3] as i32);
+    }
 
-    list!(draws = chain_results, n_divergent = divergences)
+    list!(draws = chain_results, n_divergent = div_total,
+          n_divergent_subj = div_subj, n_divergent_om = div_om,
+          n_divergent_rho = div_rho)
 }
 
 extendr_module! {

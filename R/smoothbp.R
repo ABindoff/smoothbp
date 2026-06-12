@@ -17,7 +17,9 @@
 #' @param seed Random seed.
 #' @param step_om Initial HMC/MH step size for omega.
 #' @param step_rho Initial HMC/MH step size for rho.
-#' @param target_accept Target HMC acceptance probability.
+#' @param target_accept Target HMC acceptance probability (default 0.9).
+#'   Raise toward 0.99 if you see divergent transitions in the sharpness
+#'   (\code{rho}) parameter.
 #' @param cores    Number of CPU cores.
 #' @param hierarchical \strong{Deprecated.} Character vector; which parameters
 #'   should be treated as hierarchical. This argument is no longer needed:
@@ -27,10 +29,6 @@
 #' @param reparameterise Character specifying the parameterisation for random change-points:
 #'   \code{"none"} (centred) or \code{"omega"} (fully non-centred). Default is \code{"none"}.
 #'   Only used if random effects are present.
-#' @param re_fraction Optional per-group prior mixing fraction for partial non-centring.
-#'   Can be a list of numeric vectors between 0 and 1 (one per breakpoint, with one value per subject group),
-#'   or a \code{fibr_smoothbp_advice} object. If \code{NULL} (default), uses the global
-#'   \code{reparameterise} setting.
 #' @param .verbose Print progress.
 #'
 #' @return A \code{smoothbp_fit} object.
@@ -50,11 +48,10 @@ smoothbp <- function(
     seed   = NULL,
     step_om  = 0.3,
     step_rho = 0.3,
-    target_accept = 0.65,
+    target_accept = 0.9,
     cores    = getOption("smoothbp.cores", 1L),
     hierarchical = NULL,
     reparameterise = c("none", "omega"),
-    re_fraction = NULL,
     .verbose = TRUE
 ) {
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -129,7 +126,7 @@ smoothbp <- function(
     if (length(re_mask_om) == 0) re_mask_om <- list(as.integer(-1))
 
     reparameterise <- match.arg(reparameterise)
-    nc_om_per_group <- .build_nc_om_per_group(dm, reparameterise, re_fraction, has_re_om)
+    nc_om_per_group <- .build_nc_om_per_group(dm, reparameterise, has_re_om)
 
     # b1 and delta RE masks
     re_mask_b1_vec <- if (has_re_b1) {
@@ -304,8 +301,14 @@ smoothbp <- function(
       step_rho      = step_rho,
       target_accept = target_accept,
       priors        = priors,
-      re_fraction   = re_fraction,
-      n_divergent   = as.integer(sum(raw$n_divergent))
+      n_divergent   = as.integer(sum(raw$n_divergent)),
+      # Per-block divergence attribution (measured, not inferred).
+      # sum(NULL) == 0, so this degrades gracefully on an un-recompiled binary.
+      n_divergent_by_block = list(
+        subj = as.integer(sum(raw$n_divergent_subj)),
+        om   = as.integer(sum(raw$n_divergent_om)),
+        rho  = as.integer(sum(raw$n_divergent_rho))
+      )
     ),
     class = "smoothbp_fit"
   )
@@ -318,12 +321,12 @@ smoothbp <- function(
 #' unspecified.
 #'
 #' @param object A \code{smoothbp_fit} object.
-#' @param formula,b0,b1,deltas,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,re_fraction,.verbose
+#' @param formula,b0,b1,deltas,omega,rho,data,priors,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
 #'   Replacements for the corresponding arguments of \code{\link{smoothbp}}.
 #'   Any argument not supplied is taken from \code{object}, including the
 #'   original \code{seed} and sampler tuning parameters (\code{step_om},
 #'   \code{step_rho}, \code{target_accept}).  To use a fresh seed or different
-#'   tuning, supply them explicitly. For \code{re_fraction}, see \code{\link{smoothbp}}.
+#'   tuning, supply them explicitly.
 #' @param ... Ignored.
 #'
 #' @return A new \code{smoothbp_fit} object.
@@ -337,7 +340,6 @@ update.smoothbp_fit <- function(
     chains, iter, warmup, seed,
     step_om, step_rho, target_accept,
     cores,
-    re_fraction,
     .verbose = TRUE,
     ...
 ) {
@@ -357,7 +359,6 @@ update.smoothbp_fit <- function(
   if (missing(step_om))        step_om        <- object$step_om
   if (missing(step_rho))       step_rho       <- object$step_rho
   if (missing(target_accept))  target_accept  <- object$target_accept
-  if (missing(re_fraction))    re_fraction    <- object$re_fraction
 
   smoothbp(
     formula       = formula,
@@ -376,7 +377,6 @@ update.smoothbp_fit <- function(
     step_rho      = step_rho,
     target_accept = target_accept,
     cores         = cores,
-    re_fraction   = re_fraction,
     .verbose      = .verbose
   )
 }

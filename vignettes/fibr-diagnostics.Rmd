@@ -23,7 +23,7 @@ If we fit a 2-breakpoint model to all participants:
 
 When a parameter is unidentified, its subject-level random deviation ($u_{\omega_2}$) collapses to zero as the group-level standard deviation ($\sigma_{re, \omega_2}$) goes to zero, creating a **hierarchical funnel** (Neal's Funnel). Under a standard centred parameterisation, Hamiltonian Monte Carlo (HMC) struggles in this funnel, resulting in divergent transitions, poor mixing, and flat gradients that can prevent the sampler from finding the true parameters.
 
-This vignette demonstrates how `fibr` diagnoses these structural differences and provides an optimized **partial non-centred parameterisation** to restore sampler efficiency.
+This vignette demonstrates how `fibr` diagnoses these structural differences, and how to use `reparameterise = "omega"` to apply full non-centring and restore sampler efficiency.
 
 ---
 
@@ -168,6 +168,8 @@ ggplot(df_funnel_long, aes(x = u, y = log_sigma_re, color = Subject)) +
 
 ## Step 4: Run `fibr` Diagnostics
 
+### 4.1 Parameterisation Advisor
+
 We pass the centred fit to `fibr::smoothbp_advisor()`. This function evaluates the relationship between the group-level random-effect SD ($\sigma_{re}$) and the individual deviations to identify where the funnel geometry is degrading the sampler:
 
 ```{r run-advisor}
@@ -180,11 +182,38 @@ Look at the advisor's recommendation for the second breakpoint (`omega2`):
 * **Subjects 1 to 10**: Recommended for the **centred** parameterisation. Since they have a second knot, the location $\omega_2$ is well-identified.
 * **Subjects 11 to 20**: Recommended for the **non-centred** parameterisation. Because they do not have a second knot, the location $\omega_2$ is unidentified and gets trapped in a funnel.
 
+### 4.2 Holonomy Diagnostic and Eigenspectrum
+
+To understand the geometric obstruction causing these issues, we can run `fibr::holonomy_diagnostic()` to measure the statistical fiber memory (holonomy) of the second change-point location (`omega2`). 
+
+This scans the chain for base-space loops in $(\omega_2, \sigma_{re, \omega_2})$ and estimates the linear transport map $H$ representing how the fiber variables (the subject-specific random deviations `omega2_re_subject_j`) shift or contract when the base hyperparameters return to their starting points.
+
+```{r run-holonomy-diagnostic, fig.width=6, fig.height=5, fig.cap="Eigenspectrum of the transport map H for omega2. The dominant eigenvalue near 0.96 indicates extremely strong fiber memory: when the base hyperparameters return near a starting point after a loop, the random effects retain ~96% of their original values, indicating a severe geometric obstruction in the centred parameterisation."}
+base_vars <- c("omega2_(Intercept)", "sigma_re_omega2")
+fiber_vars <- paste0("omega2_re_subject_", 1:20)
+
+hd <- fibr::holonomy_diagnostic(
+  chain             = fit_centred$draws,
+  base_vars         = base_vars,
+  fiber_vars        = fiber_vars,
+  min_gap           = 3L,          # within the autocorrelation time
+  n_bootstrap       = 100L,
+  residualize_fiber = TRUE
+)
+print(hd)
+
+# Plot the eigenspectrum
+plot(hd)
+```
+
+**Interpreting the eigenspectrum:** The presence of a dominant eigenvalue very close to 1.0 (specifically $\lambda_1 \approx 0.96$) on the real axis confirms that the centred parameterisation exhibits strong, non-trivial holonomy. Because the group standard deviation and individual deviations are coupled, the sampler cannot move freely without being dragged back to its starting state, confirming that a reparameterisation is required.
+
+
 ---
 
-## Step 5: Fit the Optimized Model (Partial Non-Centring)
+## Step 5: Fit the Optimized Model (Full Non-Centring)
 
-We re-fit the model passing the advisor's recommendation to the `re_fraction` argument. This applies a hybrid parameterisation: **non-centred** for the subjects experiencing funnel geometry, and **centred** for the subjects who have enough data:
+The fibr advisor diagnoses which subjects are in the funnel regime. When any groups are flagged, the recommended remedy is to refit with `reparameterise = "omega"`, which applies full non-centring across all omega random effects:
 
 ```{r fit-optimized, message=FALSE}
 t0 <- Sys.time()
@@ -200,7 +229,7 @@ fit_opt <- smoothbp_ss(
     omega = prior_normal(3.0, 1.5, lb = 0.0)
   ),
   spike   = prior_spike_slab(pi = 0.5),
-  re_fraction = fibr::as_smoothbp_re_fraction(advice),
+  reparameterise = "omega",
   chains  = 2L,
   iter    = 2000L,
   warmup  = 1000L,
@@ -214,7 +243,7 @@ t_opt <- difftime(Sys.time(), t0, units = "secs")
 
 ## Step 6: Traceplot Comparison
 
-Let's compare the MCMC traceplots of the population-level second changepoint location `omega2_(Intercept)` before and after applying the partial non-centring:
+Let's compare the MCMC traceplots of the population-level second changepoint location `omega2_(Intercept)` before and after applying non-centring:
 
 ```{r plot-traceplots, fig.width=7, fig.height=5}
 draws_opt <- as_draws_df(fit_opt$draws)
@@ -228,7 +257,7 @@ df_trace <- data.frame(
     draws_opt$`omega2_(Intercept)`[draws_opt$.chain == 1],
     draws_opt$`omega2_(Intercept)`[draws_opt$.chain == 2]
   ),
-  Parameterisation = rep(c("Centred (Naive)", "Partial Non-Centred (Optimized)"), each = 2000)
+  Parameterisation = rep(c("Centred (Naive)", "Non-Centred (reparameterise = 'omega')"), each = 2000)
 )
 
 ggplot(df_trace, aes(x = Iteration, y = Value, color = Chain)) +
@@ -236,7 +265,7 @@ ggplot(df_trace, aes(x = Iteration, y = Value, color = Chain)) +
   facet_wrap(~Parameterisation, scales = "free_y", ncol = 1) +
   labs(
     title = "Traceplot Comparison: Population intercept omega2",
-    subtitle = "Partial non-centring resolves sticky chains and improves mixing",
+    subtitle = "Non-centring resolves sticky chains and improves mixing",
     x = "Post-warmup Iterations",
     y = "Parameter Value"
   ) +
@@ -244,7 +273,7 @@ ggplot(df_trace, aes(x = Iteration, y = Value, color = Chain)) +
   scale_color_brewer(palette = "Set2")
 ```
 
-Under the naive centred parameterisation, the chains mix poorly. The optimized partial non-centred parameterisation allows the sampler to escape the funnel's flat gradients, leading to healthy, well-mixed chains.
+Under the naive centred parameterisation, the chains mix poorly. The non-centred parameterisation (`reparameterise = "omega"`) allows the sampler to escape the funnel's flat gradients, leading to healthy, well-mixed chains.
 
 ---
 

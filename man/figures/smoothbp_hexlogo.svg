@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 550" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#120c31" />
+      <stop offset="60%" stop-color="#1b124a" />
+      <stop offset="100%" stop-color="#0a051d" />
+    </linearGradient>
+
+    <linearGradient id="metalBorder" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8899a6" />
+      <stop offset="25%" stop-color="#ffffff" />
+      <stop offset="50%" stop-color="#3a4f63" />
+      <stop offset="75%" stop-color="#e2e8f0" />
+      <stop offset="100%" stop-color="#1b263b" />
+    </linearGradient>
+
+    <linearGradient id="neonHexBorder" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff2a85" />
+      <stop offset="100%" stop-color="#05d9e8" />
+    </linearGradient>
+
+    <linearGradient id="verticalLineGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff007f" stop-opacity="0.1" />
+      <stop offset="50%" stop-color="#ff007f" stop-opacity="1" />
+      <stop offset="100%" stop-color="#ff007f" stop-opacity="0.1" />
+    </linearGradient>
+
+    <linearGradient id="gridFade" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.4" />
+      <stop offset="80%" stop-color="#ffffff" stop-opacity="0.0" />
+    </linearGradient>
+
+    <mask id="gridMask">
+      <rect x="0" y="250" width="500" height="300" fill="url(#gridFade)" />
+    </mask>
+
+    <filter id="glowCyan" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur1" />
+      <feGaussianBlur stdDeviation="10" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <filter id="glowPink" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur1" />
+      <feGaussianBlur stdDeviation="8" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <filter id="glowWhite" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <filter id="textGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur1" />
+      <feColorMatrix type="matrix" values="
+        1 0 0 0 1
+        0 0 0 0 0.2
+        0 0 1 0 0.7
+        0 0 0 1 0
+      " result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <clipPath id="hexClip">
+      <polygon points="250,32 460,153 460,397 250,518 40,397 40,153" />
+    </clipPath>
+  </defs>
+
+  <polygon points="250,15 475,145 475,405 250,535 25,405 25,145" fill="url(#metalBorder)" />
+  <polygon points="250,26 465,150 465,400 250,524 35,400 35,150" fill="#090416" />
+  <polygon points="250,29 462,151 462,399 250,521 38,399 38,151" fill="none" stroke="url(#neonHexBorder)" stroke-width="3" opacity="0.8" />
+  <polygon points="250,32 460,153 460,397 250,518 40,397 40,153" fill="url(#bgGrad)" />
+
+  <g clip-path="url(#hexClip)">
+    <g mask="url(#gridMask)">
+      <line x1="250" y1="240" x2="-200" y2="550" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="250" y1="240" x2="-50" y2="550" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="250" y1="240" x2="100" y2="550" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="250" y1="240" x2="200" y2="550" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="250" y1="240" x2="250" y2="550" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="250" y1="240" x2="300" y2="550" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="250" y1="240" x2="400" y2="550" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="250" y1="240" x2="550" y2="550" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="250" y1="240" x2="700" y2="550" stroke="#ff007f" stroke-width="1.5" />
+
+      <line x1="0" y1="250" x2="500" y2="250" stroke="#ff007f" stroke-width="1" />
+      <line x1="0" y1="262" x2="500" y2="262" stroke="#ff007f" stroke-width="1" />
+      <line x1="0" y1="276" x2="500" y2="276" stroke="#ff007f" stroke-width="1" />
+      <line x1="0" y1="293" x2="500" y2="293" stroke="#ff007f" stroke-width="1.2" />
+      <line x1="0" y1="315" x2="500" y2="315" stroke="#ff007f" stroke-width="1.2" />
+      <line x1="0" y1="343" x2="500" y2="343" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="0" y1="380" x2="500" y2="380" stroke="#ff007f" stroke-width="1.5" />
+      <line x1="0" y1="430" x2="500" y2="430" stroke="#ff007f" stroke-width="2" />
+      <line x1="0" y1="495" x2="500" y2="495" stroke="#ff007f" stroke-width="2" />
+    </g>
+
+    <line x1="210" y1="50" x2="210" y2="420" stroke="url(#verticalLineGrad)" stroke-width="3" filter="url(#glowPink)" />
+    <path d="M 70,290 C 110,290 150,270 210,220" fill="none" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round" filter="url(#glowWhite)" />
+
+    <path d="M 210,220 C 260,180 320,135 410,135" fill="none" stroke="#05d9e8" stroke-width="4" stroke-linecap="round" filter="url(#glowCyan)" />
+    <path d="M 210,220 C 270,200 330,175 410,175" fill="none" stroke="#00b4d8" stroke-width="3.5" stroke-linecap="round" filter="url(#glowCyan)" opacity="0.9" />
+    <path d="M 210,220 C 270,220 330,220 410,220" fill="none" stroke="#ff007f" stroke-width="3.5" stroke-linecap="round" filter="url(#glowPink)" opacity="0.9" />
+    <path d="M 210,220 C 270,240 330,265 410,265" fill="none" stroke="#bc00dd" stroke-width="3.5" stroke-linecap="round" filter="url(#glowPink)" opacity="0.8" />
+    <path d="M 210,220 C 260,260 320,310 410,310" fill="none" stroke="#9d4edd" stroke-width="4" stroke-linecap="round" filter="url(#glowPink)" opacity="0.7" />
+
+    <circle cx="210" cy="220" r="8" fill="#ffffff" stroke="#ff007f" stroke-width="3" filter="url(#glowWhite)" />
+    <circle cx="210" cy="220" r="3" fill="#ffffff" />
+    <circle cx="70" cy="290" r="4" fill="#ffffff" filter="url(#glowWhite)" />
+  </g>
+
+  <g filter="url(#textGlow)">
+    <text x="250" y="440"
+          font-family="'Montserrat', 'Century Gothic', 'Helvetica Neue', sans-serif"
+          font-weight="900"
+          font-size="46"
+          fill="#ffffff"
+          text-anchor="middle"
+          letter-spacing="1.5">
+      smooth<tspan fill="#ff2a85">bp</tspan>
+    </text>
+  </g>
+  <path d="M 130,458 L 370,458" stroke="url(#neonHexBorder)" stroke-width="2" stroke-linecap="round" opacity="0.7" />
+</svg>

@@ -1515,7 +1515,7 @@ pub fn run_chain_re(
     nc_b1: bool,
     nc_deltas: &[bool],
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
-) -> (DMatrix<f64>, usize) {
+) -> (DMatrix<f64>, [usize; 4]) {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut state = init_state_re(data, priors, &mut rng);
     let n_post = n_iter - n_warmup;
@@ -1610,7 +1610,8 @@ pub fn run_chain_re(
     let div_rho = adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
     println!("Chain {} finished. Divergences - Subj: {}, Om: {}, Rho: {}", chain_id, div_subj, div_om, div_rho);
     let n_div = div_subj + div_om + div_rho;
-    (draws, n_div)
+    // [total, subj, om, rho]
+    (draws, [n_div, div_subj, div_om, div_rho])
 }
 pub fn run_chain_re_ss(
     data: &ModelData, priors: &Priors, ss: &SpikeSlabConfig, n_iter: usize, n_warmup: usize,
@@ -1620,7 +1621,7 @@ pub fn run_chain_re_ss(
     nc_b1: bool,
     nc_deltas: &[bool],
     progress_fn: &dyn Fn(usize, usize, usize, usize, bool),
-) -> (DMatrix<f64>, usize) {
+) -> (DMatrix<f64>, [usize; 4]) {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut state = init_state_re(data, priors, &mut rng);
     state.pi = ss.pi_init;
@@ -1707,10 +1708,12 @@ pub fn run_chain_re_ss(
             for (col, &val) in draw.iter().enumerate() { draws[(row, col)] = val; }
         }
     }
-    let n_div = adapt_subj.iter().map(|h| h.n_divergent).sum::<usize>()
-              + adapt_om.iter().map(|h| h.n_divergent).sum::<usize>()
-              + adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
-    (draws, n_div)
+    let div_subj = adapt_subj.iter().map(|h| h.n_divergent).sum::<usize>();
+    let div_om   = adapt_om.iter().map(|h| h.n_divergent).sum::<usize>();
+    let div_rho  = adapt_rho.iter().map(|h| h.n_divergent).sum::<usize>();
+    let n_div = div_subj + div_om + div_rho;
+    // [total, subj, om, rho]
+    (draws, [n_div, div_subj, div_om, div_rho])
 }
 
 

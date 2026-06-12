@@ -19,11 +19,10 @@ smoothbp(
   seed = NULL,
   step_om = 0.3,
   step_rho = 0.3,
-  target_accept = 0.65,
+  target_accept = 0.9,
   cores = getOption("smoothbp.cores", 1L),
   hierarchical = NULL,
   reparameterise = c("none", "omega"),
-  re_fraction = NULL,
   .verbose = TRUE
 )
 }
@@ -59,7 +58,9 @@ Can also contain \code{\link{fixed}()} values for fixed sharpness.}
 
 \item{step_rho}{Initial HMC/MH step size for rho.}
 
-\item{target_accept}{Target HMC acceptance probability.}
+\item{target_accept}{Target HMC acceptance probability (default 0.9).
+Raise toward 0.99 if you see divergent transitions in the sharpness
+(\code{rho}) parameter.}
 
 \item{cores}{Number of CPU cores.}
 
@@ -72,11 +73,6 @@ Passing a non-\code{NULL} value generates a deprecation warning.}
 \item{reparameterise}{Character specifying the parameterisation for random change-points:
 \code{"none"} (centred) or \code{"omega"} (fully non-centred). Default is \code{"none"}.
 Only used if random effects are present.}
-
-\item{re_fraction}{Optional per-group prior mixing fraction for partial non-centring.
-Can be a list of numeric vectors between 0 and 1 (one per breakpoint, with one value per subject group),
-or a \code{fibr_smoothbp_advice} object. If \code{NULL} (default), uses the global
-\code{reparameterise} setting.}
 
 \item{.verbose}{Print progress.}
 }

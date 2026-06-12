@@ -20,10 +20,6 @@
 #' @param reparameterise Character specifying the parameterisation for random change-points:
 #'   \code{"none"} (centred) or \code{"omega"} (fully non-centred). Default is \code{"none"}.
 #'   Only used if random effects are present.
-#' @param re_fraction Optional per-group prior mixing fraction for partial non-centring.
-#'   Can be a list of numeric vectors between 0 and 1 (one per breakpoint, with one value per subject group),
-#'   or a \code{fibr_smoothbp_advice} object. If \code{NULL} (default), uses the global
-#'   \code{reparameterise} setting.
 #' @param .verbose Print progress.
 #'
 #' @return A \code{smoothbp_fit} object.
@@ -46,10 +42,9 @@ smoothbp_ss <- function(
     seed   = NULL,
     step_om  = 0.3,
     step_rho = 0.3,
-    target_accept = 0.65,
+    target_accept = 0.9,
     cores    = getOption("smoothbp.cores", 1L),
     reparameterise = c("none", "omega"),
-    re_fraction = NULL,
     .verbose = TRUE
 ) {
   if (!inherits(formula, "formula") || length(formula) != 3L) {
@@ -144,7 +139,7 @@ smoothbp_ss <- function(
     if (length(re_mask_om) == 0) re_mask_om <- list(as.integer(-1))
 
     reparameterise <- match.arg(reparameterise)
-    nc_om_per_group <- .build_nc_om_per_group(dm, reparameterise, re_fraction, has_re_om)
+    nc_om_per_group <- .build_nc_om_per_group(dm, reparameterise, has_re_om)
 
     re_mask_b1_vec <- if (has_re_b1) {
       m <- attr(dm$X_b1, "re_mask"); if (is.null(m)) as.integer(-1) else as.integer(m)
@@ -326,8 +321,12 @@ smoothbp_ss <- function(
       priors        = priors,
       spike         = spike,
       hierarchical  = hierarchical,
-      re_fraction   = re_fraction,
-      n_divergent   = as.integer(sum(raw$n_divergent))
+      n_divergent   = as.integer(sum(raw$n_divergent)),
+      n_divergent_by_block = list(
+        subj = as.integer(sum(raw$n_divergent_subj)),
+        om   = as.integer(sum(raw$n_divergent_om)),
+        rho  = as.integer(sum(raw$n_divergent_rho))
+      )
     ),
     class = c("smoothbp_ss_fit", "smoothbp_fit")
   )
