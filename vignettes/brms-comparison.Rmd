@@ -34,13 +34,13 @@ transition that `smoothbp` uses.
 
 Four scenarios are compared below:
 
-1. **Intercept-only** — all parameters are scalar (the baseline case).
-   Compared against **brms**.
+1. **Baseline (random intercept)** — a random intercept on `b0` with all
+   structural parameters scalar (`~ 1`). Compared against **brms**.
 2. **Covariate on omega** — `omega ~ 1 + treatment`. Compared against **brms**.
 3. **Hard vs smooth change-point** — single change-point, fixed effects
    only. Compared against **mcp**.
-4. **Multi-breakpoint** — two true change-points; smoothbp vs brms,
-   showing overlapping posterior distributions.
+4. **Multi-breakpoint** — two true change-points, single group / fixed
+   effects; smoothbp vs brms, showing overlapping posterior distributions.
 
 ### One important practical note before we start
 
@@ -75,7 +75,7 @@ if (!have_mcp && NOT_CRAN) {
 
 ---
 
-# Scenario 1: Intercept-only model
+# Scenario 1: Baseline model (random intercept, scalar parameters)
 
 ## Simulate one dataset
 
@@ -83,7 +83,7 @@ if (!have_mcp && NOT_CRAN) {
 set.seed(31)
 dat <- simulate_smoothbp(
   n_subj = 25, n_obs = 10,
-  b0 = 5.0, b1 = -0.4, b2 = 1.4,
+  b0 = 5.0, b1 = -0.4, delta = 1.4,
   omega = 3.2, rho = 4.0,
   sigma = 0.4, sigma_u = 0.7,
   seed = 31L
@@ -566,7 +566,7 @@ dat_mcp <- simulate_smoothbp(
   n_obs     = 150,
   b0        = 5.0,
   b1        = -0.4,
-  b2        =  1.4,
+  delta     =  1.4,
   omega     =  3.2,
   rho       =  5.0,   # moderately sharp — should agree well with mcp
   sigma     =  0.4,
@@ -1071,6 +1071,6 @@ data.frame(
   speedup       = c(sprintf("%.0fx faster", time_brms_multi / time_sbp_multi), "reference")
 ) |>
   knitr::kable(col.names = c("Package", "Wall-clock (s)", "Relative speed"),
-               caption   = "Scenario 4 wall-clock time. Two-breakpoint hierarchical model.")
+               caption   = "Scenario 4 wall-clock time. Two-breakpoint model (single group, fixed effects).")
 ```
 

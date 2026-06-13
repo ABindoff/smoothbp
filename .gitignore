@@ -23,7 +23,8 @@ vignettes/*.R
 
 # Paper draft (work in progress, not part of the R package)
 paper/
-manuscripts/
+manuscripts/*
+!manuscripts/smoothbp_manuscript.tex
 scratch/
 sandbox/
  

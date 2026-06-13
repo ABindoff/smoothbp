@@ -1,0 +1,359 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{newtxtext, newtxmath}  % Times text + matching math
+\usepackage{microtype}             % optical margin alignment, better kerning
+\usepackage[numbers,square]{natbib}
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage[margin=1in]{geometry}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+% Replace JSS macros with generic equivalents
+\newcommand{\pkg}[1]{\textsf{#1}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\doi}[1]{\href{https://doi.org/#1}{\texttt{doi:#1}}}
+
+\title{\pkg{smoothbp}: Fast Bayesian Hierarchical Piecewise Regression with Smoothed Transitions and Spike-and-Slab Model Selection}
+
+\author{
+  Aidan Bindoff \\[4pt]
+  Wicking Dementia Research \& Education Centre, \\
+  College of Health \& Medicine, \\
+  University of Tasmania \\[4pt]
+  \texttt{aidan.bindoff@utas.edu.au}
+}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Piecewise regression models are essential for identifying structural changes in longitudinal or spatial data across diverse scientific domains. While standard approaches often assume sharp, instantaneous transitions and single, non-hierarchical breakpoints, many real-world phenomena exhibit gradual, smoothed transitions that vary systematically across groups. We introduce \pkg{smoothbp}, an R package for fast, Bayesian hierarchical piecewise regression featuring logistic-smoothed transitions. By implementing a bespoke Metropolis-within-Gibbs sampler in Rust, \pkg{smoothbp} combines exact conjugate updates for linear terms with Hamiltonian Monte Carlo (HMC) transitions for non-linear location and sharpness parameters. \pkg{smoothbp} natively supports multiple change-points, random intercepts, random change-point timing, and structural covariates on all segment parameters. It also incorporates Kuo and Mallick (1998) spike-and-slab priors for automatic inference on the number of active breakpoints via the \code{smoothbp\_ss} function. We document the sampler, validate parameter recovery and calibration through simulation-based calibration and interval-coverage studies, and contrast \pkg{smoothbp} against the existing software landscape across R, Python, Julia, and MATLAB, demonstrating its competitive efficiency against general-purpose probabilistic programming languages like \pkg{brms} and specialized packages like \pkg{mcp}.
+\end{abstract}
+
+\noindent\textbf{Keywords:} piecewise regression, change-point analysis, hierarchical models, Bayesian inference, spike-and-slab, MCMC, Rust, R
+
+\bigskip
+
+\section{Introduction}
+
+Identifying structural shifts or breakpoints in data over time or space is a ubiquitous challenge across scientific domains. In public health, interrupted time series and regression discontinuity designs are used to evaluate policy interventions. In ecology, abrupt shifts in climate proxies indicate regime changes. In financial econometrics, structural breaks signify market events. Piecewise (or segmented) regression models directly estimate the locations of these shifts and the resulting changes in trajectory.
+
+However, three significant modeling challenges frequently arise in modern applications:
+\begin{enumerate}
+    \item \textbf{Hierarchical Structure}: Data are rarely independent; they are often collected in nested or grouped structures (e.g., repeated measures within patients). The underlying baseline, as well as the exact timing of a structural shift, may vary hierarchically across these groups.
+    \item \textbf{Transition Smoothness}: Traditional piecewise regression imposes a hard, instantaneous ``kink'' at the breakpoint. Many natural transitions occur gradually over an identifiable window.
+    \item \textbf{Unknown Number of Breaks}: While exploratory approaches test fixed numbers of breaks, robust Bayesian inference seeks to jointly quantify the probability of the number of shifts alongside their parameters.
+\end{enumerate}
+
+To address these challenges, we introduce \pkg{smoothbp}, an R package that implements Bayesian hierarchical piecewise regression utilizing logistic-smoothed transitions. The approach is adapted from the smooth-transition piecewise regression of \citet{baconwatts1971}, who joined two intersecting straight lines with a smooth hyperbolic-tangent transition and estimated it by Bayesian analysis. \pkg{smoothbp} adopts the same smooth-transition principle with a logistic parameterisation (an affine reparameterisation of the hyperbolic tangent) and generalises it to multiple change-points, hierarchical change-point timing, and covariates on every segment parameter. Powered by a bespoke Rust backend, \pkg{smoothbp} pairs exact conjugate Gibbs updates with Hamiltonian Monte Carlo (HMC) to deliver inference for multiple breakpoints, covariates on all parameters, and built-in Kuo \& Mallick spike-and-slab regularization for model selection.
+
+This paper describes \pkg{smoothbp} version~0.2.4, the current release on the Comprehensive R Archive Network (CRAN).
+
+\section{The Software Landscape}
+
+The challenge of estimating unknown breakpoints has spurred numerous software implementations across modern computational environments. To contextualize the contribution of \pkg{smoothbp}, we briefly review the current software landscape across R, Python, Julia, and MATLAB. (Full search methodology provided in Appendix A).
+
+\subsection{R Environment}
+R possesses the richest ecosystem for piecewise regression.
+\begin{itemize}
+    \item \pkg{segmented} \citep{muggeo2003}: The standard frequentist package. It supports random effects via \code{segmented.lme}, allowing for random intercepts and random breakpoint locations. However, transitions are strictly instantaneous, and selecting the number of breakpoints requires iterative information criterion checks.
+    \item \pkg{mcp} \citep{lindelov2020}: A powerful Bayesian package wrapping JAGS. \pkg{mcp} supports multiple change-points, various likelihood families, and random change-point timing. It assumes hard, instantaneous transitions, and while it computes LOO/WAIC, it lacks native spike-and-slab sparsity.
+    \item \pkg{brms} \citep{burkner2017}: General-purpose probabilistic programming via Stan. While capable of fitting smoothed, hierarchical transitions via custom non-linear formulas (\code{nl = TRUE}), \pkg{brms} requires the user to manually derive and specify the logistic-smoothed geometry, bounded priors, and meticulous initialization to prevent HMC chains from becoming trapped in unidentifiable boundary regions.
+\end{itemize}
+
+\subsection{Python, Julia, and MATLAB}
+Outside of R, hierarchical segmented modeling typically requires custom implementation.
+\begin{itemize}
+    \item \textbf{Python}: Packages like \pkg{piecewise-regression} offer straightforward non-hierarchical piecewise fitting. Signal processing libraries like \pkg{ruptures} excel at detecting shifts but do not perform hierarchical regression. For true mixed-effects, users must rely on custom probabilistic models built in \pkg{PyMC} or \pkg{NumPyro}.
+    \item \textbf{Julia}: \pkg{MixedModels.jl} provides state-of-the-art frequentist mixed-effects fitting, but users must manually update the segmented design matrix via optimization wrappers. No automated Bayesian multi-breakpoint tool akin to \pkg{mcp} or \pkg{smoothbp} currently exists.
+    \item \textbf{MATLAB}: The Statistics and Machine Learning Toolbox provides \code{fitlme}, but simultaneous estimation of random effects and an unknown, non-linear breakpoint relies on custom non-linear optimization routines (e.g., \code{fmincon}).
+\end{itemize}
+
+No existing package provides a turnkey, formula-driven interface that combines all three features (hierarchical change-point timing, logistic smoothing, and spike-and-slab breakpoint selection) without requiring the user to hand-code the model geometry. \pkg{smoothbp} fills this niche while keeping wall-clock time competitive with general-purpose Hamiltonian frameworks.
+
+\section{Statistical Framework}
+
+\subsection{Notation and the Smoothed Piecewise Model}
+
+We use $i$ to index observations, $j \in \{1, \dots, J\}$ to index groups (e.g.\ subjects), and $k \in \{1, \dots, K\}$ to index change-points. Observation $i$ belongs to group $j[i]$ and is taken at time $\tau_i$. The logistic function is written $\operatorname{logit}^{-1}(x) = (1 + e^{-x})^{-1}$.
+
+A model with $K$ change-points is
+
+\begin{equation}
+y_{i} = b_0 + u_{0,j[i]} + b_1\,(\tau_{i} - \omega_{1,j[i]}) + \sum_{k=1}^K \delta_{k}\,(\tau_{i} - \omega_{k,j[i]})\,\operatorname{logit}^{-1}\!\left( \rho_k\,(\tau_{i} - \omega_{k,j[i]}) \right) + \epsilon_{i},
+\end{equation}
+
+where $b_0$ is a reference level, $u_{0,j} \sim \mathcal{N}(0, \sigma_u^2)$ is an optional random intercept, $b_1$ is the baseline slope, $\delta_k$ is the change in slope at change-point $k$, $\omega_{k,j}$ is its location, $\rho_k$ is its transition sharpness, and $\epsilon_{i} \sim \mathcal{N}(0, \sigma^2)$.
+
+Two features of this parameterisation are important and were chosen to match the implementation rather than textbook convention.
+
+\paragraph{Centering of the baseline slope.} The baseline slope term is $b_1(\tau_i - \omega_{1,j})$, that is, time is measured \emph{relative to the first change-point}, not relative to the origin. A direct consequence is that $b_0$ is \emph{not} the intercept at $\tau = 0$; it is the conditional mean of the response at the first change-point, $\tau = \omega_{1,j}$, where every $\delta_k$ term vanishes by construction (each shift term is centred on its own $\omega_k$). This makes $b_0$ directly interpretable as the pre-shift level and stabilises the sampler, because $b_0$ and the $\delta_k$ no longer trade off through a remote origin. When $K = 0$ the model degenerates to ordinary linear regression and the baseline slope reverts to $b_1\tau_i$.
+
+\paragraph{Smoothness.} As $\rho_k \to \infty$ the logistic transition converges to a Heaviside step, recovering the classical hard-kink segmented model; finite $\rho_k$ models a gradual transition of identifiable width. Estimating $\rho_k$ rather than fixing it lets the data express how abrupt each shift is.
+
+\subsection{Hierarchical Timing, Parameterisation, and Identifiability}
+
+\pkg{smoothbp} supports random effects on the change-point location. For group $j$, the timing of event $k$ is distributed around the population mean:
+\begin{equation}
+\omega_{k,j} \sim \mathcal{N}(\omega_k, \sigma_{\mathrm{re},k}^2).
+\end{equation}
+This accommodates settings where a shared intervention or environmental trigger affects all groups but biological or logistical delays induce heterogeneous onset times.
+
+\paragraph{Parameterisation.} By default the random change-points are sampled in a centred parameterisation. When the group-level variance $\sigma_{\mathrm{re},k}$ is poorly identified or small relative to the data, the joint $(\omega_{k,j}, \sigma_{\mathrm{re},k})$ geometry can develop a funnel that degrades HMC mixing. For such cases \pkg{smoothbp} exposes \code{reparameterise = "omega"}, a fully non-centred parameterisation of the change-point random effects, which is the recommended remedy when funnel pathology is diagnosed.
+
+\paragraph{Identifiability and ordering.} With more than one change-point, the likelihood is invariant to relabelling: swapping $(\omega_1, \delta_1, \rho_1)$ and $(\omega_2, \delta_2, \rho_2)$ leaves the mean function unchanged, so an unconstrained posterior can be multimodal with the change-point labels exchanged. This is the standard label-switching problem of mixture and change-point models. \pkg{smoothbp} addresses it by encouraging the user to impose non-overlapping, ordered priors on the $\omega_k$. The helper \code{space\_omega\_priors()} constructs a set of truncated-normal priors with disjoint support over a user-specified time window, and per-parameter \code{lb}/\code{ub} bounds can be set directly. We recommend ordered, non-overlapping $\omega$ priors whenever $K > 1$. A related pitfall, where a change-point drifts beyond the observed time range ($\omega > \max_i \tau_i$) into an unidentifiable region, is likewise avoided by bounding $\omega$ within the data window.
+
+\subsection{Spike-and-Slab Selection via Kuo and Mallick (1998)}
+
+Identifying the correct number of breakpoints is reframed as a variable selection problem. In \code{smoothbp\_ss}, we apply the Kuo \& Mallick spike-and-slab prior \citep{kuomallick1998} to each slope change $\delta_k$, decomposing it into a binary inclusion indicator $\gamma_k$ and a continuous slab coefficient $\beta_{k}$:
+
+\begin{align}
+\delta_k &= \gamma_k \cdot \beta_{k} \\
+\gamma_k &\sim \text{Bernoulli}(\pi) \\
+\beta_{k} &\sim \mathcal{N}(0, \sigma_{\text{slab}}^2)
+\end{align}
+
+If $\gamma_k = 0$, the $k$-th structural shift is zeroed out (the ``spike''). If $\gamma_k = 1$, the slope change is estimated from the diffuse ``slab''. The posterior mean of $\gamma_k$ is the Posterior Inclusion Probability (PIP). A hyperprior $\pi \sim \text{Beta}(a, b)$ can be specified to allow the data to inform global sparsity. The \code{pip()} accessor returns a data frame with one row per candidate shift and a column of posterior inclusion probabilities; column labels follow the design-matrix convention (e.g.\ \code{gamma\_delta1\_(Intercept)} is the PIP for the intercept term of the first slope change), so that PIPs for covariate-modulated shifts are individually addressable.
+
+\subsection{Model Selection and Averaging via Inclusion Probabilities}
+\label{sec:pip}
+
+The spike-and-slab output supports two complementary uses, and \pkg{smoothbp} furnishes both from a single fit.
+
+The first is explicit model selection. Selecting the change-points whose PIP is at least $0.5$ yields the \emph{median probability model} (MPM). This threshold is not an arbitrary heuristic: \citet{barbieriberger2004} showed that the MPM is optimal for prediction under squared-error loss in orthogonal and nested designs, a result later extended to broader correlated-design settings by \citet{barbieri2021}. In \pkg{smoothbp} the MPM is read directly off \code{pip(fit\_ss)} as the set of shifts with $\text{PIP} \ge 0.5$. One caveat carries over from that literature: when candidate terms are strongly correlated, several can sit just above $0.5$ and the MPM may over-select; for well-separated change-points the $\delta_k$ are close to orthogonal, so this is rarely an issue in practice, but for closely-spaced candidates it is worth inspecting the joint inclusion pattern rather than the marginal PIPs alone.
+
+The second use is Bayesian model averaging (BMA). Because the inclusion indicators $\gamma_k$ are sampled jointly with the continuous parameters, every posterior draw corresponds to a particular subset of active change-points, so any quantity computed from the draws --- in particular the posterior predictive mean and its credible intervals --- is automatically a model average in which each candidate model is weighted by its posterior probability. A user who forms predictions from the full set of \pkg{smoothbp} draws is therefore not committing to a single selected model but reporting the BMA prediction, which propagates uncertainty about \emph{which} change-points are real into the forecast. The MPM and the BMA prediction answer different questions --- ``which single model should I report?'' versus ``what is the best prediction, accounting for model uncertainty?'' --- and both are available without refitting.
+
+\subsection{Default Priors}
+
+The default priors are weakly informative and chosen to be stable across the time scales typical of longitudinal data: $\delta_k \sim \mathcal{N}(0, 1.5)$ on slope changes, a half-normal $\mathcal{N}(0, 1)$ truncated to the data window for $\omega$, and $\rho \sim \mathcal{N}(3, 2)$ truncated to $\rho > 0$ for sharpness. The sharpness prior deserves comment: $\rho$ is the parameter the data most often fail to pin down, because a transition that is sharp relative to the observation spacing is indistinguishable from one that is sharper still. The default places its mass on moderate, identifiable transition widths while permitting near-instantaneous kinks; for intervention designs where the transition is known to be abrupt, users can fix $\rho$ with \code{fixed()} (Section~5) or tighten its prior. We recommend a brief prior predictive check of the implied transition width for any new application.
+
+\section{Computational Details}
+
+General-purpose NUTS samplers (like Stan) must evaluate the gradient of the entire joint log-posterior with respect to all parameters. In piecewise models, local correlations between the baseline level, random effects, and slopes can severely constrain the step size.
+
+\pkg{smoothbp} uses a specialized Metropolis-within-Gibbs sampler implemented in safe Rust.
+\begin{itemize}
+    \item \textbf{Conjugate Linear Updates}: Conditioned on the non-linear parameters ($\omega$, $\rho$) and the variance components, the linear parameters ($b_0$, $u_{0,j}$, $b_1$, $\beta_{k}$) form a Gaussian system. \pkg{smoothbp} jointly updates the population level and all group-level random intercepts $u_{0,j}$ in a single block using exact Gibbs sampling. Blocking these correlated quantities together avoids the slow-mixing ridge between the population intercept and the group-level deviations that element-wise updates would suffer. This is distinct from Neal's funnel: the centred $(u, \sigma_u)$ geometry can still be challenging when $\sigma_u$ is very small, which is why the non-centred option of Section~3.2 exists for the change-point random effects.
+    \item \textbf{HMC Non-Linear Updates}: The location $\omega$ and sharpness $\rho$ lack conjugate full conditionals and are updated block-wise via Hamiltonian Monte Carlo, using forward-mode automatic differentiation implemented natively in Rust for exact leapfrog gradients. The \code{test-gradients.R} suite checks these analytic gradients against finite differences.
+    \item \textbf{Per-subject Adaptation for Random Change-points}: When change-point timing is hierarchical, each group's location parameter is adapted independently. This per-subject adaptation is essential for good mixing when the subject-level change-point distributions differ, and a joint Gibbs translation step couples the population and subject-level location parameters to keep their sum well mixed (Section~\ref{sec:calibration}).
+    \item \textbf{Per-block Divergence Reporting}: The fit object exposes \code{n\_divergent\_by\_block}, a list giving the number of divergent HMC transitions attributable to the subject-level, $\omega$, and $\rho$ blocks separately. This makes it possible to localise a convergence problem to the parameter block responsible rather than reporting a single opaque count, and is used directly in the validation of Section~\ref{sec:calibration}.
+    \item \textbf{Fixed Parameter Bypasses}: Parameters known \emph{a priori} (e.g., intervention times) can be pinned with the \code{fixed()} helper, instructing the sampler to bypass gradient calculations and proposals for them entirely.
+\end{itemize}
+
+The default HMC target acceptance probability is \code{target\_accept = 0.9}.
+
+\section{Using smoothbp}
+
+\pkg{smoothbp} requires a Rust toolchain (Cargo and \code{rustc >= 1.65.0}) at install time; the package vendors its Rust dependencies so no network access is needed during compilation, but a first install takes roughly 10--15 minutes to build the backend. This system requirement, declared in \code{SystemRequirements}, distinguishes \pkg{smoothbp} from pure-R packages and is worth communicating to users before they run \code{install.packages()}.
+
+The API mirrors standard R formula syntax via \code{lme4}-style conventions.
+
+\begin{verbatim}
+# Fit a model with 3 candidate breakpoints and spike-and-slab selection
+library(smoothbp)
+
+fit_ss <- smoothbp_ss(
+  formula = response ~ time,
+  b0      = ~ 1 + (1 | subject),
+  b1      = ~ 1,
+  deltas  = list(~ 1, ~ 1, ~ 1),
+  omega   = list(~ 1, ~ 1, ~ 1),
+  rho     = list(~ 1, ~ 1, ~ 1),
+  data    = my_data,
+  spike   = prior_spike_slab(pi = 0.2, learn_pi = TRUE),
+  priors  = smoothbp_priors(
+    omega = space_omega_priors(K = 3, tau_min = 0, tau_max = 10)
+  )
+)
+
+# Examine Posterior Inclusion Probabilities
+pip(fit_ss)
+\end{verbatim}
+
+For intervention analyses like Regression Discontinuity Designs or Stepped-Wedge trials, users can exploit the \code{fixed()} wrapper to pin locations and sharpness:
+
+\begin{verbatim}
+omega = list(fixed(3.0)),
+rho   = list(fixed(100)) # Approximate a hard kink
+\end{verbatim}
+
+A fitted model can be re-run with modified settings via \code{update()}; sampler tuning (\code{step\_om}, \code{step\_rho}, \code{target\_accept}) and the random seed are stored in the fit object and reused unless explicitly overridden, so carefully tuned runs are not silently reset.
+
+\subsection{Convenience Functions}
+
+A few helpers streamline the most common workflows. \code{space\_omega\_priors(K, tau\_min, tau\_max)} returns a ready-to-use list of $K$ ordered, non-overlapping truncated-normal priors for the change-point locations: the prior means are spaced evenly across the time window (with the edges padded inward) and each is bounded to the window, which is the recommended way to impose the ordering that multi-change-point models require to avoid label switching. \code{fixed(value)} pins a parameter at a known value and bypasses its sampling entirely --- the mechanism behind the intervention-analysis idiom shown above, where a fixed $\omega$ encodes a known intervention time and a large fixed $\rho$ approximates a hard kink. \code{tab\_smoothbp()} collects posterior summaries from one or more fitted models into a single publication-ready table with parameters on rows and models in columns (rendered through \pkg{gt}, falling back to \code{knitr::kable()}), in the spirit of \code{sjPlot::tab\_model()}. Finally, \code{simulate\_smoothbp()} generates data from the model and stores the data-generating values as a \code{"true\_params"} attribute, so that \code{true\_params()} and \code{recovery\_plot()} can overlay the posterior against the known truth --- the loop behind the package's parameter-recovery tests and a convenient template for users designing their own simulation studies.
+
+\subsection{Convergence and Calibration for Random Change-points}
+\label{sec:calibration}
+
+Random change-point timing is the most demanding feature of the model, so we characterise its behaviour directly rather than asserting good performance. All results in this section come from the reproducible script \code{tools/part3\_validation.R}.
+
+\paragraph{Mixing.} On a representative random change-point problem (low-prior-fraction regime: $J = 20$ balanced groups, modest between-group variance $\sigma_{\mathrm{re}}$, four chains), the sampler mixes efficiently across the hierarchical timing parameters (Table~\ref{tab:mixing}). The subject-level locations $\omega_j$ reach a mean bulk effective sample size (ESS) of 1768 with $\widehat{R} = 1.00$, the population change-point $\omega$ an ESS of 256, and the between-group standard deviation $\sigma_{\mathrm{re}}$ an ESS of 2970, with no divergent transitions in the subject or $\omega$ blocks.
+
+\begin{table}[t]
+\centering
+\caption{Random change-point mixing, low-prior-fraction regime ($J = 20$, balanced design, modest $\sigma_{\mathrm{re}}$), four chains of 4000 post-warmup draws. ``Subject $\omega_j$'' is the mean across the 20 group-level locations.}
+\label{tab:mixing}
+\begin{tabular}{lrr}
+\toprule
+Parameter & Bulk ESS & $\widehat{R}$ \\
+\midrule
+Subject $\omega_j$ (mean) & 1768 & 1.00 \\
+Population $\omega$       &  256 & 1.01 \\
+$\sigma_{\mathrm{re}}$   & 2970 & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Interval coverage.} Across simulation replicates we record the empirical coverage of nominal 90\% posterior intervals for the generating values (Table~\ref{tab:coverage}). Coverage is near nominal for the population change-point ($0.80$), the between-group standard deviation $\sigma_{\mathrm{re}}$ ($0.97$), and the change-point sharpness $\rho$ ($1.00$).
+
+\begin{table}[t]
+\centering
+\caption{Empirical coverage of nominal 90\% intervals (30 replicates).}
+\label{tab:coverage}
+\begin{tabular}{lr}
+\toprule
+Parameter & Coverage (90\% nominal) \\
+\midrule
+Population $\omega$        & 0.80 \\
+$\sigma_{\mathrm{re}}$    & 0.97 \\
+$\rho$                     & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Simulation-based calibration.} As a stronger correctness check we ran simulation-based calibration (SBC) for the random-changepoint model (200 replicates, $L = 100$ posterior draws per replicate, divergence-free fits at \code{target\_accept = 0.99}). The rank statistics for $\omega$, $\sigma_{\mathrm{re}}$, and $\delta$ are all consistent with uniformity under a binned chi-square test (Figure~\ref{fig:sbc}), indicating that the sampler targets the correct posterior.
+
+\paragraph{Residual sharpness divergences.} A small number of divergences occur, and they are confined to the $\rho$ (sharpness) block rather than the change-point or subject blocks: $0$ in the low-prior-fraction cell and $20$ (all $\rho$) in a deliberately difficult high-prior-fraction cell. Two controls show these are a property of the sharpness geometry alone, separable from the random-effect machinery. First, a model with the change-point \emph{fixed} (no $\omega$ random effect at all) still exhibits $\rho$-block divergences, isolating them from the hierarchical timing entirely. Second, the $\omega$ and $\sigma_{\mathrm{re}}$ coverage above is near-nominal \emph{despite} these divergences, indicating they do not bias the change-point estimates of interest. We therefore scope the residual $\rho$-sharpness divergences as a known, separable limitation of the sharpness parameter, mitigated by raising \code{target\_accept} or by fixing $\rho$ when the transition width is known.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/figure_sbc.png}
+\caption{Simulation-based calibration for the random change-point model. Rank histograms for $\omega$, $\sigma_{\mathrm{re}}$, and $\delta$ over 200 replicates are consistent with uniformity.}
+\label{fig:sbc}
+\end{figure}
+
+\section{Benchmarking}
+
+We benchmark \pkg{smoothbp} against \pkg{brms} (Stan) and \pkg{mcp} (JAGS) in the package's \code{brms-comparison} vignette, which is fully reproducible and covers four scenarios of increasing complexity: a single change-point with a random intercept; a covariate on $\omega$; a single-group comparison against \pkg{mcp}; and a two-breakpoint single-group model. The figures below are from Scenario~1 (a random-intercept model, $J = 25$ subjects, 10 observations each, four chains of 2000 iterations) on a single machine; effective-sample-size-per-second is machine-, data-, and configuration-dependent, so we present one representative run and provide the vignette for full reproduction.
+
+\paragraph{Posterior agreement.} On identical data and matched priors, \pkg{smoothbp} and \pkg{brms} produce closely agreeing marginal posteriors. The posterior means of the well-identified location and scale parameters differ by less than 0.2\% (Table~\ref{tab:agreement}): $b_0$ by 0.10\%, $b_1$ by 0.11\%, $\delta_1$ by 0.17\%, and the change-point $\omega_1$ by 0.11\%. The larger relative differences fall on the weakly-identified sharpness $\rho_1$ (1.4\%) and the random-effect standard deviation $\sigma_u$ (3.6\%), both of which have wide posteriors and small denominators; their posterior intervals overlap almost completely between the two engines.
+
+\begin{table}[t]
+\centering
+\caption{Scenario~1 posterior means (single representative run, matched priors). $\Delta$ is the absolute difference in posterior means as a percentage of the \pkg{brms} mean.}
+\label{tab:agreement}
+\begin{tabular}{lrrr}
+\toprule
+Parameter & \pkg{brms} mean & \pkg{smoothbp} mean & $\Delta$ (\%) \\
+\midrule
+$b_0$        &  5.050 &  5.045 & 0.10 \\
+$b_1$        & -0.335 & -0.335 & 0.11 \\
+$\delta_1$   &  1.312 &  1.310 & 0.17 \\
+$\omega_1$   &  3.256 &  3.253 & 0.11 \\
+$\rho_1$     &  3.997 &  3.942 & 1.39 \\
+$\sigma$     &  0.395 &  0.404 & 2.23 \\
+$\sigma_u$   &  0.652 &  0.676 & 3.65 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Efficiency.} On this scenario \pkg{smoothbp} completed in 3.8\,s against 94.7\,s for \pkg{brms} (a 25-fold wall-clock advantage) and achieved higher bulk effective sample size per second on every parameter (Table~\ref{tab:ess}). The advantage is largest on the conjugately-updated linear and variance terms ($\sigma_u$: 786 vs 4.9 ESS/s, a 160-fold gap; $\sigma$: 783 vs 33; $\delta_1$: 588 vs 23) and narrower, though still favourable, on the non-linear change-point and sharpness parameters ($\omega_1$: 124 vs 30; $\rho_1$: 140 vs 28), where \pkg{brms}'s global NUTS adaptation is most competitive on a per-iteration basis. The compiled Rust backend nonetheless dominates wall-clock time.
+
+\begin{table}[t]
+\centering
+\caption{Scenario~1 bulk ESS per second and wall-clock time (single representative run, same machine).}
+\label{tab:ess}
+\begin{tabular}{lrr}
+\toprule
+Parameter & \pkg{smoothbp} ESS/s & \pkg{brms} ESS/s \\
+\midrule
+$b_0$        &  29.1 &  5.4 \\
+$b_1$        & 240.2 & 20.6 \\
+$\delta_1$   & 588.1 & 22.9 \\
+$\omega_1$   & 124.0 & 29.5 \\
+$\rho_1$     & 139.6 & 27.7 \\
+$\sigma$     & 783.2 & 33.3 \\
+$\sigma_u$   & 786.4 &  4.9 \\
+\midrule
+Wall-clock (s) & \textbf{3.8} & \textbf{94.7} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Against \pkg{mcp}, \pkg{smoothbp} matches the random-intercept and random change-point capabilities while additionally offering smoothed transitions and the Kuo \& Mallick spike-and-slab architecture for collapsing superfluous segments, which \pkg{mcp} does not provide.
+
+For model comparison beyond spike-and-slab PIPs, \pkg{smoothbp} integrates with the \pkg{loo} package for approximate leave-one-out cross-validation and supports marginal-likelihood estimation via \pkg{bridgesampling}, so that PIP-based selection and information-criterion or Bayes-factor comparison are both available and complementary.
+
+\section{Discussion}
+
+We present \pkg{smoothbp}, a tool for Bayesian hierarchical piecewise regression. By modeling smoothed logistic transitions rather than hard, instantaneous kinks, the software provides a general framework for structural change, and by pairing conjugate Gibbs updates for linear terms with bounded HMC for the non-linear terms it mixes well across the regimes we have tested, including the demanding random change-point case validated in Section~\ref{sec:calibration}.
+
+\textbf{Interpretability}: A practical strength of the logistic-smoothed parameterisation is that its parameters map onto quantities practitioners actually want to report. Away from the transitions the mean function is asymptotically linear, so the segment slopes --- $b_1$ before the first change-point and $b_1 + \sum_k \delta_k$ after the last --- are ordinary, directly interpretable rates of change, and each $\delta_k$ is the change in slope attributable to event $k$. The location $\omega_k$ is the point of maximum change, the inflection of the $k$-th transition where the trajectory turns most sharply, and is reported on the natural scale of the time variable; it answers ``when did the change occur?'' directly. When the sharpness $\rho_k$ is itself estimable, the entire mean function is smooth and differentiable everywhere, in contrast to hard-kink models whose derivative is undefined at the breakpoint. This is not merely intuitively appealing. A globally differentiable mean is mathematically convenient --- the gradient with respect to every parameter exists in closed form --- and computationally advantageous, because it is exactly the smoothness that the Hamiltonian sampler exploits to move efficiently: the property that makes the model easy to interpret is the same one that makes it efficient to fit.
+
+\textbf{Relationship to additive models}: Faced with grouped, non-linearly trending longitudinal data, many analysts reach instead for a generalized additive mixed model (GAMM; e.g.\ the \pkg{mgcv} package, \citealp{wood2017}), attracted by its automatic smoothness selection through penalised splines. A GAMM fits such data flexibly and chooses its effective degrees of freedom from the data, but the fitted smooth is a wiggly function whose shape must be read from a plot: it does not, by itself, estimate \emph{when} a trajectory changed or by \emph{how much} its slope shifted. \pkg{smoothbp} trades the GAMM's general flexibility for a parameterisation in which exactly those quantities --- the change-point locations $\omega_k$ and the slope changes $\delta_k$ --- are explicit parameters carrying posterior credible intervals, while still selecting the number of active change-points automatically through the spike-and-slab prior. When the scientific question concerns the timing and magnitude of structural change, this is the more natural summary; when it concerns an arbitrary smooth trend, a GAMM is.
+
+\textbf{Limitations}: \pkg{smoothbp} is specialized for Gaussian likelihoods and logistic-smoothed transitions. It does not support autoregressive error structures (AR/ARMA), non-Gaussian exponential-family likelihoods (e.g., Poisson, Binomial), or fully non-parametric functional segments (e.g., splines); for those, general frameworks like \pkg{brms} or \pkg{mcp} remain appropriate. The same parametric commitment that buys interpretability is itself a limitation relative to GAMMs: where the response is a genuinely smooth, non-monotone function not well approximated by a small number of linear segments, or where multiple additive smooth terms, tensor-product interactions, or non-Gaussian families are required, a GAMM is the more appropriate tool, and \pkg{smoothbp} is best reserved for data whose structure is plausibly piecewise-linear with a few smoothed transitions. The transition-sharpness parameter $\rho$ is weakly identified in data with coarse temporal resolution and can exhibit residual HMC divergences (Section~\ref{sec:calibration}); when the transition width is not of direct scientific interest, fixing $\rho$ or tightening its prior is the pragmatic remedy. As with all multi-change-point models, ordered priors on the change-point locations are needed for $K > 1$ to avoid label switching.
+
+\textbf{Conclusion}: For researchers requiring estimation of transition timing, hierarchical structure on change-points, and model selection over multiple breakpoints within a single formula interface, \pkg{smoothbp} offers a fast and validated option in the R ecosystem.
+
+\section*{Acknowledgements}
+
+The software, its documentation, and this manuscript were developed with the assistance of agentic AI coding tools, used as pair programmers under the author's direction and supervision. The original package architecture (the Rust MCMC backend, the formula interface, and the first manuscript draft) was developed in collaboration with Google's Project Antigravity assistant running Gemini 3.1 Pro. Refinements to the random change-point sampler, the accompanying validation suite (\code{tools/part3\_validation.R}), the pre-submission code review, and the present manuscript revision were carried out in collaboration with Anthropic's Claude models. All code and text were independently reviewed, tested, and validated by the author, who takes full responsibility for the correctness and reproducibility of the work in accordance with COPE authorship guidelines.
+
+\begin{thebibliography}{9}
+
+\bibitem[Bacon and Watts(1971)]{baconwatts1971}
+Bacon DW, Watts DG (1971).
+\newblock Estimating the transition between two intersecting straight lines.
+\newblock \textit{Biometrika}, \textbf{58}(3), 525--534. \doi{10.2307/2334389}.
+
+\bibitem[Barbieri and Berger(2004)]{barbieriberger2004}
+Barbieri MM, Berger JO (2004).
+\newblock Optimal predictive model selection.
+\newblock \textit{The Annals of Statistics}, \textbf{32}(3), 870--897.
+
+\bibitem[Barbieri \textit{et~al.}(2021)]{barbieri2021}
+Barbieri MM, Berger JO, George EI, Ročková V (2021).
+\newblock The median probability model and correlated variables.
+\newblock \textit{Bayesian Analysis}, \textbf{16}(4), 1085--1112.
+
+\bibitem[Bürkner(2017)]{burkner2017}
+Bürkner PC (2017).
+\newblock \pkg{brms}: An R package for Bayesian multilevel models using Stan.
+\newblock \textit{Journal of Statistical Software}, \textbf{80}(1), 1--28.
+
+\bibitem[Kuo and Mallick(1998)]{kuomallick1998}
+Kuo L, Mallick B (1998).
+\newblock Variable selection for regression models.
+\newblock \textit{Sankhy\={a}: The Indian Journal of Statistics, Series B}, \textbf{60}(1), 65--81.
+
+\bibitem[Lindeløv(2020)]{lindelov2020}
+Lindeløv JK (2020).
+\newblock \pkg{mcp}: An R package for regression with multiple change points.
+\newblock Preprint.
+
+\bibitem[Muggeo(2003)]{muggeo2003}
+Muggeo VMR (2003).
+\newblock Estimating regression models with unknown break-points.
+\newblock \textit{Statistics in Medicine}, \textbf{22}(19), 3055--3071.
+
+\bibitem[Wood(2017)]{wood2017}
+Wood SN (2017).
+\newblock \textit{Generalized Additive Models: An Introduction with R}, 2nd edition.
+\newblock Chapman and Hall/CRC, Boca Raton.
+
+\end{thebibliography}
+
+\section*{Appendix A: Software Search Strategy}
+To characterise the state of piecewise-regression software, a literature and repository review was conducted using Google Scholar and domain-specific package indices (CRAN, PyPI, JuliaHub). Search strings combined permutations of \textit{("hierarchical piecewise regression" OR "mixed-effects segmented regression" OR "Bayesian change point")} with \textit{(software OR package OR python OR R OR julia OR MATLAB)}. The review confirmed that while tools for single breakpoints or non-hierarchical multiple breaks exist across languages, no package offers a turnkey, formula-driven interface that simultaneously provides Bayesian multi-breakpoint estimation, hierarchical change-point timing, logistic-smoothed transitions, and built-in spike-and-slab selection without requiring the user to hand-code the model. A user of a general probabilistic-programming framework (\pkg{brms}, \pkg{PyMC}, \pkg{Turing.jl}) can of course assemble such a model manually; the contribution of \pkg{smoothbp} is to make it turnkey.
+
+\end{document}
