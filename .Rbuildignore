@@ -23,3 +23,9 @@
 ^build_rc_vignette\.R$
 ^vignettes/fibr-diagnostics\.Rmd$
 ^vignettes/random-changepoints\.Rmd$
+^tools/lib_0\.2\.2$
+^tools/archive_superseded$
+^tools/part3_results$
+^tools/part3_validation\.R$
+^HANDOFF_0\.2\.4_release\.md$
+^repomix-output-ABindoff-smoothbp\.xml$

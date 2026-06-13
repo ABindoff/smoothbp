@@ -14,7 +14,7 @@ test_that("smoothbp recovers parameters on simulated data", {
     b0 = 5.0, b1 = -0.5, delta = 1.5,
     omega = 3.0, rho = 4.0,
     sigma = 0.5, sigma_u = 1.0,
-    seed = 7L
+    seed = 42L
   )
 
   tp <- attr(dat, "true_params")
@@ -31,7 +31,7 @@ test_that("smoothbp recovers parameters on simulated data", {
     chains  = 2L,
     iter    = 3000L,
     warmup  = 1000L,
-    seed    = 7L,
+    seed    = 42L,
     .verbose = FALSE
   )
 
