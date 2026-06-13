@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+
+
+<title>Advanced Modeling with smoothbp</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">Advanced Modeling with smoothbp</h1>
+
+
+
+<p>While <code>smoothbp</code> is efficient for standard piecewise
+regression, its real power lies in its ability to handle structural
+changes that are themselves functions of other variables. This vignette
+demonstrates “edge cases” where <code>smoothbp</code> offers flexibility
+that is difficult to achieve with other packages.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">library</span>(smoothbp)</span>
+<span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a><span class="fu">library</span>(ggplot2)</span>
+<span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="fu">library</span>(dplyr)</span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a><span class="fu">library</span>(posterior)</span>
+<span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a><span class="fu">library</span>(tidyr)</span></code></pre></div>
+<hr />
+<div id="market-turning-points-nasdaq-2022-2023" class="section level2">
+<h2>1. Market Turning Points (NASDAQ 2022-2023)</h2>
+<p>In this example, we model the structural evolution of three tech
+giants. Rather than simply comparing the “center” of transitions (<span class="math inline">\(\omega\)</span>), we derive the <strong>actual
+turning points</strong>—the local maxima and minima where the price
+trend reverses.</p>
+<div id="the-data" class="section level3">
+<h3>The Data</h3>
+<p>Monthly closing prices from Oct 2022 to Dec 2023.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a>dat_market <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>  <span class="at">month  =</span> <span class="fu">rep</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">15</span>, <span class="dv">3</span>),</span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>  <span class="at">ticker =</span> <span class="fu">rep</span>(<span class="fu">c</span>(<span class="st">&quot;NVDA&quot;</span>, <span class="st">&quot;MSFT&quot;</span>, <span class="st">&quot;AAPL&quot;</span>), <span class="at">each =</span> <span class="dv">15</span>),</span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a>  <span class="at">price  =</span> <span class="fu">c</span>(</span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a>    <span class="fl">13.50</span>, <span class="fl">16.50</span>, <span class="fl">14.60</span>, <span class="fl">19.52</span>, <span class="fl">23.19</span>, <span class="fl">27.75</span>, <span class="fl">27.72</span>, <span class="fl">37.80</span>, <span class="fl">42.27</span>, <span class="fl">46.69</span>, <span class="fl">49.32</span>, <span class="fl">43.47</span>, <span class="fl">40.75</span>, <span class="fl">46.74</span>, <span class="fl">49.49</span>,</span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a>    <span class="dv">232</span>, <span class="dv">255</span>, <span class="dv">240</span>, <span class="fl">241.47</span>, <span class="fl">243.65</span>, <span class="fl">281.63</span>, <span class="fl">300.15</span>, <span class="fl">321.49</span>, <span class="fl">333.39</span>, <span class="fl">328.87</span>, <span class="fl">321.56</span>, <span class="fl">309.77</span>, <span class="fl">331.71</span>, <span class="fl">372.49</span>, <span class="fl">369.67</span>,</span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a>    <span class="dv">153</span>, <span class="dv">148</span>, <span class="dv">130</span>, <span class="fl">142.01</span>, <span class="fl">145.30</span>, <span class="fl">162.55</span>, <span class="fl">167.26</span>, <span class="fl">174.96</span>, <span class="fl">191.46</span>, <span class="fl">193.91</span>, <span class="fl">185.69</span>, <span class="fl">169.23</span>, <span class="fl">168.79</span>, <span class="fl">188.00</span>, <span class="fl">190.55</span></span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a>  )</span>
+<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a>)</span>
+<span id="cb2-10"><a href="#cb2-10" tabindex="-1"></a>dat_market<span class="sc">$</span>ticker <span class="ot">&lt;-</span> <span class="fu">factor</span>(dat_market<span class="sc">$</span>ticker, <span class="at">levels =</span> <span class="fu">c</span>(<span class="st">&quot;AAPL&quot;</span>, <span class="st">&quot;MSFT&quot;</span>, <span class="st">&quot;NVDA&quot;</span>))</span></code></pre></div>
+</div>
+<div id="fitting-the-model" class="section level3">
+<h3>Fitting the Model</h3>
+<p>We use <code>smoothbp()</code> with five candidate breakpoints to
+capture the high-frequency structural shifts of 2023.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>fit_market <span class="ot">&lt;-</span> <span class="fu">smoothbp</span>(</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>  <span class="at">formula =</span> price <span class="sc">~</span> month, <span class="at">b0 =</span> <span class="sc">~</span> ticker,</span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a>  <span class="at">deltas =</span> <span class="fu">list</span>(<span class="sc">~</span> ticker, <span class="sc">~</span> ticker, <span class="sc">~</span> ticker, <span class="sc">~</span> ticker, <span class="sc">~</span> ticker), </span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a>  <span class="at">omega  =</span> <span class="fu">list</span>(<span class="sc">~</span> ticker, <span class="sc">~</span> ticker, <span class="sc">~</span> ticker, <span class="sc">~</span> ticker, <span class="sc">~</span> ticker),</span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a>  <span class="at">rho    =</span> <span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>), </span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a>  <span class="at">data   =</span> dat_market,</span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a>    <span class="at">priors =</span> <span class="fu">smoothbp_priors</span>(</span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a>      <span class="at">b0 =</span> <span class="fu">prior_normal</span>(<span class="dv">200</span>, <span class="dv">500</span>), <span class="at">b1 =</span> <span class="fu">prior_normal</span>(<span class="dv">0</span>, <span class="dv">50</span>), <span class="at">deltas =</span> <span class="fu">prior_normal</span>(<span class="dv">0</span>, <span class="dv">80</span>),</span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a>      <span class="co"># Constrain omegas: intercepts centered on windows, narrow priors for ticker offsets</span></span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a>      <span class="at">omega =</span> <span class="fu">lapply</span>(<span class="fu">list</span>(<span class="dv">3</span>, <span class="dv">6</span>, <span class="dv">9</span>, <span class="dv">12</span>, <span class="dv">14</span>), <span class="cf">function</span>(m) {</span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a>        <span class="fu">list</span>(<span class="st">&quot;(Intercept)&quot;</span> <span class="ot">=</span> <span class="fu">prior_normal</span>(m, <span class="dv">1</span>, <span class="at">lb =</span> <span class="dv">1</span>, <span class="at">ub =</span> <span class="dv">15</span>),</span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a>             <span class="st">&quot;tickerMSFT&quot;</span>  <span class="ot">=</span> <span class="fu">prior_normal</span>(<span class="dv">0</span>, <span class="dv">1</span>),</span>
+<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a>             <span class="st">&quot;tickerNVDA&quot;</span>  <span class="ot">=</span> <span class="fu">prior_normal</span>(<span class="dv">0</span>, <span class="dv">1</span>))</span>
+<span id="cb3-14"><a href="#cb3-14" tabindex="-1"></a>      }),</span>
+<span id="cb3-15"><a href="#cb3-15" tabindex="-1"></a>      <span class="at">rho =</span> <span class="fu">prior_normal</span>(<span class="dv">20</span>, <span class="dv">5</span>, <span class="at">lb =</span> <span class="dv">5</span>)</span>
+<span id="cb3-16"><a href="#cb3-16" tabindex="-1"></a>    ),</span>
+<span id="cb3-17"><a href="#cb3-17" tabindex="-1"></a>  <span class="at">chains =</span> <span class="dv">4</span>, <span class="at">iter =</span> <span class="dv">4000</span>, <span class="at">warmup =</span> <span class="dv">2000</span></span>
+<span id="cb3-18"><a href="#cb3-18" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<div id="the-point-of-maximum-structural-curvature" class="section level3">
+<h3>The Point of Maximum Structural Curvature</h3>
+<p>The <code>smoothbp</code> mean function is: <span class="math display">\[\mu(\tau) = b_0 + b_1(\tau - \omega_1) +
+\sum_{k=1}^K \delta_k (\tau - \omega_k)\, \text{logistic}(\rho_k(\tau -
+\omega_k))\]</span></p>
+<p>The <span class="math inline">\(k\)</span>-th breakpoint contributes
+a smooth, S-shaped transition in slope centred on <span class="math inline">\(\omega_k\)</span>. The second derivative <span class="math inline">\(f&#39;&#39;(\tau)\)</span> — measuring the
+<em>rate of bending</em> — has its maximum <strong>exactly at <span class="math inline">\(\tau = \omega_k\)</span></strong> by the symmetry
+of the logistic function. This holds regardless of the sign of <span class="math inline">\(\delta_k\)</span>: a breakpoint that accelerates a
+rally and one that decelerates it both have their maximum curvature at
+<span class="math inline">\(\omega_k\)</span>.</p>
+<p>This means <strong><span class="math inline">\(\omega_k\)</span>
+directly answers “when did the structural change happen most
+rapidly?”</strong> — no root-finding required.</p>
+</div>
+<div id="extracting-omega-per-ticker" class="section level3">
+<h3>Extracting Omega per Ticker</h3>
+<p>Because <code>omega</code> is modelled as <code>~ ticker</code>, each
+ticker has its own posterior over <span class="math inline">\(\omega_k\)</span>, representing when <em>its</em>
+structural transition was fastest.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>n_bp    <span class="ot">&lt;-</span> <span class="dv">5</span></span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>draws   <span class="ot">&lt;-</span> <span class="fu">as_draws_matrix</span>(fit_market<span class="sc">$</span>draws)</span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>tickers <span class="ot">&lt;-</span> <span class="fu">levels</span>(dat_market<span class="sc">$</span>ticker)</span>
+<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a><span class="co"># Helper to safely extract a named draw column (handles special chars via grep)</span></span>
+<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a>val <span class="ot">&lt;-</span> <span class="cf">function</span>(d, pat) {</span>
+<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a>  v <span class="ot">&lt;-</span> d[<span class="fu">grep</span>(<span class="fu">paste0</span>(<span class="st">&quot;^&quot;</span>, pat, <span class="st">&quot;$&quot;</span>), <span class="fu">names</span>(d))]</span>
+<span id="cb4-8"><a href="#cb4-8" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">length</span>(v) <span class="sc">==</span> <span class="dv">0</span>) <span class="fu">return</span>(<span class="dv">0</span>)</span>
+<span id="cb4-9"><a href="#cb4-9" tabindex="-1"></a>  <span class="fu">unname</span>(v[<span class="dv">1</span>])</span>
+<span id="cb4-10"><a href="#cb4-10" tabindex="-1"></a>}</span>
+<span id="cb4-11"><a href="#cb4-11" tabindex="-1"></a></span>
+<span id="cb4-12"><a href="#cb4-12" tabindex="-1"></a><span class="co"># Extract omega_k for each ticker from a single draw row</span></span>
+<span id="cb4-13"><a href="#cb4-13" tabindex="-1"></a>get_omegas <span class="ot">&lt;-</span> <span class="cf">function</span>(d, tk) {</span>
+<span id="cb4-14"><a href="#cb4-14" tabindex="-1"></a>  <span class="fu">sapply</span>(<span class="dv">1</span><span class="sc">:</span>n_bp, <span class="cf">function</span>(k) {</span>
+<span id="cb4-15"><a href="#cb4-15" tabindex="-1"></a>    base <span class="ot">&lt;-</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;omega&quot;</span>, k, <span class="st">&quot;_</span><span class="sc">\\</span><span class="st">(Intercept</span><span class="sc">\\</span><span class="st">)&quot;</span>))</span>
+<span id="cb4-16"><a href="#cb4-16" tabindex="-1"></a>    off  <span class="ot">&lt;-</span> <span class="cf">if</span> (tk <span class="sc">==</span> tickers[<span class="dv">1</span>]) <span class="dv">0</span> <span class="cf">else</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;omega&quot;</span>, k, <span class="st">&quot;_ticker&quot;</span>, tk))</span>
+<span id="cb4-17"><a href="#cb4-17" tabindex="-1"></a>    base <span class="sc">+</span> off</span>
+<span id="cb4-18"><a href="#cb4-18" tabindex="-1"></a>  })</span>
+<span id="cb4-19"><a href="#cb4-19" tabindex="-1"></a>}</span>
+<span id="cb4-20"><a href="#cb4-20" tabindex="-1"></a></span>
+<span id="cb4-21"><a href="#cb4-21" tabindex="-1"></a><span class="co"># Extract all ticker-specific parameters for a single draw row</span></span>
+<span id="cb4-22"><a href="#cb4-22" tabindex="-1"></a>get_params <span class="ot">&lt;-</span> <span class="cf">function</span>(d, tk) {</span>
+<span id="cb4-23"><a href="#cb4-23" tabindex="-1"></a>  b1 <span class="ot">&lt;-</span> <span class="fu">val</span>(d, <span class="st">&quot;b1_</span><span class="sc">\\</span><span class="st">(Intercept</span><span class="sc">\\</span><span class="st">)&quot;</span>)</span>
+<span id="cb4-24"><a href="#cb4-24" tabindex="-1"></a>  <span class="cf">if</span> (tk <span class="sc">!=</span> tickers[<span class="dv">1</span>]) b1 <span class="ot">&lt;-</span> b1 <span class="sc">+</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;b1_ticker&quot;</span>, tk))</span>
+<span id="cb4-25"><a href="#cb4-25" tabindex="-1"></a>  </span>
+<span id="cb4-26"><a href="#cb4-26" tabindex="-1"></a>  deltas <span class="ot">&lt;-</span> omegas <span class="ot">&lt;-</span> rhos <span class="ot">&lt;-</span> <span class="fu">numeric</span>(n_bp)</span>
+<span id="cb4-27"><a href="#cb4-27" tabindex="-1"></a>  <span class="cf">for</span> (k <span class="cf">in</span> <span class="dv">1</span><span class="sc">:</span>n_bp) {</span>
+<span id="cb4-28"><a href="#cb4-28" tabindex="-1"></a>    deltas[k] <span class="ot">&lt;-</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;delta&quot;</span>, k, <span class="st">&quot;_</span><span class="sc">\\</span><span class="st">(Intercept</span><span class="sc">\\</span><span class="st">)&quot;</span>))</span>
+<span id="cb4-29"><a href="#cb4-29" tabindex="-1"></a>    omegas[k] <span class="ot">&lt;-</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;omega&quot;</span>, k, <span class="st">&quot;_</span><span class="sc">\\</span><span class="st">(Intercept</span><span class="sc">\\</span><span class="st">)&quot;</span>))</span>
+<span id="cb4-30"><a href="#cb4-30" tabindex="-1"></a>    rhos[k]   <span class="ot">&lt;-</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;rho&quot;</span>, k, <span class="st">&quot;_</span><span class="sc">\\</span><span class="st">(Intercept</span><span class="sc">\\</span><span class="st">)&quot;</span>))</span>
+<span id="cb4-31"><a href="#cb4-31" tabindex="-1"></a>    </span>
+<span id="cb4-32"><a href="#cb4-32" tabindex="-1"></a>    <span class="cf">if</span> (tk <span class="sc">!=</span> tickers[<span class="dv">1</span>]) {</span>
+<span id="cb4-33"><a href="#cb4-33" tabindex="-1"></a>      deltas[k] <span class="ot">&lt;-</span> deltas[k] <span class="sc">+</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;delta&quot;</span>, k, <span class="st">&quot;_ticker&quot;</span>, tk))</span>
+<span id="cb4-34"><a href="#cb4-34" tabindex="-1"></a>      omegas[k] <span class="ot">&lt;-</span> omegas[k] <span class="sc">+</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;omega&quot;</span>, k, <span class="st">&quot;_ticker&quot;</span>, tk))</span>
+<span id="cb4-35"><a href="#cb4-35" tabindex="-1"></a>      rhos[k]   <span class="ot">&lt;-</span> rhos[k]   <span class="sc">+</span> <span class="fu">val</span>(d, <span class="fu">paste0</span>(<span class="st">&quot;rho&quot;</span>, k, <span class="st">&quot;_ticker&quot;</span>, tk))</span>
+<span id="cb4-36"><a href="#cb4-36" tabindex="-1"></a>    }</span>
+<span id="cb4-37"><a href="#cb4-37" tabindex="-1"></a>  }</span>
+<span id="cb4-38"><a href="#cb4-38" tabindex="-1"></a>  <span class="fu">list</span>(<span class="at">b1 =</span> b1, <span class="at">deltas =</span> deltas, <span class="at">omegas =</span> omegas, <span class="at">rhos =</span> rhos)</span>
+<span id="cb4-39"><a href="#cb4-39" tabindex="-1"></a>}</span>
+<span id="cb4-40"><a href="#cb4-40" tabindex="-1"></a></span>
+<span id="cb4-41"><a href="#cb4-41" tabindex="-1"></a><span class="co"># Posterior summary of omega_k per ticker</span></span>
+<span id="cb4-42"><a href="#cb4-42" tabindex="-1"></a>omega_summary <span class="ot">&lt;-</span> <span class="fu">do.call</span>(rbind, <span class="fu">lapply</span>(tickers, <span class="cf">function</span>(tk) {</span>
+<span id="cb4-43"><a href="#cb4-43" tabindex="-1"></a>  om_mat <span class="ot">&lt;-</span> <span class="fu">t</span>(<span class="fu">apply</span>(draws, <span class="dv">1</span>, get_omegas, <span class="at">tk =</span> tk))</span>
+<span id="cb4-44"><a href="#cb4-44" tabindex="-1"></a>  <span class="fu">do.call</span>(rbind, <span class="fu">lapply</span>(<span class="dv">1</span><span class="sc">:</span>n_bp, <span class="cf">function</span>(k) {</span>
+<span id="cb4-45"><a href="#cb4-45" tabindex="-1"></a>    <span class="fu">data.frame</span>(</span>
+<span id="cb4-46"><a href="#cb4-46" tabindex="-1"></a>      <span class="at">ticker =</span> tk, <span class="at">bp =</span> k,</span>
+<span id="cb4-47"><a href="#cb4-47" tabindex="-1"></a>      <span class="at">mean  =</span> <span class="fu">mean</span>(om_mat[, k]),</span>
+<span id="cb4-48"><a href="#cb4-48" tabindex="-1"></a>      <span class="at">Q2.5  =</span> <span class="fu">quantile</span>(om_mat[, k], <span class="fl">0.025</span>),</span>
+<span id="cb4-49"><a href="#cb4-49" tabindex="-1"></a>      <span class="at">Q97.5 =</span> <span class="fu">quantile</span>(om_mat[, k], <span class="fl">0.975</span>)</span>
+<span id="cb4-50"><a href="#cb4-50" tabindex="-1"></a>    )</span>
+<span id="cb4-51"><a href="#cb4-51" tabindex="-1"></a>  }))</span>
+<span id="cb4-52"><a href="#cb4-52" tabindex="-1"></a>})) <span class="sc">|&gt;</span> <span class="fu">mutate</span>(<span class="at">ticker =</span> <span class="fu">factor</span>(ticker, <span class="at">levels =</span> <span class="fu">levels</span>(dat_market<span class="sc">$</span>ticker)))</span>
+<span id="cb4-53"><a href="#cb4-53" tabindex="-1"></a><span class="fu">print</span>(omega_summary)</span></code></pre></div>
+</div>
+<div id="visualising-structural-events" class="section level3">
+<h3>Visualising Structural Events</h3>
+<p>We mark each <span class="math inline">\(\omega_k\)</span> on the
+fitted curve — the point of maximum curvature — for every ticker.
+Horizontal bars show the 95% credible interval.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>pred_orig        <span class="ot">&lt;-</span> <span class="fu">fitted</span>(fit_market)</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>dat_market<span class="sc">$</span>y_fit <span class="ot">&lt;-</span> pred_orig<span class="sc">$</span>fitted_mean</span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>dat_market<span class="sc">$</span>lo    <span class="ot">&lt;-</span> pred_orig<span class="sc">$</span>fitted_Q2<span class="fl">.5</span></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>dat_market<span class="sc">$</span>hi    <span class="ot">&lt;-</span> pred_orig<span class="sc">$</span>fitted_Q97<span class="fl">.5</span></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co"># Compute y-position on the mean curve at each omega</span></span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>omega_plot <span class="ot">&lt;-</span> omega_summary <span class="sc">|&gt;</span></span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a>  <span class="fu">rowwise</span>() <span class="sc">|&gt;</span></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">y_val =</span> <span class="fu">approx</span>(</span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a>    dat_market<span class="sc">$</span>month[dat_market<span class="sc">$</span>ticker <span class="sc">==</span> ticker],</span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a>    dat_market<span class="sc">$</span>y_fit[dat_market<span class="sc">$</span>ticker  <span class="sc">==</span> ticker],</span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a>    <span class="at">xout =</span> mean)<span class="sc">$</span>y) <span class="sc">|&gt;</span></span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a>  <span class="fu">ungroup</span>()</span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a>month_labels <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">&quot;Oct22&quot;</span>,<span class="st">&quot;Nov&quot;</span>,<span class="st">&quot;Dec&quot;</span>,<span class="st">&quot;Jan23&quot;</span>,<span class="st">&quot;Feb&quot;</span>,<span class="st">&quot;Mar&quot;</span>,<span class="st">&quot;Apr&quot;</span>,<span class="st">&quot;May&quot;</span>,</span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a>                  <span class="st">&quot;Jun&quot;</span>,<span class="st">&quot;Jul&quot;</span>,<span class="st">&quot;Aug&quot;</span>,<span class="st">&quot;Sep&quot;</span>,<span class="st">&quot;Oct&quot;</span>,<span class="st">&quot;Nov&quot;</span>,<span class="st">&quot;Dec&quot;</span>)</span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a></span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a><span class="fu">ggplot</span>(dat_market, <span class="fu">aes</span>(<span class="at">x =</span> month, <span class="at">y =</span> price, <span class="at">color =</span> ticker)) <span class="sc">+</span></span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a>  <span class="fu">geom_point</span>(<span class="at">alpha =</span> <span class="fl">0.5</span>) <span class="sc">+</span></span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a>  <span class="fu">geom_ribbon</span>(<span class="fu">aes</span>(<span class="at">ymin =</span> lo, <span class="at">ymax =</span> hi, <span class="at">fill =</span> ticker), <span class="at">alpha =</span> <span class="fl">0.1</span>, <span class="at">color =</span> <span class="cn">NA</span>) <span class="sc">+</span></span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a>  <span class="fu">geom_line</span>(<span class="fu">aes</span>(<span class="at">y =</span> y_fit), <span class="at">size =</span> <span class="dv">1</span>) <span class="sc">+</span></span>
+<span id="cb5-22"><a href="#cb5-22" tabindex="-1"></a>  <span class="fu">geom_point</span>(</span>
+<span id="cb5-23"><a href="#cb5-23" tabindex="-1"></a>    <span class="at">data =</span> omega_plot, <span class="fu">aes</span>(<span class="at">x =</span> mean, <span class="at">y =</span> y_val),</span>
+<span id="cb5-24"><a href="#cb5-24" tabindex="-1"></a>    <span class="at">color =</span> <span class="st">&quot;red&quot;</span>, <span class="at">shape =</span> <span class="dv">4</span>, <span class="at">size =</span> <span class="dv">4</span>, <span class="at">stroke =</span> <span class="fl">1.5</span>, <span class="at">inherit.aes =</span> <span class="cn">FALSE</span></span>
+<span id="cb5-25"><a href="#cb5-25" tabindex="-1"></a>  ) <span class="sc">+</span></span>
+<span id="cb5-26"><a href="#cb5-26" tabindex="-1"></a>  <span class="fu">geom_errorbarh</span>(</span>
+<span id="cb5-27"><a href="#cb5-27" tabindex="-1"></a>    <span class="at">data =</span> omega_plot, <span class="fu">aes</span>(<span class="at">xmin =</span> Q2<span class="fl">.5</span>, <span class="at">xmax =</span> Q97<span class="fl">.5</span>, <span class="at">y =</span> y_val),</span>
+<span id="cb5-28"><a href="#cb5-28" tabindex="-1"></a>    <span class="at">color =</span> <span class="st">&quot;red&quot;</span>, <span class="at">height =</span> <span class="dv">0</span>, <span class="at">alpha =</span> <span class="fl">0.4</span>, <span class="at">inherit.aes =</span> <span class="cn">FALSE</span></span>
+<span id="cb5-29"><a href="#cb5-29" tabindex="-1"></a>  ) <span class="sc">+</span></span>
+<span id="cb5-30"><a href="#cb5-30" tabindex="-1"></a>  <span class="fu">scale_x_continuous</span>(<span class="at">breaks =</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">15</span>, <span class="at">labels =</span> month_labels) <span class="sc">+</span></span>
+<span id="cb5-31"><a href="#cb5-31" tabindex="-1"></a>  <span class="fu">facet_wrap</span>(<span class="sc">~</span>ticker, <span class="at">scales =</span> <span class="st">&quot;free_y&quot;</span>) <span class="sc">+</span></span>
+<span id="cb5-32"><a href="#cb5-32" tabindex="-1"></a>  <span class="fu">theme_minimal</span>() <span class="sc">+</span> <span class="fu">theme</span>(<span class="at">axis.text.x =</span> <span class="fu">element_text</span>(<span class="at">angle =</span> <span class="dv">45</span>, <span class="at">hjust =</span> <span class="dv">1</span>)) <span class="sc">+</span></span>
+<span id="cb5-33"><a href="#cb5-33" tabindex="-1"></a>  <span class="fu">labs</span>(</span>
+<span id="cb5-34"><a href="#cb5-34" tabindex="-1"></a>    <span class="at">title    =</span> <span class="st">&quot;Structural Events: Point of Maximum Curvature (omega_k)&quot;</span>,</span>
+<span id="cb5-35"><a href="#cb5-35" tabindex="-1"></a>    <span class="at">subtitle =</span> <span class="st">&quot;Red X = posterior mean omega_k; bars = 95% CI.&quot;</span></span>
+<span id="cb5-36"><a href="#cb5-36" tabindex="-1"></a>  )</span></code></pre></div>
+</div>
+<div id="targeted-leadership-analysis" class="section level3">
+<h3>Targeted Leadership Analysis</h3>
+<p>Having identified the structural events visually, we can now perform
+targeted hypothesis testing on the posterior distribution. We focus on
+three key questions: 1. <strong>The Early Pivot</strong>: Who turned
+first in late 2022 (BP 1)? 2. <strong>The Autumn Shift</strong>: Who
+reacted first to the late-2023 market dip (BP 4)? 3. <strong>Cross-Event
+Dynamics</strong>: Did NVIDIA’s primary surge (BP 2) happen before
+Apple’s initial recovery (BP 1)?</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a><span class="co"># Extract omegas for all draws for the targeted indices</span></span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a>om_nvda <span class="ot">&lt;-</span> <span class="fu">t</span>(<span class="fu">apply</span>(draws, <span class="dv">1</span>, get_omegas, <span class="at">tk =</span> <span class="st">&quot;NVDA&quot;</span>))</span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a>om_msft <span class="ot">&lt;-</span> <span class="fu">t</span>(<span class="fu">apply</span>(draws, <span class="dv">1</span>, get_omegas, <span class="at">tk =</span> <span class="st">&quot;MSFT&quot;</span>))</span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a>om_aapl <span class="ot">&lt;-</span> <span class="fu">t</span>(<span class="fu">apply</span>(draws, <span class="dv">1</span>, get_omegas, <span class="at">tk =</span> <span class="st">&quot;AAPL&quot;</span>))</span>
+<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a></span>
+<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a><span class="co"># 1. Early Pivot (BP 1)</span></span>
+<span id="cb6-7"><a href="#cb6-7" tabindex="-1"></a>p1_nvda_msft <span class="ot">&lt;-</span> <span class="fu">mean</span>(om_nvda[, <span class="dv">1</span>] <span class="sc">&lt;</span> om_msft[, <span class="dv">1</span>])</span>
+<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a>p1_nvda_aapl <span class="ot">&lt;-</span> <span class="fu">mean</span>(om_nvda[, <span class="dv">1</span>] <span class="sc">&lt;</span> om_aapl[, <span class="dv">1</span>])</span>
+<span id="cb6-9"><a href="#cb6-9" tabindex="-1"></a></span>
+<span id="cb6-10"><a href="#cb6-10" tabindex="-1"></a><span class="co"># 2. Autumn Shift (BP 4)</span></span>
+<span id="cb6-11"><a href="#cb6-11" tabindex="-1"></a>p4_nvda_msft <span class="ot">&lt;-</span> <span class="fu">mean</span>(om_nvda[, <span class="dv">4</span>] <span class="sc">&lt;</span> om_msft[, <span class="dv">4</span>])</span>
+<span id="cb6-12"><a href="#cb6-12" tabindex="-1"></a>p4_msft_aapl <span class="ot">&lt;-</span> <span class="fu">mean</span>(om_msft[, <span class="dv">4</span>] <span class="sc">&lt;</span> om_aapl[, <span class="dv">4</span>])</span>
+<span id="cb6-13"><a href="#cb6-13" tabindex="-1"></a></span>
+<span id="cb6-14"><a href="#cb6-14" tabindex="-1"></a><span class="co"># 3. Cross-Event: NVDA Surge (BP 2) vs AAPL Recovery (BP 1)</span></span>
+<span id="cb6-15"><a href="#cb6-15" tabindex="-1"></a>p_cross <span class="ot">&lt;-</span> <span class="fu">mean</span>(om_nvda[, <span class="dv">2</span>] <span class="sc">&lt;</span> om_aapl[, <span class="dv">1</span>])</span>
+<span id="cb6-16"><a href="#cb6-16" tabindex="-1"></a></span>
+<span id="cb6-17"><a href="#cb6-17" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">&quot;--- Event 1: Early Pivot (BP 1) ---</span><span class="sc">\n</span><span class="st">&quot;</span>)</span>
+<span id="cb6-18"><a href="#cb6-18" tabindex="-1"></a><span class="fu">message</span>(<span class="fu">sprintf</span>(<span class="st">&quot;Prob NVDA led MSFT: %.2f&quot;</span>, p1_nvda_msft))</span>
+<span id="cb6-19"><a href="#cb6-19" tabindex="-1"></a><span class="fu">message</span>(<span class="fu">sprintf</span>(<span class="st">&quot;Prob NVDA led AAPL: %.2f&quot;</span>, p1_nvda_aapl))</span>
+<span id="cb6-20"><a href="#cb6-20" tabindex="-1"></a></span>
+<span id="cb6-21"><a href="#cb6-21" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">&quot;</span><span class="sc">\n</span><span class="st">--- Event 2: Autumn Shift (BP 4) ---</span><span class="sc">\n</span><span class="st">&quot;</span>)</span>
+<span id="cb6-22"><a href="#cb6-22" tabindex="-1"></a><span class="fu">message</span>(<span class="fu">sprintf</span>(<span class="st">&quot;Prob NVDA led MSFT: %.2f&quot;</span>, p4_nvda_msft))</span>
+<span id="cb6-23"><a href="#cb6-23" tabindex="-1"></a><span class="fu">message</span>(<span class="fu">sprintf</span>(<span class="st">&quot;Prob MSFT led AAPL: %.2f&quot;</span>, p4_msft_aapl))</span>
+<span id="cb6-24"><a href="#cb6-24" tabindex="-1"></a></span>
+<span id="cb6-25"><a href="#cb6-25" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">&quot;</span><span class="sc">\n</span><span class="st">--- Cross-Event Dynamics ---</span><span class="sc">\n</span><span class="st">&quot;</span>)</span>
+<span id="cb6-26"><a href="#cb6-26" tabindex="-1"></a><span class="fu">message</span>(<span class="fu">sprintf</span>(<span class="st">&quot;Prob NVDA AI Surge (BP 2) led AAPL Recovery (BP 1): %.2f&quot;</span>, p_cross))</span></code></pre></div>
+</div>
+</div>
+<div id="hierarchical-discovery-simulated-market-trend" class="section level2">
+<h2>2. Hierarchical Discovery (Simulated Market Trend)</h2>
+<p>When modeling multiple entities (e.g., a basket of 10 stocks), we
+often expect them to respond to global market events at roughly the same
+time. However, due to individual dynamics, the exact timing of a
+transition might vary slightly.</p>
+<div id="how-hierarchical-timing-works" class="section level3">
+<h3>How Hierarchical Timing Works</h3>
+<p>In <code>smoothbp</code>, hierarchical shrinkage is applied to the
+<strong>timing</strong> (<span class="math inline">\(\omega\)</span>) of
+structural changes using standard formula syntax. When you specify a
+formula like <code>omega = ~ (1 | group)</code>:</p>
+<ol style="list-style-type: decimal">
+<li>The model identifies the <strong>intercept</strong> as the
+“Population Mean” timing.</li>
+<li>It treats the group-level offsets as <strong>random effects</strong>
+centered on zero.</li>
+<li>It automatically estimates a shared precision (shrinkage variance)
+<span class="math inline">\(\sigma_{re\_om}\)</span> that pulls
+individual group timings toward the population mean.</li>
+</ol>
+</div>
+<div id="simulation-10-tickers-2-global-events" class="section level3">
+<h3>Simulation: 10 Tickers, 2 Global Events</h3>
+<p>We simulate 10 tickers over 25 months. All tickers share two major
+market transitions: a <strong>rally</strong> at month 7 and a
+<strong>correction</strong> at month 18. Each ticker has a random timing
+offset (±0.8 months) and a random response magnitude. We test 8
+candidate breakpoints to see if the model correctly identifies just the
+two real ones.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">42</span>)</span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a>n_tickers <span class="ot">&lt;-</span> <span class="dv">10</span></span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a>n_months  <span class="ot">&lt;-</span> <span class="dv">25</span></span>
+<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a>dat_sim   <span class="ot">&lt;-</span> <span class="fu">expand.grid</span>(</span>
+<span id="cb7-5"><a href="#cb7-5" tabindex="-1"></a>  <span class="at">month  =</span> <span class="dv">1</span><span class="sc">:</span>n_months,</span>
+<span id="cb7-6"><a href="#cb7-6" tabindex="-1"></a>  <span class="at">ticker =</span> <span class="fu">paste0</span>(<span class="st">&quot;T&quot;</span>, <span class="fu">formatC</span>(<span class="dv">1</span><span class="sc">:</span>n_tickers, <span class="at">width =</span> <span class="dv">2</span>, <span class="at">flag =</span> <span class="st">&quot;0&quot;</span>))</span>
+<span id="cb7-7"><a href="#cb7-7" tabindex="-1"></a>)</span>
+<span id="cb7-8"><a href="#cb7-8" tabindex="-1"></a></span>
+<span id="cb7-9"><a href="#cb7-9" tabindex="-1"></a><span class="co"># True shared market events: rally at month 7, correction at month 18</span></span>
+<span id="cb7-10"><a href="#cb7-10" tabindex="-1"></a>om_true <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="dv">7</span>, <span class="dv">18</span>)</span>
+<span id="cb7-11"><a href="#cb7-11" tabindex="-1"></a></span>
+<span id="cb7-12"><a href="#cb7-12" tabindex="-1"></a><span class="co"># Ticker-specific timing offsets (mean 0, SD 0.8 months)</span></span>
+<span id="cb7-13"><a href="#cb7-13" tabindex="-1"></a>timing_offsets <span class="ot">&lt;-</span> <span class="fu">matrix</span>(<span class="fu">rnorm</span>(n_tickers <span class="sc">*</span> <span class="dv">2</span>, <span class="dv">0</span>, <span class="fl">0.8</span>), n_tickers, <span class="dv">2</span>)</span>
+<span id="cb7-14"><a href="#cb7-14" tabindex="-1"></a></span>
+<span id="cb7-15"><a href="#cb7-15" tabindex="-1"></a><span class="co"># Rally magnitude varies by ticker (all positive = same direction)</span></span>
+<span id="cb7-16"><a href="#cb7-16" tabindex="-1"></a>rally_mag      <span class="ot">&lt;-</span> <span class="fu">runif</span>(n_tickers, <span class="fl">1.5</span>, <span class="fl">3.5</span>)</span>
+<span id="cb7-17"><a href="#cb7-17" tabindex="-1"></a><span class="co"># Correction magnitude (all negative = same direction)</span></span>
+<span id="cb7-18"><a href="#cb7-18" tabindex="-1"></a>correction_mag <span class="ot">&lt;-</span> <span class="fu">runif</span>(n_tickers, <span class="fl">1.0</span>, <span class="fl">2.5</span>)</span>
+<span id="cb7-19"><a href="#cb7-19" tabindex="-1"></a></span>
+<span id="cb7-20"><a href="#cb7-20" tabindex="-1"></a><span class="co"># Simulate using smooth logistic transitions (matches the model)</span></span>
+<span id="cb7-21"><a href="#cb7-21" tabindex="-1"></a><span class="co"># Event 2 REVERSES the rally: delta_2 cancels delta_1 and adds a negative slope</span></span>
+<span id="cb7-22"><a href="#cb7-22" tabindex="-1"></a><span class="co"># so prices genuinely fall after month 18, creating a clear inverted-U shape.</span></span>
+<span id="cb7-23"><a href="#cb7-23" tabindex="-1"></a>rho_true <span class="ot">&lt;-</span> <span class="dv">3</span></span>
+<span id="cb7-24"><a href="#cb7-24" tabindex="-1"></a>dat_sim<span class="sc">$</span>price <span class="ot">&lt;-</span> <span class="fu">unlist</span>(<span class="fu">lapply</span>(<span class="dv">1</span><span class="sc">:</span>n_tickers, <span class="cf">function</span>(i) {</span>
+<span id="cb7-25"><a href="#cb7-25" tabindex="-1"></a>  t     <span class="ot">&lt;-</span> <span class="dv">1</span><span class="sc">:</span>n_months</span>
+<span id="cb7-26"><a href="#cb7-26" tabindex="-1"></a>  om1_k <span class="ot">&lt;-</span> om_true[<span class="dv">1</span>] <span class="sc">+</span> timing_offsets[i, <span class="dv">1</span>]</span>
+<span id="cb7-27"><a href="#cb7-27" tabindex="-1"></a>  om2_k <span class="ot">&lt;-</span> om_true[<span class="dv">2</span>] <span class="sc">+</span> timing_offsets[i, <span class="dv">2</span>]</span>
+<span id="cb7-28"><a href="#cb7-28" tabindex="-1"></a>  y <span class="ot">&lt;-</span> <span class="dv">10</span> <span class="sc">+</span></span>
+<span id="cb7-29"><a href="#cb7-29" tabindex="-1"></a>    rally_mag[i]                       <span class="sc">*</span> (t <span class="sc">-</span> om1_k) <span class="sc">*</span> <span class="fu">plogis</span>(rho_true <span class="sc">*</span> (t <span class="sc">-</span> om1_k)) <span class="sc">-</span></span>
+<span id="cb7-30"><a href="#cb7-30" tabindex="-1"></a>    (rally_mag[i] <span class="sc">+</span> correction_mag[i]) <span class="sc">*</span> (t <span class="sc">-</span> om2_k) <span class="sc">*</span> <span class="fu">plogis</span>(rho_true <span class="sc">*</span> (t <span class="sc">-</span> om2_k)) <span class="sc">+</span></span>
+<span id="cb7-31"><a href="#cb7-31" tabindex="-1"></a>    <span class="fu">rnorm</span>(n_months, <span class="dv">0</span>, <span class="fl">0.5</span>)</span>
+<span id="cb7-32"><a href="#cb7-32" tabindex="-1"></a>  y</span>
+<span id="cb7-33"><a href="#cb7-33" tabindex="-1"></a>}))</span>
+<span id="cb7-34"><a href="#cb7-34" tabindex="-1"></a></span>
+<span id="cb7-35"><a href="#cb7-35" tabindex="-1"></a><span class="fu">ggplot</span>(dat_sim, <span class="fu">aes</span>(<span class="at">x =</span> month, <span class="at">y =</span> price, <span class="at">color =</span> ticker)) <span class="sc">+</span></span>
+<span id="cb7-36"><a href="#cb7-36" tabindex="-1"></a>  <span class="fu">geom_line</span>(<span class="at">linewidth =</span> <span class="fl">0.7</span>) <span class="sc">+</span></span>
+<span id="cb7-37"><a href="#cb7-37" tabindex="-1"></a>  <span class="fu">geom_vline</span>(<span class="at">xintercept =</span> om_true, <span class="at">linetype =</span> <span class="st">&quot;dashed&quot;</span>, <span class="at">alpha =</span> <span class="fl">0.4</span>) <span class="sc">+</span></span>
+<span id="cb7-38"><a href="#cb7-38" tabindex="-1"></a>  <span class="fu">theme_minimal</span>() <span class="sc">+</span></span>
+<span id="cb7-39"><a href="#cb7-39" tabindex="-1"></a>  <span class="fu">theme</span>(<span class="at">legend.position =</span> <span class="st">&quot;none&quot;</span>) <span class="sc">+</span></span>
+<span id="cb7-40"><a href="#cb7-40" tabindex="-1"></a>  <span class="fu">labs</span>(</span>
+<span id="cb7-41"><a href="#cb7-41" tabindex="-1"></a>    <span class="at">title    =</span> <span class="st">&quot;Simulated Market Data: 10 Tickers, 2 Shared Events&quot;</span>,</span>
+<span id="cb7-42"><a href="#cb7-42" tabindex="-1"></a>    <span class="at">subtitle =</span> <span class="st">&quot;Dashed lines = true event times (month 7 and 18). Individual timing varies slightly.&quot;</span></span>
+<span id="cb7-43"><a href="#cb7-43" tabindex="-1"></a>  )</span></code></pre></div>
+</div>
+<div id="fitting-the-hierarchical-spike-and-slab-model" class="section level3">
+<h3>Fitting the Hierarchical Spike-and-Slab Model</h3>
+<p>We place <strong>8 candidate breakpoints</strong> and let the model
+learn both the inclusion probability <span class="math inline">\(\pi\)</span> and the market-mean timing. Using
+<code>~ (1 | ticker)</code> for <code>omega</code> (and
+<code>deltas</code>) tells <code>smoothbp</code> to estimate a
+<strong>market mean</strong> (the intercept, fixed) plus a
+<strong>random timing offset</strong> per ticker that is shrunk toward
+zero — a proper linear mixed model structure.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>my_spike <span class="ot">&lt;-</span> <span class="fu">prior_spike_slab</span>(</span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>  <span class="at">pi =</span> <span class="dv">2</span><span class="sc">/</span><span class="dv">8</span></span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>)</span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a></span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>t_min <span class="ot">&lt;-</span> <span class="fu">min</span>(dat_sim<span class="sc">$</span>month)</span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>t_max <span class="ot">&lt;-</span> <span class="fu">max</span>(dat_sim<span class="sc">$</span>month)</span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a></span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a><span class="co"># Use the space_omega_priors helper to initialize 8 candidate breakpoints.</span></span>
+<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a><span class="co"># The function automatically names the priors `(Intercept)` so they apply correctly </span></span>
+<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a><span class="co"># to the global mean, while random effects are handled automatically by the model.</span></span>
+<span id="cb8-11"><a href="#cb8-11" tabindex="-1"></a>omega_priors_hier <span class="ot">&lt;-</span> <span class="fu">space_omega_priors</span>(</span>
+<span id="cb8-12"><a href="#cb8-12" tabindex="-1"></a>  <span class="at">K       =</span> <span class="dv">8</span>, </span>
+<span id="cb8-13"><a href="#cb8-13" tabindex="-1"></a>  <span class="at">tau_min =</span> t_min, </span>
+<span id="cb8-14"><a href="#cb8-14" tabindex="-1"></a>  <span class="at">tau_max =</span> t_max</span>
+<span id="cb8-15"><a href="#cb8-15" tabindex="-1"></a>)</span>
+<span id="cb8-16"><a href="#cb8-16" tabindex="-1"></a></span>
+<span id="cb8-17"><a href="#cb8-17" tabindex="-1"></a></span>
+<span id="cb8-18"><a href="#cb8-18" tabindex="-1"></a>fit_hier <span class="ot">&lt;-</span> <span class="fu">smoothbp_ss</span>(</span>
+<span id="cb8-19"><a href="#cb8-19" tabindex="-1"></a>  <span class="at">formula =</span> price <span class="sc">~</span> month,</span>
+<span id="cb8-20"><a href="#cb8-20" tabindex="-1"></a>  <span class="at">b0      =</span> <span class="sc">~</span> (<span class="dv">1</span> <span class="sc">|</span> ticker),</span>
+<span id="cb8-21"><a href="#cb8-21" tabindex="-1"></a>  <span class="co"># (1 | ticker): intercept = market mean, ticker columns = random deviations</span></span>
+<span id="cb8-22"><a href="#cb8-22" tabindex="-1"></a>  <span class="at">deltas  =</span> <span class="fu">replicate</span>(<span class="dv">8</span>, <span class="sc">~</span> ticker, <span class="at">simplify =</span> <span class="cn">FALSE</span>),</span>
+<span id="cb8-23"><a href="#cb8-23" tabindex="-1"></a>  <span class="at">omega   =</span> <span class="fu">replicate</span>(<span class="dv">8</span>, <span class="sc">~</span> (<span class="dv">1</span> <span class="sc">|</span> ticker), <span class="at">simplify =</span> <span class="cn">FALSE</span>),</span>
+<span id="cb8-24"><a href="#cb8-24" tabindex="-1"></a>  <span class="at">rho     =</span> <span class="fu">replicate</span>(<span class="dv">8</span>, <span class="sc">~</span> <span class="dv">1</span>,            <span class="at">simplify =</span> <span class="cn">FALSE</span>),</span>
+<span id="cb8-25"><a href="#cb8-25" tabindex="-1"></a>  <span class="at">data    =</span> dat_sim,</span>
+<span id="cb8-26"><a href="#cb8-26" tabindex="-1"></a>  <span class="at">spike   =</span> my_spike,</span>
+<span id="cb8-27"><a href="#cb8-27" tabindex="-1"></a>  <span class="at">priors  =</span> <span class="fu">smoothbp_priors</span>(</span>
+<span id="cb8-28"><a href="#cb8-28" tabindex="-1"></a>    <span class="at">sigma_re_om =</span> <span class="fu">prior_invgamma</span>(<span class="dv">2</span>, <span class="dv">1</span>),</span>
+<span id="cb8-29"><a href="#cb8-29" tabindex="-1"></a>    <span class="at">omega       =</span> omega_priors_hier),</span>
+<span id="cb8-30"><a href="#cb8-30" tabindex="-1"></a>  <span class="at">chains  =</span> <span class="dv">2</span><span class="dt">L</span>, <span class="at">iter =</span> <span class="dv">4000</span>, <span class="at">warmup =</span> <span class="dv">2000</span>, <span class="at">cores =</span> <span class="dv">4</span><span class="dt">L</span></span>
+<span id="cb8-31"><a href="#cb8-31" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<div id="posterior-inclusion-probabilities" class="section level3">
+<h3>Posterior Inclusion Probabilities</h3>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a>draws_hier  <span class="ot">&lt;-</span> <span class="fu">as_draws_df</span>(fit_hier<span class="sc">$</span>draws)</span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a></span>
+<span id="cb9-3"><a href="#cb9-3" tabindex="-1"></a><span class="co"># PIP = P(market-level delta is non-zero) = mean of the (Intercept) gamma.</span></span>
+<span id="cb9-4"><a href="#cb9-4" tabindex="-1"></a><span class="co"># Using &#39;any ticker active&#39; would inflate PIPs due to 10-ticker multiplicity.</span></span>
+<span id="cb9-5"><a href="#cb9-5" tabindex="-1"></a>pip_summary <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(</span>
+<span id="cb9-6"><a href="#cb9-6" tabindex="-1"></a>  <span class="at">bp  =</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">8</span>,</span>
+<span id="cb9-7"><a href="#cb9-7" tabindex="-1"></a>  <span class="at">pip =</span> <span class="fu">sapply</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">8</span>, <span class="cf">function</span>(k) {</span>
+<span id="cb9-8"><a href="#cb9-8" tabindex="-1"></a>    col <span class="ot">&lt;-</span> <span class="fu">paste0</span>(<span class="st">&quot;gamma_delta&quot;</span>, k, <span class="st">&quot;_(Intercept)&quot;</span>)</span>
+<span id="cb9-9"><a href="#cb9-9" tabindex="-1"></a>    <span class="cf">if</span> (<span class="sc">!</span>col <span class="sc">%in%</span> <span class="fu">names</span>(draws_hier)) <span class="fu">return</span>(<span class="dv">0</span>)</span>
+<span id="cb9-10"><a href="#cb9-10" tabindex="-1"></a>    <span class="fu">mean</span>(draws_hier[[col]])</span>
+<span id="cb9-11"><a href="#cb9-11" tabindex="-1"></a>  })</span>
+<span id="cb9-12"><a href="#cb9-12" tabindex="-1"></a>)</span>
+<span id="cb9-13"><a href="#cb9-13" tabindex="-1"></a></span>
+<span id="cb9-14"><a href="#cb9-14" tabindex="-1"></a><span class="fu">ggplot</span>(pip_summary, <span class="fu">aes</span>(<span class="at">x =</span> <span class="fu">factor</span>(bp), <span class="at">y =</span> pip)) <span class="sc">+</span></span>
+<span id="cb9-15"><a href="#cb9-15" tabindex="-1"></a>  <span class="fu">geom_col</span>(<span class="fu">aes</span>(<span class="at">fill =</span> pip <span class="sc">&gt;</span> <span class="fl">0.5</span>), <span class="at">show.legend =</span> <span class="cn">FALSE</span>) <span class="sc">+</span></span>
+<span id="cb9-16"><a href="#cb9-16" tabindex="-1"></a>  <span class="fu">geom_hline</span>(<span class="at">yintercept =</span> <span class="fl">0.5</span>, <span class="at">linetype =</span> <span class="st">&quot;dashed&quot;</span>) <span class="sc">+</span></span>
+<span id="cb9-17"><a href="#cb9-17" tabindex="-1"></a>  <span class="fu">scale_fill_manual</span>(<span class="at">values =</span> <span class="fu">c</span>(<span class="st">&quot;FALSE&quot;</span> <span class="ot">=</span> <span class="st">&quot;grey70&quot;</span>, <span class="st">&quot;TRUE&quot;</span> <span class="ot">=</span> <span class="st">&quot;#2166ac&quot;</span>)) <span class="sc">+</span></span>
+<span id="cb9-18"><a href="#cb9-18" tabindex="-1"></a>  <span class="fu">scale_y_continuous</span>(<span class="at">limits =</span> <span class="fu">c</span>(<span class="dv">0</span>, <span class="dv">1</span>), <span class="at">labels =</span> scales<span class="sc">::</span>percent) <span class="sc">+</span></span>
+<span id="cb9-19"><a href="#cb9-19" tabindex="-1"></a>  <span class="fu">theme_minimal</span>() <span class="sc">+</span></span>
+<span id="cb9-20"><a href="#cb9-20" tabindex="-1"></a>  <span class="fu">labs</span>(</span>
+<span id="cb9-21"><a href="#cb9-21" tabindex="-1"></a>    <span class="at">x        =</span> <span class="st">&quot;Candidate breakpoint&quot;</span>,</span>
+<span id="cb9-22"><a href="#cb9-22" tabindex="-1"></a>    <span class="at">y        =</span> <span class="st">&quot;PIP&quot;</span>,</span>
+<span id="cb9-23"><a href="#cb9-23" tabindex="-1"></a>    <span class="at">title    =</span> <span class="st">&quot;Posterior Inclusion Probabilities (market-level intercept gamma)&quot;</span>,</span>
+<span id="cb9-24"><a href="#cb9-24" tabindex="-1"></a>    <span class="at">subtitle =</span> <span class="st">&quot;Blue = selected (PIP &gt; 0.5). Prior: Beta(1,9) ≈ 10% expected inclusion.&quot;</span></span>
+<span id="cb9-25"><a href="#cb9-25" tabindex="-1"></a>  )</span></code></pre></div>
+</div>
+<div id="visualizing-the-fit" class="section level3">
+<h3>Visualizing the Fit</h3>
+<div class="sourceCode" id="cb10"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a>pred_hier        <span class="ot">&lt;-</span> <span class="fu">fitted</span>(fit_hier)</span>
+<span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a>dat_sim<span class="sc">$</span>y_fit    <span class="ot">&lt;-</span> pred_hier<span class="sc">$</span>fitted_mean</span>
+<span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a>dat_sim<span class="sc">$</span>lo       <span class="ot">&lt;-</span> pred_hier<span class="sc">$</span>fitted_Q2<span class="fl">.5</span></span>
+<span id="cb10-4"><a href="#cb10-4" tabindex="-1"></a>dat_sim<span class="sc">$</span>hi       <span class="ot">&lt;-</span> pred_hier<span class="sc">$</span>fitted_Q97<span class="fl">.5</span></span>
+<span id="cb10-5"><a href="#cb10-5" tabindex="-1"></a></span>
+<span id="cb10-6"><a href="#cb10-6" tabindex="-1"></a>active_bps  <span class="ot">&lt;-</span> pip_summary<span class="sc">$</span>bp[pip_summary<span class="sc">$</span>pip <span class="sc">&gt;</span> <span class="fl">0.5</span>]</span>
+<span id="cb10-7"><a href="#cb10-7" tabindex="-1"></a>tickers_sim <span class="ot">&lt;-</span> <span class="fu">levels</span>(<span class="fu">factor</span>(dat_sim<span class="sc">$</span>ticker))</span>
+<span id="cb10-8"><a href="#cb10-8" tabindex="-1"></a>ref_ticker  <span class="ot">&lt;-</span> tickers_sim[<span class="dv">1</span>]   <span class="co"># reference level in design matrix</span></span>
+<span id="cb10-9"><a href="#cb10-9" tabindex="-1"></a></span>
+<span id="cb10-10"><a href="#cb10-10" tabindex="-1"></a><span class="cf">if</span> (<span class="fu">length</span>(active_bps) <span class="sc">&gt;</span> <span class="dv">0</span>) {</span>
+<span id="cb10-11"><a href="#cb10-11" tabindex="-1"></a>  <span class="co"># With (1 | ticker), the design matrix has:</span></span>
+<span id="cb10-12"><a href="#cb10-12" tabindex="-1"></a>  <span class="co">#   column &quot;(Intercept)&quot;  = market mean (fixed)</span></span>
+<span id="cb10-13"><a href="#cb10-13" tabindex="-1"></a>  <span class="co">#   columns &quot;tickerT01&quot;, &quot;tickerT02&quot;, ... = per-ticker RE deviations</span></span>
+<span id="cb10-14"><a href="#cb10-14" tabindex="-1"></a>  <span class="co"># Ticker-specific omega = market mean + that ticker&#39;s RE column</span></span>
+<span id="cb10-15"><a href="#cb10-15" tabindex="-1"></a>  tickers_sim <span class="ot">&lt;-</span> <span class="fu">levels</span>(<span class="fu">factor</span>(dat_sim<span class="sc">$</span>ticker))</span>
+<span id="cb10-16"><a href="#cb10-16" tabindex="-1"></a></span>
+<span id="cb10-17"><a href="#cb10-17" tabindex="-1"></a>  omega_summary_sim <span class="ot">&lt;-</span> <span class="fu">do.call</span>(rbind, <span class="fu">lapply</span>(tickers_sim, <span class="cf">function</span>(tk) {</span>
+<span id="cb10-18"><a href="#cb10-18" tabindex="-1"></a>    om_vals <span class="ot">&lt;-</span> <span class="fu">as.matrix</span>(<span class="fu">sapply</span>(active_bps, <span class="cf">function</span>(k) {</span>
+<span id="cb10-19"><a href="#cb10-19" tabindex="-1"></a>      mu  <span class="ot">&lt;-</span> draws_hier[[<span class="fu">paste0</span>(<span class="st">&quot;omega&quot;</span>, k, <span class="st">&quot;_(Intercept)&quot;</span>)]]</span>
+<span id="cb10-20"><a href="#cb10-20" tabindex="-1"></a>      u_k <span class="ot">&lt;-</span> draws_hier[[<span class="fu">paste0</span>(<span class="st">&quot;omega&quot;</span>, k, <span class="st">&quot;_ticker&quot;</span>, tk)]]</span>
+<span id="cb10-21"><a href="#cb10-21" tabindex="-1"></a>      <span class="cf">if</span> (<span class="fu">is.null</span>(u_k)) mu <span class="cf">else</span> mu <span class="sc">+</span> u_k</span>
+<span id="cb10-22"><a href="#cb10-22" tabindex="-1"></a>    }))</span>
+<span id="cb10-23"><a href="#cb10-23" tabindex="-1"></a>    <span class="fu">do.call</span>(rbind, <span class="fu">lapply</span>(<span class="fu">seq_along</span>(active_bps), <span class="cf">function</span>(j) {</span>
+<span id="cb10-24"><a href="#cb10-24" tabindex="-1"></a>      <span class="fu">data.frame</span>(</span>
+<span id="cb10-25"><a href="#cb10-25" tabindex="-1"></a>        <span class="at">ticker =</span> tk, <span class="at">bp =</span> active_bps[j],</span>
+<span id="cb10-26"><a href="#cb10-26" tabindex="-1"></a>        <span class="at">mean  =</span> <span class="fu">mean</span>(om_vals[, j]),</span>
+<span id="cb10-27"><a href="#cb10-27" tabindex="-1"></a>        <span class="at">Q2.5  =</span> <span class="fu">quantile</span>(om_vals[, j], <span class="fl">0.025</span>),</span>
+<span id="cb10-28"><a href="#cb10-28" tabindex="-1"></a>        <span class="at">Q97.5 =</span> <span class="fu">quantile</span>(om_vals[, j], <span class="fl">0.975</span>)</span>
+<span id="cb10-29"><a href="#cb10-29" tabindex="-1"></a>      )</span>
+<span id="cb10-30"><a href="#cb10-30" tabindex="-1"></a>    }))</span>
+<span id="cb10-31"><a href="#cb10-31" tabindex="-1"></a>  }))</span>
+<span id="cb10-32"><a href="#cb10-32" tabindex="-1"></a></span>
+<span id="cb10-33"><a href="#cb10-33" tabindex="-1"></a>  omega_plot_sim <span class="ot">&lt;-</span> omega_summary_sim <span class="sc">|&gt;</span></span>
+<span id="cb10-34"><a href="#cb10-34" tabindex="-1"></a>    <span class="fu">rowwise</span>() <span class="sc">|&gt;</span></span>
+<span id="cb10-35"><a href="#cb10-35" tabindex="-1"></a>    <span class="fu">mutate</span>(<span class="at">y_val =</span> <span class="fu">approx</span>(</span>
+<span id="cb10-36"><a href="#cb10-36" tabindex="-1"></a>      dat_sim<span class="sc">$</span>month[dat_sim<span class="sc">$</span>ticker <span class="sc">==</span> ticker],</span>
+<span id="cb10-37"><a href="#cb10-37" tabindex="-1"></a>      dat_sim<span class="sc">$</span>y_fit[dat_sim<span class="sc">$</span>ticker <span class="sc">==</span> ticker],</span>
+<span id="cb10-38"><a href="#cb10-38" tabindex="-1"></a>      <span class="at">xout =</span> mean)<span class="sc">$</span>y) <span class="sc">|&gt;</span></span>
+<span id="cb10-39"><a href="#cb10-39" tabindex="-1"></a>    <span class="fu">ungroup</span>()</span>
+<span id="cb10-40"><a href="#cb10-40" tabindex="-1"></a>} <span class="cf">else</span> {</span>
+<span id="cb10-41"><a href="#cb10-41" tabindex="-1"></a>  omega_plot_sim <span class="ot">&lt;-</span> <span class="fu">data.frame</span>()</span>
+<span id="cb10-42"><a href="#cb10-42" tabindex="-1"></a>}</span>
+<span id="cb10-43"><a href="#cb10-43" tabindex="-1"></a></span>
+<span id="cb10-44"><a href="#cb10-44" tabindex="-1"></a><span class="fu">ggplot</span>(dat_sim, <span class="fu">aes</span>(<span class="at">x =</span> month, <span class="at">color =</span> ticker, <span class="at">fill =</span> ticker)) <span class="sc">+</span></span>
+<span id="cb10-45"><a href="#cb10-45" tabindex="-1"></a>  <span class="fu">geom_point</span>(<span class="fu">aes</span>(<span class="at">y =</span> price), <span class="at">alpha =</span> <span class="fl">0.25</span>, <span class="at">size =</span> <span class="fl">0.8</span>) <span class="sc">+</span></span>
+<span id="cb10-46"><a href="#cb10-46" tabindex="-1"></a>  <span class="fu">geom_ribbon</span>(<span class="fu">aes</span>(<span class="at">ymin =</span> lo, <span class="at">ymax =</span> hi), <span class="at">alpha =</span> <span class="fl">0.1</span>, <span class="at">color =</span> <span class="cn">NA</span>) <span class="sc">+</span></span>
+<span id="cb10-47"><a href="#cb10-47" tabindex="-1"></a>  <span class="fu">geom_line</span>(<span class="fu">aes</span>(<span class="at">y =</span> y_fit), <span class="at">linewidth =</span> <span class="fl">0.8</span>) <span class="sc">+</span></span>
+<span id="cb10-48"><a href="#cb10-48" tabindex="-1"></a>  {<span class="cf">if</span> (<span class="fu">nrow</span>(omega_plot_sim) <span class="sc">&gt;</span> <span class="dv">0</span>)</span>
+<span id="cb10-49"><a href="#cb10-49" tabindex="-1"></a>    <span class="fu">geom_point</span>(</span>
+<span id="cb10-50"><a href="#cb10-50" tabindex="-1"></a>      <span class="at">data =</span> omega_plot_sim, <span class="fu">aes</span>(<span class="at">x =</span> mean, <span class="at">y =</span> y_val),</span>
+<span id="cb10-51"><a href="#cb10-51" tabindex="-1"></a>      <span class="at">color =</span> <span class="st">&quot;black&quot;</span>, <span class="at">shape =</span> <span class="dv">18</span>, <span class="at">size =</span> <span class="fl">3.5</span>, <span class="at">inherit.aes =</span> <span class="cn">FALSE</span></span>
+<span id="cb10-52"><a href="#cb10-52" tabindex="-1"></a>    )</span>
+<span id="cb10-53"><a href="#cb10-53" tabindex="-1"></a>  } <span class="sc">+</span></span>
+<span id="cb10-54"><a href="#cb10-54" tabindex="-1"></a>  {<span class="cf">if</span> (<span class="fu">nrow</span>(omega_plot_sim) <span class="sc">&gt;</span> <span class="dv">0</span>)</span>
+<span id="cb10-55"><a href="#cb10-55" tabindex="-1"></a>    <span class="fu">geom_errorbarh</span>(</span>
+<span id="cb10-56"><a href="#cb10-56" tabindex="-1"></a>      <span class="at">data =</span> omega_plot_sim,</span>
+<span id="cb10-57"><a href="#cb10-57" tabindex="-1"></a>      <span class="fu">aes</span>(<span class="at">xmin =</span> Q2<span class="fl">.5</span>, <span class="at">xmax =</span> Q97<span class="fl">.5</span>, <span class="at">y =</span> y_val),</span>
+<span id="cb10-58"><a href="#cb10-58" tabindex="-1"></a>      <span class="at">height =</span> <span class="dv">0</span>, <span class="at">color =</span> <span class="st">&quot;black&quot;</span>, <span class="at">alpha =</span> <span class="fl">0.4</span>, <span class="at">inherit.aes =</span> <span class="cn">FALSE</span></span>
+<span id="cb10-59"><a href="#cb10-59" tabindex="-1"></a>    )</span>
+<span id="cb10-60"><a href="#cb10-60" tabindex="-1"></a>  } <span class="sc">+</span></span>
+<span id="cb10-61"><a href="#cb10-61" tabindex="-1"></a>  <span class="fu">facet_wrap</span>(<span class="sc">~</span> ticker, <span class="at">ncol =</span> <span class="dv">5</span>) <span class="sc">+</span></span>
+<span id="cb10-62"><a href="#cb10-62" tabindex="-1"></a>  <span class="fu">theme_minimal</span>() <span class="sc">+</span></span>
+<span id="cb10-63"><a href="#cb10-63" tabindex="-1"></a>  <span class="fu">theme</span>(<span class="at">legend.position =</span> <span class="st">&quot;none&quot;</span>) <span class="sc">+</span></span>
+<span id="cb10-64"><a href="#cb10-64" tabindex="-1"></a>  <span class="fu">labs</span>(</span>
+<span id="cb10-65"><a href="#cb10-65" tabindex="-1"></a>    <span class="at">x        =</span> <span class="st">&quot;Month&quot;</span>,</span>
+<span id="cb10-66"><a href="#cb10-66" tabindex="-1"></a>    <span class="at">y        =</span> <span class="st">&quot;Price&quot;</span>,</span>
+<span id="cb10-67"><a href="#cb10-67" tabindex="-1"></a>    <span class="at">title    =</span> <span class="st">&quot;Hierarchical Event Discovery: Fitted Curves&quot;</span>,</span>
+<span id="cb10-68"><a href="#cb10-68" tabindex="-1"></a>    <span class="at">subtitle =</span> <span class="st">&quot;Black diamonds = discovered market events (PIP &gt; 0.5); bars = 95% CI.&quot;</span></span>
+<span id="cb10-69"><a href="#cb10-69" tabindex="-1"></a>  )</span></code></pre></div>
+<hr />
+</div>
+</div>
+<div id="model-selection-pips-bayes-factors-and-waic" class="section level2">
+<h2>3. Model Selection: PIPs, Bayes Factors, and WAIC</h2>
+<p>When using Spike-and-Slab regularization, the model performs Bayesian
+Model Averaging across all <span class="math inline">\(2^K\)</span>
+possible combinations of breakpoints in a single run. You have several
+choices for how to interpret and use these results.</p>
+<div id="the-dont-choose-approach-bayesian-model-averaging" class="section level3">
+<h3>The “Don’t Choose” Approach (Bayesian Model Averaging)</h3>
+<p>The most mathematically pure approach is to <strong>not select a
+single sparse model at all</strong>. If you use the
+<code>smoothbp_ss</code> fit directly to make predictions, you are
+averaging over the uncertainty of the structural breaks. If a breakpoint
+has a Posterior Inclusion Probability (PIP) of 0.2, the model inherently
+down-weights its impact on predictions by 80%. This provides beautifully
+regularized, highly accurate out-of-sample predictions.</p>
+</div>
+<div id="the-median-probability-model-pip-0.5" class="section level3">
+<h3>The Median Probability Model (PIP &gt; 0.5)</h3>
+<p>If you need to report a single discrete model (e.g., to definitively
+claim “two events occurred”), the standard approach is to include all
+parameters with <strong>PIP &gt; 0.5</strong>. This is not an arbitrary
+heuristic; it is the <strong>Median Probability Model</strong> (Barbieri
+&amp; Berger, 2004), which is mathematically proven to be the optimal
+predictive model under squared-error loss in many settings.</p>
+</div>
+<div id="inclusion-bayes-factors" class="section level3">
+<h3>Inclusion Bayes Factors</h3>
+<p>If you want a stricter statistical threshold, you can convert the
+PIPs into <strong>Inclusion Bayes Factors</strong> (<span class="math inline">\(\text{BF}_{10}\)</span>). If your prior
+probability of inclusion (<span class="math inline">\(\pi\)</span>) is
+0.5 (meaning prior odds = 1), the Bayes Factor is simply the posterior
+odds:</p>
+<p><span class="math display">\[ \text{BF}_{10} = \frac{\text{PIP}}{1 -
+\text{PIP}} \]</span></p>
+<ul>
+<li><strong>PIP = 0.50</strong> <span class="math inline">\(\rightarrow\)</span> <span class="math inline">\(\text{BF}_{10} = 1\)</span> (No evidence)</li>
+<li><strong>PIP = 0.75</strong> <span class="math inline">\(\rightarrow\)</span> <span class="math inline">\(\text{BF}_{10} = 3\)</span> (Positive
+evidence)</li>
+<li><strong>PIP = 0.91</strong> <span class="math inline">\(\rightarrow\)</span> <span class="math inline">\(\text{BF}_{10} = 10\)</span> (Strong
+evidence)</li>
+</ul>
+</div>
+<div id="the-best-of-both-worlds-workflow-using-loowaic" class="section level3">
+<h3>The “Best of Both Worlds” Workflow (Using LOO/WAIC)</h3>
+<p>While you could theoretically compute WAIC/LOO for all <span class="math inline">\(2^K\)</span> combinations of breakpoints, doing so
+is computationally explosive. If you want to use information criteria to
+rigorously justify your final model choice, you can use a two-step
+workflow:</p>
+<ol style="list-style-type: decimal">
+<li><strong>Screening</strong>: Run the highly efficient
+<code>smoothbp_ss</code> model to compute the PIPs and identify
+plausible candidate breakpoints (e.g., those with PIP &gt; 0.4).</li>
+<li><strong>Refinement</strong>: Fit the standard <code>smoothbp</code>
+model (without spike-and-slab) for a few distinct, competing
+combinations of these top candidates (e.g., Model A with 1 breakpoint,
+Model B with 2 breakpoints).</li>
+<li><strong>Validation</strong>: Use <code>waic(fit_A)</code> and
+<code>waic(fit_B)</code> to compare the out-of-sample predictive
+accuracy of those specific models for your final reporting.</li>
+</ol>
+<hr />
+</div>
+</div>
+<div id="conclusion" class="section level2">
+<h2>Conclusion</h2>
+<p>By recognizing that <span class="math inline">\(\omega_k\)</span> is
+analytically the point of maximum structural curvature,
+<code>smoothbp</code> gives us a principled, closed-form basis for
+lead/lag analysis. The addition of hierarchical shrinkage and
+spike-and-slab selection allows the model to scale to complex discovery
+tasks where the number and timing of events are unknown, yet likely
+shared across a population.</p>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>

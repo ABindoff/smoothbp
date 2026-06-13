@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+
+
+<title>Breakpoint Selection with Spike-and-Slab Priors</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">Breakpoint Selection with Spike-and-Slab
+Priors</h1>
+
+
+
+<div id="when-to-use-spike-and-slab" class="section level2">
+<h2>When to use spike-and-slab</h2>
+<p>When fitting multi-breakpoint models, a central question is: <em>how
+many change-points does the data actually support?</em>
+<code>smoothbp_ss()</code> addresses this with a <strong>Kuo &amp;
+Mallick (1998) spike-and-slab</strong> prior on each slope-change
+coefficient <span class="math inline">\(\delta_k\)</span>.</p>
+<p>Each <span class="math inline">\(\delta_k\)</span> is paired with a
+binary inclusion indicator <span class="math inline">\(\gamma_k\)</span>:</p>
+<ul>
+<li><strong><span class="math inline">\(\gamma_k = 0\)</span>
+(spike)</strong>: <span class="math inline">\(\delta_k\)</span> is
+structurally zeroed — that breakpoint has no slope change and does not
+contribute to the mean.</li>
+<li><strong><span class="math inline">\(\gamma_k = 1\)</span>
+(slab)</strong>: <span class="math inline">\(\delta_k\)</span> follows a
+diffuse normal prior and participates in the model.</li>
+</ul>
+<p>The posterior mean of each <span class="math inline">\(\gamma_k\)</span> is the <strong>posterior
+inclusion probability (PIP)</strong> — the Bayesian probability that
+change-point <span class="math inline">\(k\)</span> is real. A PIP near
+1 means strong evidence for that breakpoint; a PIP near 0 means the data
+are consistent with no structural break there.</p>
+<blockquote>
+<p><strong>Tip</strong>: If you already know where a breakpoint occurred
+(e.g., a policy change or an intervention), you don’t need to estimate
+its location. Use the <code>fixed()</code> helper to test the
+intervention effect — see
+<code>vignette(&quot;intervention-analysis&quot;)</code>.</p>
+</blockquote>
+<hr />
+</div>
+<div id="example-1-identifying-the-number-of-real-breakpoints" class="section level2">
+<h2>Example 1: Identifying the number of real breakpoints</h2>
+<div id="simulate-data-with-one-true-breakpoint" class="section level3">
+<h3>Simulate data with one true breakpoint</h3>
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">library</span>(smoothbp)</span>
+<span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a><span class="fu">library</span>(posterior)</span>
+<span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="fu">library</span>(ggplot2)</span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a><span class="fu">library</span>(dplyr)</span>
+<span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a><span class="fu">library</span>(tidyr)</span>
+<span id="cb1-6"><a href="#cb1-6" tabindex="-1"></a></span>
+<span id="cb1-7"><a href="#cb1-7" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">42</span>)</span>
+<span id="cb1-8"><a href="#cb1-8" tabindex="-1"></a>n  <span class="ot">&lt;-</span> <span class="dv">200</span></span>
+<span id="cb1-9"><a href="#cb1-9" tabindex="-1"></a>tau <span class="ot">&lt;-</span> <span class="fu">seq</span>(<span class="dv">0</span>, <span class="dv">10</span>, <span class="at">length.out =</span> n)</span>
+<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a></span>
+<span id="cb1-11"><a href="#cb1-11" tabindex="-1"></a><span class="co"># True model: one breakpoint at omega = 5, delta = -1.0</span></span>
+<span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a>om_true    <span class="ot">&lt;-</span> <span class="dv">5</span></span>
+<span id="cb1-13"><a href="#cb1-13" tabindex="-1"></a>rho_true   <span class="ot">&lt;-</span> <span class="dv">4</span></span>
+<span id="cb1-14"><a href="#cb1-14" tabindex="-1"></a>b0_true    <span class="ot">&lt;-</span> <span class="dv">2</span></span>
+<span id="cb1-15"><a href="#cb1-15" tabindex="-1"></a>b1_true    <span class="ot">&lt;-</span> <span class="fl">0.5</span></span>
+<span id="cb1-16"><a href="#cb1-16" tabindex="-1"></a>delta_true <span class="ot">&lt;-</span> <span class="sc">-</span><span class="fl">1.0</span></span>
+<span id="cb1-17"><a href="#cb1-17" tabindex="-1"></a></span>
+<span id="cb1-18"><a href="#cb1-18" tabindex="-1"></a>di  <span class="ot">&lt;-</span> tau <span class="sc">-</span> om_true</span>
+<span id="cb1-19"><a href="#cb1-19" tabindex="-1"></a>si  <span class="ot">&lt;-</span> <span class="fu">plogis</span>(di <span class="sc">*</span> rho_true)</span>
+<span id="cb1-20"><a href="#cb1-20" tabindex="-1"></a>mu  <span class="ot">&lt;-</span> b0_true <span class="sc">+</span> b1_true <span class="sc">*</span> di <span class="sc">+</span> delta_true <span class="sc">*</span> di <span class="sc">*</span> si</span>
+<span id="cb1-21"><a href="#cb1-21" tabindex="-1"></a>y   <span class="ot">&lt;-</span> mu <span class="sc">+</span> <span class="fu">rnorm</span>(n, <span class="at">sd =</span> <span class="fl">0.2</span>)</span>
+<span id="cb1-22"><a href="#cb1-22" tabindex="-1"></a>dat <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(<span class="at">y =</span> y, <span class="at">tau =</span> tau)</span></code></pre></div>
+</div>
+<div id="fit-a-3-breakpoint-ss-model" class="section level3">
+<h3>Fit a 3-breakpoint SS model</h3>
+<p>We let the model have 3 candidate breakpoints but expect only one to
+receive a high PIP:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a>fit_ss <span class="ot">&lt;-</span> <span class="fu">smoothbp_ss</span>(</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>  <span class="at">formula =</span> y <span class="sc">~</span> tau,</span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>  <span class="at">b0      =</span> <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a>  <span class="at">b1      =</span> <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a>  <span class="at">deltas  =</span> <span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>),</span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a>  <span class="at">omega   =</span> <span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>),</span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a>  <span class="at">rho     =</span> <span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>, <span class="sc">~</span> <span class="dv">1</span>),</span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a>  <span class="at">data    =</span> dat,</span>
+<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a>  <span class="at">spike   =</span> <span class="fu">prior_spike_slab</span>(<span class="at">pi =</span> <span class="fl">0.1</span>, <span class="at">learn_pi =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb2-10"><a href="#cb2-10" tabindex="-1"></a>  <span class="at">priors  =</span> <span class="fu">smoothbp_priors</span>(</span>
+<span id="cb2-11"><a href="#cb2-11" tabindex="-1"></a>    <span class="at">omega =</span> <span class="fu">space_omega_priors</span>(<span class="at">K =</span> <span class="dv">3</span>, <span class="at">tau_min =</span> <span class="dv">0</span>, <span class="at">tau_max =</span> <span class="dv">10</span>)</span>
+<span id="cb2-12"><a href="#cb2-12" tabindex="-1"></a>  ),</span>
+<span id="cb2-13"><a href="#cb2-13" tabindex="-1"></a>  <span class="at">chains =</span> <span class="dv">2</span>, <span class="at">iter =</span> <span class="dv">2000</span>, <span class="at">warmup =</span> <span class="dv">1000</span>, <span class="at">seed =</span> <span class="dv">42</span></span>
+<span id="cb2-14"><a href="#cb2-14" tabindex="-1"></a>)</span>
+<span id="cb2-15"><a href="#cb2-15" tabindex="-1"></a><span class="co">#&gt; Building design matrices...</span></span>
+<span id="cb2-16"><a href="#cb2-16" tabindex="-1"></a><span class="co">#&gt; Running sampler...</span></span></code></pre></div>
+</div>
+<div id="inspect-posterior-inclusion-probabilities" class="section level3">
+<h3>Inspect posterior inclusion probabilities</h3>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a><span class="fu">pip</span>(fit_ss)</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a><span class="co">#&gt;           Parameter   PIP Lower 95% Upper 95%</span></span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="co">#&gt;      b1_(Intercept) 1.000     0.998     1.000</span></span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="co">#&gt;  delta1_(Intercept) 0.209     0.192     0.227</span></span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co">#&gt;  delta2_(Intercept) 0.565     0.543     0.587</span></span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt;  delta3_(Intercept) 0.558     0.536     0.580</span></span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt;  gamma_b1_(Intercept) gamma_delta1_(Intercept) gamma_delta2_(Intercept) gamma_delta3_(Intercept)</span></span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt;                  1.00                     0.06                     0.98                     0.04</span></span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a></span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co"># Full posterior summary (just the gammas)</span></span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="fu">summarise_draws</span>(fit_ss<span class="sc">$</span>draws) <span class="sc">|&gt;</span></span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a>  <span class="fu">filter</span>(<span class="fu">grepl</span>(<span class="st">&quot;^gamma_delta&quot;</span>, variable))</span>
+<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a><span class="co">#&gt; # A tibble: 3 × 10</span></span>
+<span id="cb3-14"><a href="#cb3-14" tabindex="-1"></a><span class="co">#&gt;   variable                  mean median    sd   mad    q5   q95  rhat ess_bulk ess_tail</span></span>
+<span id="cb3-15"><a href="#cb3-15" tabindex="-1"></a><span class="co">#&gt;   &lt;chr&gt;                    &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt;    &lt;dbl&gt;    &lt;dbl&gt;</span></span>
+<span id="cb3-16"><a href="#cb3-16" tabindex="-1"></a><span class="co">#&gt; 1 gamma_delta1_(Intercept) 0.209      0 0.407     0     0     1  1.01    29.8        NA</span></span>
+<span id="cb3-17"><a href="#cb3-17" tabindex="-1"></a><span class="co">#&gt; 2 gamma_delta2_(Intercept) 0.565      1 0.496     0     0     1  2.38     2.47       NA</span></span>
+<span id="cb3-18"><a href="#cb3-18" tabindex="-1"></a><span class="co">#&gt; 3 gamma_delta3_(Intercept) 0.558      1 0.497     0     0     1  2.47     2.45       NA</span></span></code></pre></div>
+<p>The second candidate breakpoint has a PIP near 1, matching the
+data-generating truth (omega = 5 maps to the second candidate position).
+The other two breakpoints are effectively excluded.</p>
+<hr />
+</div>
+</div>
+<div id="example-2-regularization-prevents-overfitting" class="section level2">
+<h2>Example 2: Regularization prevents overfitting</h2>
+<p>We demonstrate that fitting a 3-BP model to 1-BP data does
+<strong>not</strong> overfit when using spike-and-slab priors.</p>
+<div id="visualise-posterior-inclusion-probabilities" class="section level3">
+<h3>Visualise posterior inclusion probabilities</h3>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a><span class="co"># The plot method automatically computes and plots the PIPs along with their 95% HDI</span></span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a><span class="fu">plot</span>(<span class="fu">pip</span>(fit_ss))</span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a><span class="co">#&gt; `height` was translated to `width`.</span></span></code></pre></div>
+<p><img role="img" src="data:image/png;base64,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" /><!-- --></p>
+<hr />
+</div>
+</div>
+<div id="example-3-visualising-model-fit" class="section level2">
+<h2>Example 3: Visualising model fit</h2>
+<p>The spike-and-slab model allows us to perform model selection and
+estimation simultaneously. We can overlay the posterior mean trajectory
+and its 95% credible interval on the true data-generating function:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="co"># Get posterior predictions (mean and intervals)</span></span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>pred <span class="ot">&lt;-</span> <span class="fu">fitted</span>(fit_ss)</span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>plot_df <span class="ot">&lt;-</span> dat <span class="sc">%&gt;%</span></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>    <span class="at">mu_true =</span> mu,  <span class="co"># &#39;mu&#39; is from the simulation step</span></span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>    <span class="at">mu_fit  =</span> pred<span class="sc">$</span>fitted_mean,</span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a>    <span class="at">lo      =</span> pred<span class="sc">$</span>fitted_Q2<span class="fl">.5</span>,</span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a>    <span class="at">hi      =</span> pred<span class="sc">$</span>fitted_Q97<span class="fl">.5</span></span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a>  )</span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a></span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a><span class="fu">ggplot</span>(plot_df, <span class="fu">aes</span>(<span class="at">x =</span> tau)) <span class="sc">+</span></span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a>  <span class="fu">geom_point</span>(<span class="fu">aes</span>(<span class="at">y =</span> y), <span class="at">alpha =</span> <span class="fl">0.3</span>, <span class="at">size =</span> <span class="dv">1</span>) <span class="sc">+</span></span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a>  <span class="fu">geom_ribbon</span>(<span class="fu">aes</span>(<span class="at">ymin =</span> lo, <span class="at">ymax =</span> hi), <span class="at">fill =</span> <span class="st">&quot;#2c7bb6&quot;</span>, <span class="at">alpha =</span> <span class="fl">0.2</span>) <span class="sc">+</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a>  <span class="fu">geom_line</span>(<span class="fu">aes</span>(<span class="at">y =</span> mu_true, <span class="at">colour =</span> <span class="st">&quot;Truth&quot;</span>), <span class="at">linewidth =</span> <span class="dv">1</span>) <span class="sc">+</span></span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a>  <span class="fu">geom_line</span>(<span class="fu">aes</span>(<span class="at">y =</span> mu_fit,  <span class="at">colour =</span> <span class="st">&quot;smoothbp_ss&quot;</span>), <span class="at">linewidth =</span> <span class="fl">0.8</span>, <span class="at">linetype =</span> <span class="st">&quot;dashed&quot;</span>) <span class="sc">+</span></span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a>  <span class="fu">scale_colour_manual</span>(<span class="at">values =</span> <span class="fu">c</span>(<span class="st">&quot;Truth&quot;</span> <span class="ot">=</span> <span class="st">&quot;black&quot;</span>, <span class="st">&quot;smoothbp_ss&quot;</span> <span class="ot">=</span> <span class="st">&quot;#d7191c&quot;</span>)) <span class="sc">+</span></span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a>  <span class="fu">labs</span>(</span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a>    <span class="at">title =</span> <span class="st">&quot;Model fit: Truth vs Posterior Predictions&quot;</span>,</span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a>    <span class="at">subtitle =</span> <span class="st">&quot;The SS model correctly ignores the 2 redundant breakpoints and recovers the trajectory.&quot;</span>,</span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a>    <span class="at">x =</span> <span class="st">&quot;Time (tau)&quot;</span>, <span class="at">y =</span> <span class="st">&quot;Response (y)&quot;</span>, <span class="at">colour =</span> <span class="cn">NULL</span></span>
+<span id="cb5-22"><a href="#cb5-22" tabindex="-1"></a>  ) <span class="sc">+</span></span>
+<span id="cb5-23"><a href="#cb5-23" tabindex="-1"></a>  <span class="fu">theme_minimal</span>()</span></code></pre></div>
+<p><img role="img" src="data:image/png;base64,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" /><!-- --></p>
+<hr />
+</div>
+<div id="example-4-learning-the-inclusion-probability" class="section level2">
+<h2>Example 4: Learning the inclusion probability</h2>
+<p>When you have many candidate breakpoints, setting a fixed prior <span class="math inline">\(\pi\)</span> can be influential. Setting
+<code>learn_pi = TRUE</code> places a Beta hyperprior on a shared <span class="math inline">\(\pi\)</span> and lets the data inform the overall
+sparsity level.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>fit_lpi <span class="ot">&lt;-</span> <span class="fu">smoothbp_ss</span>(</span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a>  <span class="at">formula =</span> y <span class="sc">~</span> tau,</span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a>  <span class="at">b0      =</span> <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a>  <span class="at">b1      =</span> <span class="sc">~</span> <span class="dv">1</span>,</span>
+<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a>  <span class="at">deltas  =</span> <span class="fu">rep</span>(<span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>), <span class="dv">5</span>),   <span class="co"># 5 candidate breakpoints</span></span>
+<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a>  <span class="at">omega   =</span> <span class="fu">rep</span>(<span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>), <span class="dv">5</span>),</span>
+<span id="cb6-7"><a href="#cb6-7" tabindex="-1"></a>  <span class="at">rho     =</span> <span class="fu">rep</span>(<span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>), <span class="dv">5</span>),</span>
+<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a>  <span class="at">data    =</span> dat,</span>
+<span id="cb6-9"><a href="#cb6-9" tabindex="-1"></a>  <span class="at">spike   =</span> <span class="fu">prior_spike_slab</span>(</span>
+<span id="cb6-10"><a href="#cb6-10" tabindex="-1"></a>    <span class="at">learn_pi =</span> <span class="cn">TRUE</span>,</span>
+<span id="cb6-11"><a href="#cb6-11" tabindex="-1"></a>    <span class="at">a        =</span> <span class="dv">1</span>,   <span class="co"># Beta(1, 4) prior on pi: mean = 0.2</span></span>
+<span id="cb6-12"><a href="#cb6-12" tabindex="-1"></a>    <span class="at">b        =</span> <span class="dv">4</span></span>
+<span id="cb6-13"><a href="#cb6-13" tabindex="-1"></a>  ),</span>
+<span id="cb6-14"><a href="#cb6-14" tabindex="-1"></a>  <span class="at">chains =</span> <span class="dv">2</span>, <span class="at">iter =</span> <span class="dv">3000</span>, <span class="at">warmup =</span> <span class="dv">1500</span>, <span class="at">seed =</span> <span class="dv">42</span></span>
+<span id="cb6-15"><a href="#cb6-15" tabindex="-1"></a>)</span>
+<span id="cb6-16"><a href="#cb6-16" tabindex="-1"></a><span class="co">#&gt; Building design matrices...</span></span>
+<span id="cb6-17"><a href="#cb6-17" tabindex="-1"></a><span class="co">#&gt; Running sampler...</span></span>
+<span id="cb6-18"><a href="#cb6-18" tabindex="-1"></a></span>
+<span id="cb6-19"><a href="#cb6-19" tabindex="-1"></a><span class="co"># Posterior for pi (sparsity level)</span></span>
+<span id="cb6-20"><a href="#cb6-20" tabindex="-1"></a>pi_draws <span class="ot">&lt;-</span> <span class="fu">as.numeric</span>(<span class="fu">as_draws_matrix</span>(fit_lpi<span class="sc">$</span>draws)[, <span class="st">&quot;pi&quot;</span>])</span>
+<span id="cb6-21"><a href="#cb6-21" tabindex="-1"></a><span class="fu">quantile</span>(pi_draws, <span class="fu">c</span>(<span class="fl">0.025</span>, <span class="fl">0.5</span>, <span class="fl">0.975</span>))</span>
+<span id="cb6-22"><a href="#cb6-22" tabindex="-1"></a><span class="co">#&gt;       2.5%        50%      97.5% </span></span>
+<span id="cb6-23"><a href="#cb6-23" tabindex="-1"></a><span class="co">#&gt; 0.06511918 0.28088295 0.59577328</span></span>
+<span id="cb6-24"><a href="#cb6-24" tabindex="-1"></a><span class="co">#&gt;  2.5%  50%  97.5%</span></span>
+<span id="cb6-25"><a href="#cb6-25" tabindex="-1"></a><span class="co">#&gt;  0.04 0.20   0.47</span></span>
+<span id="cb6-26"><a href="#cb6-26" tabindex="-1"></a><span class="co"># Contracted toward sparsity: only ~1/5 breakpoints are real</span></span></code></pre></div>
+<hr />
+</div>
+<div id="practical-guidance" class="section level2">
+<h2>Practical guidance</h2>
+<div id="choosing-the-slab-width" class="section level3">
+<h3>Choosing the slab width</h3>
+<p>The slab standard deviation controls the range of plausible non-zero
+slope changes. Match the slab width to your expected effect scale:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Expected slope change</th>
+<th>Suggested slab</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Small (&lt; 0.5)</td>
+<td><code>prior_normal(0, 0.5)</code></td>
+</tr>
+<tr class="even">
+<td>Moderate (0.5–2)</td>
+<td><code>prior_normal(0, 1)</code></td>
+</tr>
+<tr class="odd">
+<td>Large / uncertain</td>
+<td><code>prior_normal(0, 2)</code></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div id="interpreting-pips" class="section level3">
+<h3>Interpreting PIPs</h3>
+<table>
+<thead>
+<tr class="header">
+<th>PIP</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>&gt; 0.95</td>
+<td>Strong evidence for that breakpoint</td>
+</tr>
+<tr class="even">
+<td>0.75–0.95</td>
+<td>Moderate evidence</td>
+</tr>
+<tr class="odd">
+<td>0.25–0.75</td>
+<td>Inconclusive</td>
+</tr>
+<tr class="even">
+<td>&lt; 0.25</td>
+<td>Little evidence — breakpoint not needed</td>
+</tr>
+</tbody>
+</table>
+<p>For formal model selection, the <strong>median probability
+model</strong> includes all breakpoints with PIP &gt; 0.5.</p>
+</div>
+<div id="diagnosing-the-sampler" class="section level3">
+<h3>Diagnosing the sampler</h3>
+<p>The gamma indicators should switch between 0 and 1 frequently during
+sampling. Check with:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="co"># Gamma trace plots — look for healthy switching</span></span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a><span class="fu">trace_plot</span>(fit_ss, <span class="at">pars =</span> <span class="fu">grep</span>(<span class="st">&quot;^gamma_delta&quot;</span>, posterior<span class="sc">::</span><span class="fu">variables</span>(fit_ss<span class="sc">$</span>draws), <span class="at">value =</span> <span class="cn">TRUE</span>))</span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a><span class="co">#&gt; 3 parameter(s) flagged (Rhat &gt; 1.05 or ESS &lt; 100): gamma_delta1_(Intercept) (1.006), gamma_delta2_(Intercept) (2.772), gamma_delta3_(Intercept) (2.935)</span></span></code></pre></div>
+<p><img role="img" src="data:image/png;base64,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" /><!-- --></p>
+<p>If a gamma is stuck at 1 across all iterations, consider: - Widening
+the slab (the prior may be too narrow to allow exclusion). - Checking
+the prior on omega (a badly-placed omega prior can pin the breakpoint in
+an implausible region).</p>
+<p>If a gamma is stuck at 0, the breakpoint is genuinely not supported
+by the data — this is the desired behaviour.</p>
+<hr />
+</div>
+</div>
+<div id="comparing-smoothbp_ss-against-smoothbp-with-loo" class="section level2">
+<h2>Comparing <code>smoothbp_ss</code> against <code>smoothbp</code>
+with LOO</h2>
+<p>Spike-and-slab and LOO are complementary model-selection tools:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a><span class="co"># Fit explicit 0-BP and 1-BP models for context</span></span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>fit0 <span class="ot">&lt;-</span> <span class="fu">smoothbp</span>(y <span class="sc">~</span> tau, <span class="at">deltas =</span> <span class="fu">list</span>(), <span class="at">omega =</span> <span class="fu">list</span>(), <span class="at">rho =</span> <span class="fu">list</span>(),</span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>                 <span class="at">data =</span> dat, <span class="at">chains =</span> <span class="dv">2</span>, <span class="at">iter =</span> <span class="dv">2000</span>, <span class="at">warmup =</span> <span class="dv">1000</span>)</span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a><span class="co">#&gt; Building design matrices...</span></span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a><span class="co">#&gt; Running sampler...</span></span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>fit1 <span class="ot">&lt;-</span> <span class="fu">smoothbp</span>(y <span class="sc">~</span> tau, <span class="at">deltas =</span> <span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>), <span class="at">omega =</span> <span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>), <span class="at">rho =</span> <span class="fu">list</span>(<span class="sc">~</span> <span class="dv">1</span>),</span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a>                 <span class="at">data =</span> dat, <span class="at">chains =</span> <span class="dv">2</span>, <span class="at">iter =</span> <span class="dv">2000</span>, <span class="at">warmup =</span> <span class="dv">1000</span>)</span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a><span class="co">#&gt; Building design matrices...</span></span>
+<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a><span class="co">#&gt; Running sampler...</span></span>
+<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a></span>
+<span id="cb8-11"><a href="#cb8-11" tabindex="-1"></a><span class="co"># LOO comparison: fixed-dimension vs spike-and-slab</span></span>
+<span id="cb8-12"><a href="#cb8-12" tabindex="-1"></a>loo<span class="sc">::</span><span class="fu">loo_compare</span>(<span class="fu">loo</span>(fit1), <span class="fu">loo</span>(fit_ss))</span>
+<span id="cb8-13"><a href="#cb8-13" tabindex="-1"></a><span class="co">#&gt; Warning: Some Pareto k diagnostic values are too high. See help(&#39;pareto-k-diagnostic&#39;) for details.</span></span>
+<span id="cb8-14"><a href="#cb8-14" tabindex="-1"></a><span class="co">#&gt;        elpd_diff se_diff</span></span>
+<span id="cb8-15"><a href="#cb8-15" tabindex="-1"></a><span class="co">#&gt; model1 0.0       0.0    </span></span>
+<span id="cb8-16"><a href="#cb8-16" tabindex="-1"></a><span class="co">#&gt; model2 0.0       0.2</span></span>
+<span id="cb8-17"><a href="#cb8-17" tabindex="-1"></a><span class="co">#&gt;       elpd_diff se_diff</span></span>
+<span id="cb8-18"><a href="#cb8-18" tabindex="-1"></a><span class="co">#&gt; fit1    0.0       0.0</span></span>
+<span id="cb8-19"><a href="#cb8-19" tabindex="-1"></a><span class="co">#&gt; fit_ss -0.2       0.4   # Both models perform identically</span></span>
+<span id="cb8-20"><a href="#cb8-20" tabindex="-1"></a></span>
+<span id="cb8-21"><a href="#cb8-21" tabindex="-1"></a><span class="co"># PIP from the SS model agrees:</span></span>
+<span id="cb8-22"><a href="#cb8-22" tabindex="-1"></a><span class="fu">pip</span>(fit_ss)[<span class="st">&quot;gamma_delta2_(Intercept)&quot;</span>,]</span>
+<span id="cb8-23"><a href="#cb8-23" tabindex="-1"></a><span class="co">#&gt;           Parameter   PIP Lower 95% Upper 95%</span></span>
+<span id="cb8-24"><a href="#cb8-24" tabindex="-1"></a><span class="co">#&gt;  delta2_(Intercept) 0.565     0.543     0.587</span></span>
+<span id="cb8-25"><a href="#cb8-25" tabindex="-1"></a><span class="co">#&gt; 0.98</span></span></code></pre></div>
+<p>Both approaches correctly identify that one breakpoint is
+present.</p>
+<hr />
+</div>
+<div id="references" class="section level2">
+<h2>References</h2>
+<ul>
+<li>Kuo, L. and Mallick, B. (1998). Variable selection for regression
+models. <em>Sankhya B</em>, 60(1):65–81.</li>
+<li>Barbieri, M. M. and Berger, J. O. (2004). Optimal predictive model
+selection. <em>Annals of Statistics</em>, 32(3):870–897.</li>
+</ul>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>
