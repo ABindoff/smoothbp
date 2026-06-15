@@ -30,3 +30,5 @@
 ^tools/part3_validation\.R$
 ^HANDOFF_0\.2\.4_release\.md$
 ^repomix-output-ABindoff-smoothbp\.xml$
+^smoothbp_manuscript\.
+\.tar\.gz$

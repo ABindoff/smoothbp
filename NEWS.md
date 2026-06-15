@@ -1,3 +1,13 @@
+# smoothbp 0.2.5
+
+* Added `derivative()` generic and methods for `smoothbp_fit` and
+  `smoothbp_ss_fit`. Computes the posterior d-th derivative of the
+  conditional mean with respect to tau at each row of a user-supplied
+  data frame, with full credible-interval propagation. Orders 1--4 are
+  supported via central finite differences; provide a subject column to
+  condition on subject-level change-point timing or omit it for
+  population-level derivatives.
+
 # smoothbp 0.2.4
 
 * Removed the experimental `re_fraction` argument (added in 0.2.3 dev,
