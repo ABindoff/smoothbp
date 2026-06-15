@@ -43,12 +43,14 @@ $(STATLIB):
 
 	# Build the project using Cargo with additional flags
 	export CARGO_HOME="$(CARGOTMP)" && \
+	export MAKEFLAGS="" && \
 	export LIBRARY_PATH="$(LIBRARY_PATH);$(CURDIR)/$(TARGET_DIR)/libgcc_mock" && \
 	RUSTFLAGS="$(RUSTFLAGS) --print=native-static-libs" cargo build @CRAN_FLAGS@ --target=$(TARGET) --lib @PROFILE@ --manifest-path=rust/Cargo.toml --target-dir=$(TARGET_DIR)
 
 	# Generate wrappers. Set same LIBRARY_PATH as the lib build so the linker
 	# can find libgcc_eh.a (mocked by the libgcc_mock stub created above).
 	export CARGO_HOME="$(CARGOTMP)" && \
+	export MAKEFLAGS="" && \
 	export LIBRARY_PATH="$(LIBRARY_PATH);$(CURDIR)/$(TARGET_DIR)/libgcc_mock" && \
 	cargo run @CRAN_FLAGS@ @PROFILE@ --bin document --target $(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR)
 

@@ -12,6 +12,12 @@ for 0.2.4:
    (smoothbp_manuscript.aux/.log/.out/.pdf) were present at the package root
    from local manuscript compilation. These are now excluded via .Rbuildignore.
 
+3. Parallel make: `src/Makevars.in` and `src/Makevars.win.in` now set
+   `MAKEFLAGS=""` immediately before each `cargo` invocation. This prevents
+   cargo from inheriting the jobserver file-descriptor tokens that `make -jN`
+   places in MAKEFLAGS, which caused "jobserver unavailable" warnings (and
+   potential hangs) on CRAN build hosts that use parallel make.
+
 The Rust release profile remains `lto = "thin"` (the fix from the 0.2.4
 fedora-clang resubmission).
 
