@@ -1,11 +1,14 @@
-# smoothbp 0.2.6
+# smoothbp 0.2.7
 
-* Fixed installation on platforms where `libR` is not in the default linker
-  or dynamic-library search path (M1/ARM macOS, Alpine musl Linux). The
-  `cargo run --bin document` wrapper-generation step now runs only when
-  `NOT_CRAN` is set (i.e. during development), since the generated files
-  (`R/extendr-wrappers.R`, `src/entrypoint.c`) are pre-built and committed
-  in the source package.
+* Fixed installation on any platform where R was not built as a shared
+  library (`--enable-R-shlib`). The `cargo run --bin document` step
+  — which compiled and ran a binary that links against `libR` — has been
+  removed from `src/Makevars.in` and `src/Makevars.win.in`. The generated
+  wrapper files (`R/extendr-wrappers.R`, `src/entrypoint.c`) are
+  pre-built and committed in the source package; regeneration during
+  installation is neither necessary nor portable.
+
+# smoothbp 0.2.6
 
 # smoothbp 0.2.5
 

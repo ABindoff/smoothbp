@@ -39,16 +39,6 @@ $(STATLIB):
 	export PATH="$(PATH):$(HOME)/.cargo/bin" && \
 	@PANIC_EXPORTS@RUSTFLAGS="$(RUSTFLAGS) --print=native-static-libs" cargo build @CRAN_FLAGS@ --lib @PROFILE@ --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR) @TARGET@
 
-	# The document binary requires libR at link/run time, which is unavailable
-	# on some platforms (M1mac, musl). The generated wrappers are pre-built in
-	# the source package, so regeneration is only needed during development.
-	if [ "$$NOT_CRAN" != "" ]; then \
-		export CARGO_HOME="$(CARGOTMP)" && \
-		export MAKEFLAGS="" && \
-		export PATH="$(PATH):$(HOME)/.cargo/bin" && \
-		cargo run @CRAN_FLAGS@ @PROFILE@ --bin document --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR) @TARGET@; \
-	fi
-
 	# Always clean up CARGOTMP
 	rm -Rf $(CARGOTMP);
 
