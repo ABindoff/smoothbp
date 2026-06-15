@@ -1,25 +1,34 @@
-## Resubmission (0.2.5)
+## Resubmission (0.2.6)
 
-This resubmission addresses two issues flagged in the CRAN incoming pre-checks
-for 0.2.4:
+This resubmission fixes installation failures on M1/ARM macOS and Alpine
+musl Linux that were present in 0.2.5 (and reported against 0.2.4 in the
+CRAN additional-issues checks).
 
-1. Version increment: 0.2.4 was already in CRAN's incoming queue from a prior
-   resubmission fixing a Rust compilation timeout on r-devel-linux-x86_64-
-   fedora-clang. The version has been incremented to 0.2.5 to allow processing.
-   The 0.2.5 release also adds the new `derivative()` method (see NEWS.md).
+### Root cause
 
-2. Non-standard top-level files: LaTeX build artefacts
-   (smoothbp_manuscript.aux/.log/.out/.pdf) were present at the package root
-   from local manuscript compilation. These are now excluded via .Rbuildignore.
+`src/Makevars.in` and `src/Makevars.win.in` unconditionally ran
+`cargo run --bin document` to regenerate the extendr R-wrapper code.
+This binary links against `libR`, which is not on the default linker or
+dynamic-library search path on M1mac (causing "Library not loaded:
+libR.dylib" at run time) and Alpine musl (causing "cannot find -lR" at
+link time).
 
-3. Parallel make: `src/Makevars.in` and `src/Makevars.win.in` now set
-   `MAKEFLAGS=""` immediately before each `cargo` invocation. This prevents
-   cargo from inheriting the jobserver file-descriptor tokens that `make -jN`
-   places in MAKEFLAGS, which caused "jobserver unavailable" warnings (and
-   potential hangs) on CRAN build hosts that use parallel make.
+### Fix
 
-The Rust release profile remains `lto = "thin"` (the fix from the 0.2.4
-fedora-clang resubmission).
+The `cargo run --bin document` step is now guarded by `NOT_CRAN`. When
+`NOT_CRAN` is unset (all CRAN build environments), the step is skipped;
+the pre-built `R/extendr-wrappers.R` and `src/entrypoint.c` committed in
+the source package are used instead. The step still runs in development
+builds where `NOT_CRAN` is set, so wrapper regeneration after Rust API
+changes is unaffected.
+
+### Other fixes carried forward from 0.2.5
+
+1. Version increment from 0.2.4 (CRAN incoming-queue duplicate).
+2. `.Rbuildignore`: LaTeX build artefacts and old source tarballs excluded.
+3. `MAKEFLAGS=""` set before each `cargo` invocation (parallel-make fix
+   per private note from Prof Ripley).
+4. New `derivative()` method (see NEWS.md).
 
 ## R CMD check results
 
@@ -28,25 +37,18 @@ fedora-clang resubmission).
 ## Test environments
 
 * Local Windows 11, R 4.6.0
-* win-builder: R-devel — OK
-* win-builder: R-release — OK
-* macOS builder (mac.r-project.org): R-release — OK (0 errors, 0 warnings,
-  0 notes on pre-built vignettes)
+* win-builder: R-devel — 1 NOTE ("Days since last update: 1", expected)
+* win-builder: R-release — 1 NOTE (same)
 
 ## Test suite note
 
 One test (`smoothbp recovers parameters on simulated data`) is wrapped in
-`skip_on_cran()`. It is a stochastic coverage test requiring ~60 s of MCMC
-sampling, unsuitable for CRAN infrastructure.
+`skip_on_cran()`. It requires ~60 s of MCMC sampling.
 
 ## Downstream dependencies
 
-None. No reverse dependencies exist.
+None.
 
 ## Changes since last CRAN release (0.2.2)
 
-See NEWS.md. Key changes:
-
-- 0.2.3: Fixed per-subject NUTS adaptation bug in random change-point models.
-- 0.2.4: Removed the experimental `re_fraction` argument.
-- 0.2.5: Added `derivative()` method; excluded manuscript build artefacts.
+See NEWS.md.

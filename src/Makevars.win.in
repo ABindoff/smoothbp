@@ -47,12 +47,15 @@ $(STATLIB):
 	export LIBRARY_PATH="$(LIBRARY_PATH);$(CURDIR)/$(TARGET_DIR)/libgcc_mock" && \
 	RUSTFLAGS="$(RUSTFLAGS) --print=native-static-libs" cargo build @CRAN_FLAGS@ --target=$(TARGET) --lib @PROFILE@ --manifest-path=rust/Cargo.toml --target-dir=$(TARGET_DIR)
 
-	# Generate wrappers. Set same LIBRARY_PATH as the lib build so the linker
-	# can find libgcc_eh.a (mocked by the libgcc_mock stub created above).
-	export CARGO_HOME="$(CARGOTMP)" && \
-	export MAKEFLAGS="" && \
-	export LIBRARY_PATH="$(LIBRARY_PATH);$(CURDIR)/$(TARGET_DIR)/libgcc_mock" && \
-	cargo run @CRAN_FLAGS@ @PROFILE@ --bin document --target $(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR)
+	# The document binary requires libR at link/run time, which is unavailable
+	# on some platforms (M1mac, musl). The generated wrappers are pre-built in
+	# the source package, so regeneration is only needed during development.
+	if [ "$$NOT_CRAN" != "" ]; then \
+		export CARGO_HOME="$(CARGOTMP)" && \
+		export MAKEFLAGS="" && \
+		export LIBRARY_PATH="$(LIBRARY_PATH);$(CURDIR)/$(TARGET_DIR)/libgcc_mock" && \
+		cargo run @CRAN_FLAGS@ @PROFILE@ --bin document --target $(TARGET) --manifest-path=./rust/Cargo.toml --target-dir $(TARGET_DIR); \
+	fi
 
 	# Always clean up CARGOTMP
 	rm -Rf "$(CARGOTMP)";

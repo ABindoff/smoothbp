@@ -1,3 +1,12 @@
+# smoothbp 0.2.6
+
+* Fixed installation on platforms where `libR` is not in the default linker
+  or dynamic-library search path (M1/ARM macOS, Alpine musl Linux). The
+  `cargo run --bin document` wrapper-generation step now runs only when
+  `NOT_CRAN` is set (i.e. during development), since the generated files
+  (`R/extendr-wrappers.R`, `src/entrypoint.c`) are pre-built and committed
+  in the source package.
+
 # smoothbp 0.2.5
 
 * Added `derivative()` generic and methods for `smoothbp_fit` and
