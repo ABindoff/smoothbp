@@ -246,3 +246,47 @@ test_that("bayes_factor() compares two smoothbp_fit objects", {
   expect_true(is.numeric(bf$bf))
   expect_length(bf$bf, 1L)
 })
+
+# ===========================================================================
+# update() — stored arguments round-trip (cores, spike-and-slab)
+# ===========================================================================
+
+test_that("update() round-trips cores and tolerates legacy fits without it", {
+  skip_on_cran()
+
+  dat <- .minimal_sim(seed = 303L)
+  fit <- .minimal_fit(dat, seed = 303L)
+
+  expect_identical(fit$cores, 1L)          # now stored on the object
+  fit2 <- update(fit, .verbose = FALSE)
+  expect_identical(fit2$cores, 1L)
+
+  # fits saved before `cores` was stored: NULL must not break update()
+  fit$cores <- NULL
+  fit3 <- update(fit, .verbose = FALSE)
+  expect_s3_class(fit3, "smoothbp_fit")
+  expect_identical(fit3$cores, 1L)
+})
+
+test_that("update() on a spike-and-slab fit preserves the ss structure", {
+  skip_on_cran()
+
+  dat <- .minimal_sim(seed = 404L)
+  fit <- smoothbp_ss(y ~ tau, data = dat,
+                     priors = smoothbp_priors(omega = prior_normal(3, 2, lb = 0)),
+                     chains = 1L, iter = 300L, warmup = 150L,
+                     seed = 404L, .verbose = FALSE)
+
+  fit2 <- update(fit, .verbose = FALSE)
+  expect_s3_class(fit2, "smoothbp_ss_fit")   # NOT silently refit as non-ss
+  expect_true(any(grepl("^gamma_", posterior::variables(fit2$draws))))
+  expect_identical(fit2$b1_spike, fit$b1_spike)
+  expect_identical(fit2$spike, fit$spike)
+
+  # legacy ss fit without stored b1_spike: inferred from the draws (gamma_b1_
+  # indicators are frozen at 1 when b1_spike was FALSE, so it infers FALSE)
+  fit$b1_spike <- NULL
+  fit3 <- update(fit, .verbose = FALSE)
+  expect_s3_class(fit3, "smoothbp_ss_fit")
+  expect_false(fit3$b1_spike)
+})

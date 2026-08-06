@@ -297,6 +297,7 @@ smoothbp <- function(
       iter          = as.integer(iter),
       warmup        = as.integer(warmup),
       seed          = as.integer(seed),
+      cores         = as.integer(max(1L, cores)),
       step_om       = step_om,
       step_rho      = step_rho,
       target_accept = target_accept,
@@ -355,7 +356,11 @@ update.smoothbp_fit <- function(
   if (missing(iter))         iter         <- object$iter
   if (missing(warmup))       warmup       <- object$warmup
   if (missing(seed))         seed         <- object$seed
-  if (missing(cores))        cores        <- object$cores
+  if (missing(cores)) {
+    # fits saved before `cores` was stored on the object return NULL here
+    cores <- if (is.null(object$cores)) getOption("smoothbp.cores", 1L)
+             else object$cores
+  }
   if (missing(step_om))        step_om        <- object$step_om
   if (missing(step_rho))       step_rho       <- object$step_rho
   if (missing(target_accept))  target_accept  <- object$target_accept

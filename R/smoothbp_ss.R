@@ -315,11 +315,13 @@ smoothbp_ss <- function(
       iter          = as.integer(iter),
       warmup        = as.integer(warmup),
       seed          = as.integer(seed),
+      cores         = as.integer(max(1L, cores)),
       step_om       = step_om,
       step_rho      = step_rho,
       target_accept = target_accept,
       priors        = priors,
       spike         = spike,
+      b1_spike      = isTRUE(b1_spike),
       hierarchical  = hierarchical,
       n_divergent   = as.integer(sum(raw$n_divergent)),
       n_divergent_by_block = list(
@@ -329,5 +331,94 @@ smoothbp_ss <- function(
       )
     ),
     class = c("smoothbp_ss_fit", "smoothbp_fit")
+  )
+}
+
+#' Update a fitted spike-and-slab smoothbp model
+#'
+#' Re-fits the model with \code{\link{smoothbp_ss}}, replacing any arguments
+#' supplied here with the corresponding values stored in the original fit for
+#' anything left unspecified. Without this method, \code{update()} on a
+#' spike-and-slab fit would fall through to \code{update.smoothbp_fit()} and
+#' silently refit the model without the spike-and-slab structure.
+#'
+#' @param object A \code{smoothbp_ss_fit} object.
+#' @param formula,b0,b1,deltas,omega,rho,data,priors,spike,b1_spike,hierarchical,chains,iter,warmup,seed,step_om,step_rho,target_accept,cores,.verbose
+#'   Replacements for the corresponding arguments of \code{\link{smoothbp_ss}}.
+#'   Any argument not supplied is taken from \code{object}, including the
+#'   original \code{seed} and sampler tuning parameters. For fits saved before
+#'   \code{b1_spike} was stored on the object, it is inferred from whether any
+#'   \code{gamma_b1_} indicator draw ever left the slab (they are frozen at 1
+#'   when \code{b1_spike = FALSE}).
+#' @param ... Ignored.
+#'
+#' @return A new \code{smoothbp_ss_fit} object.
+#' @export
+update.smoothbp_ss_fit <- function(
+    object,
+    formula,
+    b0, b1, deltas, omega, rho,
+    data,
+    priors, spike, b1_spike, hierarchical,
+    chains, iter, warmup, seed,
+    step_om, step_rho, target_accept,
+    cores,
+    .verbose = TRUE,
+    ...
+) {
+  if (missing(formula))      formula      <- object$formula
+  if (missing(b0))           b0           <- object$b0_formula
+  if (missing(b1))           b1           <- object$b1_formula
+  if (missing(deltas))       deltas       <- object$deltas_formula
+  if (missing(omega))        omega        <- object$omega_formula
+  if (missing(rho))          rho          <- object$rho_formula
+  if (missing(data))         data         <- object$data
+  if (missing(priors))       priors       <- object$priors
+  if (missing(spike))        spike        <- object$spike
+  if (missing(hierarchical)) hierarchical <- object$hierarchical
+  if (missing(chains))       chains       <- object$chains
+  if (missing(iter))         iter         <- object$iter
+  if (missing(warmup))       warmup       <- object$warmup
+  if (missing(seed))         seed         <- object$seed
+  if (missing(step_om))        step_om        <- object$step_om
+  if (missing(step_rho))       step_rho       <- object$step_rho
+  if (missing(target_accept))  target_accept  <- object$target_accept
+  if (missing(b1_spike)) {
+    # fits saved before `b1_spike` was stored: the sampler always writes
+    # gamma_b1_ draws, frozen at 1 when b1_spike was FALSE, so infer from
+    # whether any indicator ever left the slab
+    b1_spike <- if (is.null(object$b1_spike)) {
+      dmat <- posterior::as_draws_matrix(object$draws)
+      gb   <- grep("^gamma_b1_", colnames(dmat), value = TRUE)
+      length(gb) > 0L && any(dmat[, gb, drop = FALSE] != 1)
+    } else object$b1_spike
+  }
+  if (missing(cores)) {
+    # fits saved before `cores` was stored on the object return NULL here
+    cores <- if (is.null(object$cores)) getOption("smoothbp.cores", 1L)
+             else object$cores
+  }
+
+  smoothbp_ss(
+    formula       = formula,
+    b0            = b0,
+    b1            = b1,
+    deltas        = deltas,
+    omega         = omega,
+    rho           = rho,
+    data          = data,
+    priors        = priors,
+    spike         = spike,
+    b1_spike      = b1_spike,
+    hierarchical  = hierarchical,
+    chains        = chains,
+    iter          = iter,
+    warmup        = warmup,
+    seed          = seed,
+    step_om       = step_om,
+    step_rho      = step_rho,
+    target_accept = target_accept,
+    cores         = cores,
+    .verbose      = .verbose
   )
 }
