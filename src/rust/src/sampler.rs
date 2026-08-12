@@ -4,7 +4,8 @@ use rand::SeedableRng;
 use rand::Rng;
 use rand_distr::{Normal, Gamma, Distribution};
 
-use crate::model::{ModelData, Priors, State, SpikeSlabConfig, log_truncated_normal_prior, sigmoid};
+use crate::model::{ModelData, Priors, State, SpikeSlabConfig, log_truncated_normal_prior,
+                   log_normal_interval_mass, rtruncnorm, sigmoid, b0_translation_step};
 
 // ---------------------------------------------------------------------------
 // LinearCache: precomputed parts of the mean function for segment HMC steps.
@@ -213,74 +214,125 @@ fn sample_pi(ss: &SpikeSlabConfig, state: &mut State, rng: &mut StdRng) {
     state.pi = x / (x + y);
 }
 
-fn sample_gamma(data: &ModelData, _priors: &Priors, ss: &SpikeSlabConfig, state: &mut State, cache: &LinearCache, rng: &mut StdRng) {
-    let mu_full = state.means(data);
+/// Collapsed (Rao-Blackwellised) spike-and-slab indicator update.
+///
+/// The plug-in Kuo-Mallick update draws each indicator at the CURRENT slab
+/// coefficient.  Under a diffuse slab an excluded coefficient sits wherever the
+/// wide prior put it and fits badly, so it rarely re-enters; an included one is
+/// fitted to the data, so it rarely leaves.  Indicator and coefficient lock
+/// together and gamma's ESS collapses into the tens.
+///
+/// Here the slab coefficient is integrated out analytically before gamma is
+/// drawn, then resampled given the new gamma.  The coefficient block is
+/// conditionally Gaussian, so the marginal likelihood ratio is closed form.
+/// This targets the SAME posterior as the plug-in update; only the mixing
+/// differs, so PIP semantics are unchanged.
+///
+/// Per spike column, with r the residual the column must explain, v its
+/// effective design column, slab N(m0, tau2) truncated to [lb, ub], noise s2:
+///
+///   a = v.v                b = v.r
+///   P = a/s2 + 1/tau2      Q = b/s2 + m0/tau2       M = Q/P
+///   log BF(in : out) = -0.5*ln(tau2*P) - 0.5*m0^2/tau2 + 0.5*Q^2/P
+///                      + log mass_[lb,ub](M, 1/P) - log mass_[lb,ub](m0, tau2)
+///   P(gamma = 1 | rest) = sigmoid( logit(pi) + log BF )
+///
+/// The two mass terms vanish for an unbounded slab and otherwise account for
+/// the truncation exactly: restricting a Gaussian integrand to [lb, ub] just
+/// multiplies it by that Gaussian's mass there, and the prior is renormalised
+/// by its own.  beta is then drawn from the matching truncated normal.
+fn sample_gamma(data: &ModelData, priors: &Priors, ss: &SpikeSlabConfig, state: &mut State, rng: &mut StdRng) {
     let sigma2 = state.sigma * state.sigma;
     let pi = state.pi;
+    let logit_pi = (pi / (1.0 - pi)).ln();
 
-    // Helper to update one gamma
-    let mut update_gamma = |mu_without: &DVector<f64>, x_col: &DVector<f64>, beta: f64, g: &mut bool| {
-        let mu1 = mu_without + x_col * beta;
-        let r0 = &data.y - mu_without;
-        let r1 = &data.y - &mu1;
-        let log_p1 = -0.5 * r1.dot(&r1) / sigma2 + pi.ln();
-        let log_p0 = -0.5 * r0.dot(&r0) / sigma2 + (1.0 - pi).ln();
-        let log_odds = log_p1 - log_p0;
-        let prob = if log_odds.is_nan() { 0.5 } else { sigmoid(log_odds) };
-        *g = rng.gen_bool(prob);
+    let collapsed = |y: &DVector<f64>,
+                     mu_without: &DVector<f64>,
+                     v: &DVector<f64>,
+                     tau2: f64, m0: f64, lb: f64, ub: f64,
+                     rng: &mut StdRng| -> (bool, f64) {
+        let r = y - mu_without;
+        let a = v.dot(v);
+        let b = v.dot(&r);
+        let p = a / sigma2 + 1.0 / tau2;
+        let q = b / sigma2 + m0 / tau2;
+        let m = q / p;
+        let post_sd = (1.0 / p).sqrt();
+        let slab_sd = tau2.sqrt();
+
+        let log_bf = -0.5 * (tau2 * p).ln() - 0.5 * m0 * m0 / tau2 + 0.5 * q * q / p
+            + log_normal_interval_mass(m, post_sd, lb, ub)
+            - log_normal_interval_mass(m0, slab_sd, lb, ub);
+
+        let logit = logit_pi + log_bf;
+        let prob = if logit.is_nan() { 0.5 } else { sigmoid(logit) };
+        let g = rng.gen_bool(prob.clamp(0.0, 1.0));
+        // Excluded: beta is absent from the likelihood, so its full conditional
+        // is the slab prior. Drawing it (rather than freezing it) keeps the
+        // Kuo-Mallick bookkeeping so a re-entry starts from a sensible value.
+        let beta = if g {
+            rtruncnorm(m, post_sd, lb, ub, rng)
+        } else {
+            rtruncnorm(m0, slab_sd, lb, ub, rng)
+        };
+        (g, beta)
     };
 
-    let mut current_mu = mu_full;
+    let mut current_mu = state.means(data);
 
-    // Gamma b1
+    // b1 columns eligible for spike-and-slab
     for j in 0..state.gamma_b1.len() {
         if !ss.b1_spike_mask[j] { continue; }
-        
+
         let x_col = &data.x_b1.column(j);
-        let mut x_eff = x_col.clone_owned();
+        let mut v = x_col.clone_owned();
         if data.n_breakpoints > 0 {
             let om1 = state.omega_vec(0, &data.x_om[0]);
-            for i in 0..data.n { x_eff[i] *= data.tau[i] - om1[i]; }
+            for i in 0..data.n { v[i] *= data.tau[i] - om1[i]; }
         } else {
-            for i in 0..data.n { x_eff[i] *= data.tau[i]; }
+            for i in 0..data.n { v[i] *= data.tau[i]; }
         }
-        
-        let beta_j = state.beta_b1[j];
-        if state.gamma_b1[j] {
-            let mu_without = &current_mu - &x_eff * beta_j;
-            update_gamma(&mu_without, &x_eff, beta_j, &mut state.gamma_b1[j]);
-            if !state.gamma_b1[j] { current_mu = mu_without; }
+
+        let mu_without = if state.gamma_b1[j] {
+            &current_mu - &v * state.beta_b1[j]
         } else {
-            update_gamma(&current_mu, &x_eff, beta_j, &mut state.gamma_b1[j]);
-            if state.gamma_b1[j] { current_mu = &current_mu + &x_eff * beta_j; }
-        }
+            current_mu.clone()
+        };
+        let (g, beta) = collapsed(&data.y, &mu_without, &v,
+                                  priors.b1_sd[j] * priors.b1_sd[j], priors.b1_mean[j],
+                                  priors.b1_lb[j], priors.b1_ub[j], rng);
+        state.gamma_b1[j] = g;
+        state.beta_b1[j] = beta;
+        current_mu = if g { &mu_without + &v * beta } else { mu_without };
     }
 
-    // Gamma deltas
+    // delta columns eligible for spike-and-slab
     for k in 0..data.n_breakpoints {
         let om = state.omega_vec(k, &data.x_om[k]);
         let rho = state.rho_vec(k, &data.x_rho[k]);
         for j in 0..state.gamma_deltas[k].len() {
             if !ss.delta_spike_mask[k][j] { continue; }
-            
+
             let x_col = &data.x_deltas[k].column(j);
-            let mut x_eff = x_col.clone_owned();
+            let mut v = x_col.clone_owned();
             for i in 0..data.n {
                 let di = data.tau[i] - om[i];
                 let si = sigmoid(di * rho[i]);
-                x_eff[i] *= di * si;
+                v[i] *= di * si;
             }
-            let _ = &cache; // suppress unused warning
-            
-            let beta_kj = state.beta_deltas[k][j];
-            if state.gamma_deltas[k][j] {
-                let mu_without = &current_mu - &x_eff * beta_kj;
-                update_gamma(&mu_without, &x_eff, beta_kj, &mut state.gamma_deltas[k][j]);
-                if !state.gamma_deltas[k][j] { current_mu = mu_without; }
+
+            let mu_without = if state.gamma_deltas[k][j] {
+                &current_mu - &v * state.beta_deltas[k][j]
             } else {
-                update_gamma(&current_mu, &x_eff, beta_kj, &mut state.gamma_deltas[k][j]);
-                if state.gamma_deltas[k][j] { current_mu = &current_mu + &x_eff * beta_kj; }
-            }
+                current_mu.clone()
+            };
+            let (g, beta) = collapsed(&data.y, &mu_without, &v,
+                                      priors.delta_sd[k][j] * priors.delta_sd[k][j],
+                                      priors.delta_mean[k][j],
+                                      priors.delta_lb[k][j], priors.delta_ub[k][j], rng);
+            state.gamma_deltas[k][j] = g;
+            state.beta_deltas[k][j] = beta;
+            current_mu = if g { &mu_without + &v * beta } else { mu_without };
         }
     }
 }
@@ -461,6 +513,168 @@ fn sample_random_effects(data: &ModelData, _priors: &Priors, state: &mut State, 
 }
 
 // ---------------------------------------------------------------------------
+// Collapsed (Rao-Blackwellised) change-point update
+//
+// The change-point omega and the slope change delta are strongly dependent:
+// delta's design column is d * s(d; rho), which saturates in d, while b1's
+// column d does not. Updating omega conditional on a single draw of the linear
+// block, and the linear block conditional on a single draw of omega, makes the
+// chain traverse that dependence one axis at a time. The stationary
+// distribution is still correct -- a valid Gibbs sampler is unbiased whatever
+// it conditions on -- but the chain moves slowly along the ridge, and slowly
+// exactly where omega is weakly identified.
+//
+// Note the direction of the collapse. omega cannot be integrated out of the
+// delta update: it enters through d = t - omega and s(d; rho), so that integral
+// has no closed form. The linear block CAN be integrated out of the omega
+// update, because it is conditionally Gaussian. That breaks the same
+// dependence. omega is drawn from its marginal, then the linear block from its
+// full conditional given the new omega, which is a standard collapsed Gibbs
+// block and targets the same posterior.
+// ---------------------------------------------------------------------------
+
+/// Whether every coefficient in the linear block is unbounded.
+///
+/// Integrating the block out requires an untruncated Gaussian prior: a bounded
+/// coefficient turns the marginal likelihood into a multivariate Gaussian box
+/// probability, which has no closed form. Bounded models keep the conditional
+/// update, which is correct, just slower.
+fn linear_block_unbounded(data: &ModelData, priors: &Priors) -> bool {
+    let free = |lo: f64, hi: f64| lo == f64::NEG_INFINITY && hi == f64::INFINITY;
+    if !priors.b0_lb.iter().zip(&priors.b0_ub).all(|(&l, &u)| free(l, u)) { return false; }
+    if !priors.b1_lb.iter().zip(&priors.b1_ub).all(|(&l, &u)| free(l, u)) { return false; }
+    for k in 0..data.n_breakpoints {
+        if !priors.delta_lb[k].iter().zip(&priors.delta_ub[k]).all(|(&l, &u)| free(l, u)) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Negative log marginal likelihood with the whole linear block (b0, b1, every
+/// delta) integrated out at the supplied change-point values, together with its
+/// derivative with respect to each observation's omega_k.
+///
+///   P = X'X/s2 + V^-1     Q = X'y~/s2 + V^-1 m     M = P^-1 Q
+///   -log p(y~ | omega) = 0.5 log|P| - 0.5 Q'M      (+ terms free of omega)
+///
+/// Observation i contributes row xi_i to dX/d(omega_i), so with r = y~ - X M:
+///
+///   d/d(omega_i) = [ X_i' P^-1 xi_i - (xi_i' M) r_i ] / s2
+///
+/// The caller maps that to the omega coefficients by the chain rule, since
+/// d(omega_i)/d(q_j) = x_om[i, j].
+fn collapsed_omega_energy(
+    data: &ModelData,
+    priors: &Priors,
+    state: &State,
+    k: usize,
+    om_k: &DVector<f64>,
+    y_tilde: &DVector<f64>,
+    sigma2: f64,
+) -> (f64, Vec<f64>) {
+    let n = data.n;
+    let p_b0 = data.x_b0.ncols();
+    let p_b1 = data.x_b1.ncols();
+    let mut p_total = p_b0 + p_b1;
+    for kk in 0..data.n_breakpoints { p_total += data.x_deltas[kk].ncols(); }
+
+    let mut x = DMatrix::<f64>::zeros(n, p_total);
+    // xi holds dX/d(omega_k) row-wise, in the same column layout as x.
+    let mut xi = DMatrix::<f64>::zeros(n, p_total);
+    let mut prec_prior = DVector::<f64>::zeros(p_total);
+    let mut mu_prior = DVector::<f64>::zeros(p_total);
+
+    // b0: no change-point dependence at all.
+    x.view_mut((0, 0), (n, p_b0)).copy_from(&data.x_b0);
+    for j in 0..p_b0 {
+        prec_prior[j] = 1.0 / (priors.b0_sd[j] * priors.b0_sd[j]);
+        mu_prior[j] = priors.b0_mean[j];
+    }
+
+    // b1 is centred at the FIRST change-point, so it depends on omega only when
+    // k == 0, and then linearly: d/d(omega) of (t - omega) is -1.
+    let om1: DVector<f64> = if data.n_breakpoints > 0 {
+        if k == 0 { om_k.clone() } else { state.omega_vec(0, &data.x_om[0]) }
+    } else {
+        DVector::zeros(n)
+    };
+    let b1_is_active = data.n_breakpoints > 0 && k == 0;
+    for i in 0..n {
+        let scale = if data.n_breakpoints > 0 { data.tau[i] - om1[i] } else { data.tau[i] };
+        for j in 0..p_b1 {
+            if !state.gamma_b1[j] { continue; }
+            x[(i, p_b0 + j)] = data.x_b1[(i, j)] * scale;
+            if b1_is_active { xi[(i, p_b0 + j)] = -data.x_b1[(i, j)]; }
+        }
+    }
+    for j in 0..p_b1 {
+        prec_prior[p_b0 + j] = 1.0 / (priors.b1_sd[j] * priors.b1_sd[j]);
+        mu_prior[p_b0 + j] = priors.b1_mean[j];
+    }
+
+    // delta blocks: only block k moves with the proposal.
+    let mut offset = p_b0 + p_b1;
+    for kk in 0..data.n_breakpoints {
+        let pk = data.x_deltas[kk].ncols();
+        let om = if kk == k { om_k.clone() } else { state.omega_vec(kk, &data.x_om[kk]) };
+        let rho = state.rho_vec(kk, &data.x_rho[kk]);
+        for i in 0..n {
+            let di = data.tau[i] - om[i];
+            let si = sigmoid(di * rho[i]);
+            let ds = di * si;
+            // d(d*s)/d(omega) = -(s + d*rho*s*(1-s))
+            let dds = -(si + di * rho[i] * si * (1.0 - si));
+            for j in 0..pk {
+                if !state.gamma_deltas[kk][j] { continue; }
+                x[(i, offset + j)] = data.x_deltas[kk][(i, j)] * ds;
+                if kk == k { xi[(i, offset + j)] = data.x_deltas[kk][(i, j)] * dds; }
+            }
+        }
+        for j in 0..pk {
+            prec_prior[offset + j] = 1.0 / (priors.delta_sd[kk][j] * priors.delta_sd[kk][j]);
+            mu_prior[offset + j] = priors.delta_mean[kk][j];
+        }
+        offset += pk;
+    }
+
+    let xt = x.transpose();
+    let mut precision = &xt * &x / sigma2;
+    for j in 0..p_total { precision[(j, j)] += prec_prior[j]; }
+
+    let chol = match precision.clone().cholesky() {
+        Some(c) => c,
+        // Numerically indefinite proposals are rejected by returning +inf energy
+        // with a zero gradient, exactly as an out-of-bounds proposal is.
+        None => return (f64::INFINITY, vec![0.0; n]),
+    };
+
+    let q_vec = &xt * y_tilde / sigma2 + prec_prior.component_mul(&mu_prior);
+    let m_vec = chol.solve(&q_vec);
+    let p_inv = chol.inverse();
+
+    let log_det_p: f64 = 2.0 * chol.l().diagonal().iter().map(|v| v.ln()).sum::<f64>();
+    let u = 0.5 * log_det_p - 0.5 * q_vec.dot(&m_vec);
+
+    let r = y_tilde - &x * &m_vec;
+    let mut grad_om = vec![0.0f64; n];
+    let mut xi_i = DVector::<f64>::zeros(p_total);
+    for i in 0..n {
+        for j in 0..p_total { xi_i[j] = xi[(i, j)]; }
+        let pinv_xi = &p_inv * &xi_i;
+        let mut quad = 0.0;
+        let mut lin = 0.0;
+        for j in 0..p_total {
+            quad += x[(i, j)] * pinv_xi[j];
+            lin += xi_i[j] * m_vec[j];
+        }
+        grad_om[i] = (quad - lin * r[i]) / sigma2;
+    }
+
+    (u, grad_om)
+}
+
+// ---------------------------------------------------------------------------
 // HMC Steps for Omega and Rho
 // ---------------------------------------------------------------------------
 
@@ -484,12 +698,44 @@ fn hmc_step_om(
 
     let sigma = state.sigma;
     let mu_base = cache.mu_without_segment(data, state, k);
-    
+
     // Joint logic for b1 centering and delta segment
     let is_om1 = k == 0 && data.n_breakpoints > 0;
-    
+
+    // Collapsed update where the linear block is unbounded; otherwise fall back
+    // to conditioning on the current coefficients.
+    let collapsed = linear_block_unbounded(data, priors);
+    let sigma2 = sigma * sigma;
+    let mut y_tilde = data.y.clone();
+    if data.n_groups_b0 > 0 {
+        for i in 0..data.n {
+            let g = data.group_b0[i];
+            if g >= 0 { y_tilde[i] -= state.u_b0[g as usize]; }
+        }
+    }
+
     let energy_fn = |q: &DVector<f64>| -> (f64, DVector<f64>) {
         let om_k = &data.x_om[k] * q;
+
+        if collapsed {
+            let (u_ll, dom) =
+                collapsed_omega_energy(data, priors, state, k, &om_k, &y_tilde, sigma2);
+            let lp = log_truncated_normal_prior(
+                q.as_slice(), &priors.om_mean[k], &priors.om_sd[k],
+                &priors.om_lb[k], &priors.om_ub[k]);
+            if !u_ll.is_finite() || !lp.is_finite() {
+                return (f64::INFINITY, DVector::<f64>::zeros(p));
+            }
+            let mut grad = DVector::<f64>::zeros(p);
+            for i in 0..data.n {
+                for j in 0..p { grad[j] += dom[i] * data.x_om[k][(i, j)]; }
+            }
+            for j in 0..p {
+                grad[j] += (q[j] - priors.om_mean[k][j]) / (priors.om_sd[k][j] * priors.om_sd[k][j]);
+            }
+            return (u_ll - lp, grad);
+        }
+
         let rho_k = state.rho_vec(k, &data.x_rho[k]);
         let delta_k = &cache.delta_vals[k];
         
@@ -680,10 +926,26 @@ pub fn run_chain(
 
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_random_effects(data, priors, &mut state, &mut rng); }
+        // Step along the (b0, u) ridge. Only b0 + u_j is identified within a
+        // group, so the two conjugate blocks above cannot traverse it on their
+        // own; this move is likelihood-invariant and accepted outright.
+        if data.n_groups_b0 > 0 { b0_translation_step(data, priors, &mut state, &mut rng); }
         
         let cache = LinearCache::build(&state, data);
         for k in 0..data.n_breakpoints {
             hmc_step_om(data, priors, &mut state, k, &cache, &mut adapt_om[k], &mut rng);
+        }
+
+        // Redraw the linear block at the new omega before rho conditions on it.
+        // The collapsed omega update deliberately leaves beta untouched, so
+        // without this rho would be fitted against coefficients belonging to the
+        // previous change-point. That mismatch drives the chain onto the
+        // degenerate rho -> 0 ridge, where the transition weight flattens to a
+        // constant and delta trades off against the baseline slope.
+        sample_linear_coefs(data, priors, &mut state, &mut rng);
+
+        let cache = LinearCache::build(&state, data);
+        for k in 0..data.n_breakpoints {
             hmc_step_rho(data, priors, &mut state, k, &cache, &mut adapt_rho[k], &mut rng);
         }
 
@@ -744,14 +1006,30 @@ pub fn run_chain_ss(
 
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         if data.n_groups_b0 > 0 { sample_random_effects(data, priors, &mut state, &mut rng); }
+        // Step along the (b0, u) ridge. Only b0 + u_j is identified within a
+        // group, so the two conjugate blocks above cannot traverse it on their
+        // own; this move is likelihood-invariant and accepted outright.
+        if data.n_groups_b0 > 0 { b0_translation_step(data, priors, &mut state, &mut rng); }
         
         let cache = LinearCache::build(&state, data);
         for k in 0..data.n_breakpoints {
             hmc_step_om(data, priors, &mut state, k, &cache, &mut adapt_om[k], &mut rng);
+        }
+
+        // Redraw the linear block at the new omega before rho conditions on it.
+        // The collapsed omega update deliberately leaves beta untouched, so
+        // without this rho would be fitted against coefficients belonging to the
+        // previous change-point. That mismatch drives the chain onto the
+        // degenerate rho -> 0 ridge, where the transition weight flattens to a
+        // constant and delta trades off against the baseline slope.
+        sample_linear_coefs(data, priors, &mut state, &mut rng);
+
+        let cache = LinearCache::build(&state, data);
+        for k in 0..data.n_breakpoints {
             hmc_step_rho(data, priors, &mut state, k, &cache, &mut adapt_rho[k], &mut rng);
         }
 
-        sample_gamma(data, priors, ss, &mut state, &cache, &mut rng);
+        sample_gamma(data, priors, ss, &mut state, &mut rng);
         sample_linear_coefs(data, priors, &mut state, &mut rng);
         if learn_pi { sample_pi(ss, &mut state, &mut rng); }
         sample_sigma(data, priors, &mut state, &mut rng);
@@ -841,5 +1119,277 @@ fn init_state(data: &ModelData, priors: &Priors, rng: &mut StdRng) -> State {
         sigma_re_om:     vec![1.0; data.n_breakpoints],
         sigma_re_b1:     1.0,
         sigma_re_deltas: vec![1.0; data.n_breakpoints],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for the collapsed change-point energy
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod collapsed_tests {
+    use super::*;
+
+    fn toy(n: usize) -> (ModelData, Priors, State) {
+        let tau: Vec<f64> = (0..n).map(|i| -5.0 + 16.0 * (i as f64) / ((n - 1) as f64)).collect();
+        // Deterministic pseudo-data: no RNG, so the test is reproducible.
+        let y: Vec<f64> = tau.iter().enumerate()
+            .map(|(i, &t)| {
+                let d = t - 2.5;
+                3.0 + 0.2 * d + 1.4 * d * sigmoid(3.0 * d) + 0.1 * ((i * 37 % 11) as f64 - 5.0)
+            }).collect();
+
+        let data = ModelData {
+            y: DVector::from_vec(y),
+            tau: DVector::from_vec(tau),
+            x_b0: DMatrix::from_element(n, 1, 1.0),
+            x_b1: DMatrix::from_element(n, 1, 1.0),
+            x_deltas: vec![DMatrix::from_element(n, 1, 1.0)],
+            x_om: vec![DMatrix::from_element(n, 1, 1.0)],
+            x_rho: vec![DMatrix::from_element(n, 1, 1.0)],
+            group_b0: vec![],
+            n_groups_b0: 0,
+            n,
+            n_breakpoints: 1,
+            re_mask_om: vec![vec![false]],
+            re_mask_b1: vec![false],
+            re_mask_deltas: vec![vec![false]],
+            group_re: vec![-1; n],
+            n_subjects: 0,
+        };
+
+        let priors = Priors {
+            b0_mean: vec![3.0], b0_sd: vec![2.0],
+            b0_lb: vec![f64::NEG_INFINITY], b0_ub: vec![f64::INFINITY],
+            b1_mean: vec![0.0], b1_sd: vec![0.5],
+            b1_lb: vec![f64::NEG_INFINITY], b1_ub: vec![f64::INFINITY],
+            delta_mean: vec![vec![0.0]], delta_sd: vec![vec![1.5]],
+            delta_lb: vec![vec![f64::NEG_INFINITY]], delta_ub: vec![vec![f64::INFINITY]],
+            om_mean: vec![vec![2.0]], om_sd: vec![vec![1.0]],
+            om_lb: vec![vec![-5.0]], om_ub: vec![vec![11.0]],
+            rho_mean: vec![vec![3.0]], rho_sd: vec![vec![0.0]],
+            rho_lb: vec![vec![0.0]], rho_ub: vec![vec![f64::INFINITY]],
+            sigma_shape: 2.0, sigma_scale: 1.0,
+            sigma_u_shape: 1.0, sigma_u_scale: 1.0,
+            sigma_re_om_shape: 1.0, sigma_re_om_scale: 1.0,
+            sigma_re_b1_shape: 1.0, sigma_re_b1_scale: 1.0,
+            sigma_re_deltas_shape: 1.0, sigma_re_deltas_scale: 1.0,
+            p_b0: 1, p_b1: 1, p_deltas: vec![1], p_om: vec![1], p_rho: vec![1],
+        };
+
+        let state = State {
+            beta_b0: DVector::from_vec(vec![3.0]),
+            u_b0: DVector::zeros(0),
+            beta_b1: DVector::from_vec(vec![0.2]),
+            beta_deltas: vec![DVector::from_vec(vec![1.4])],
+            beta_om: vec![DVector::from_vec(vec![2.5])],
+            beta_rho: vec![DVector::from_vec(vec![3.0])],
+            sigma: 0.4, sigma_u: 1.0,
+            gamma_b1: vec![true],
+            gamma_deltas: vec![vec![true]],
+            pi: 0.5,
+            sigma_re_om: vec![1.0], sigma_re_b1: 1.0, sigma_re_deltas: vec![1.0],
+        };
+        (data, priors, state)
+    }
+
+    /// The analytic derivative of the collapsed energy must match central
+    /// finite differences. A wrong gradient would not bias the chain -- the
+    /// Metropolis correction uses the true energy -- but it would silently
+    /// destroy the acceptance rate, which is the whole point of the change.
+    #[test]
+    fn collapsed_gradient_matches_finite_differences() {
+        let n = 14;
+        let (data, priors, state) = toy(n);
+        let sigma2 = state.sigma * state.sigma;
+        let y_tilde = data.y.clone();
+
+        for &om0 in &[0.5_f64, 2.5, 4.0] {
+            let om_k = DVector::from_element(n, om0);
+            let (_, grad) = collapsed_omega_energy(
+                &data, &priors, &state, 0, &om_k, &y_tilde, sigma2);
+
+            // Perturb one observation's omega at a time.
+            let h = 1e-6;
+            for i in 0..n {
+                let mut up = om_k.clone(); up[i] += h;
+                let mut dn = om_k.clone(); dn[i] -= h;
+                let (u_up, _) = collapsed_omega_energy(&data, &priors, &state, 0, &up, &y_tilde, sigma2);
+                let (u_dn, _) = collapsed_omega_energy(&data, &priors, &state, 0, &dn, &y_tilde, sigma2);
+                let fd = (u_up - u_dn) / (2.0 * h);
+                let scale = fd.abs().max(grad[i].abs()).max(1.0);
+                assert!((fd - grad[i]).abs() / scale < 1e-5,
+                        "omega={om0} obs {i}: analytic {} vs finite difference {}", grad[i], fd);
+            }
+        }
+    }
+
+    /// The collapsed energy must differ from the direct Gaussian marginal
+    /// likelihood, N(y; X m, s2 I + X V X'), only by a constant free of omega.
+    /// This checks the p x p identity used in the implementation against the
+    /// n x n form it is derived from.
+    #[test]
+    fn collapsed_energy_matches_direct_marginal_likelihood() {
+        let n = 14;
+        let (data, priors, state) = toy(n);
+        let sigma2 = state.sigma * state.sigma;
+        let y_tilde = data.y.clone();
+
+        // Direct n x n form at a given omega.
+        let direct = |om: f64| -> f64 {
+            let mut x = DMatrix::<f64>::zeros(n, 3);
+            for i in 0..n {
+                let d = data.tau[i] - om;
+                let s = sigmoid(d * 3.0);
+                x[(i, 0)] = 1.0;
+                x[(i, 1)] = d;
+                x[(i, 2)] = d * s;
+            }
+            let v = DMatrix::from_diagonal(&DVector::from_vec(vec![4.0, 0.25, 2.25]));
+            let m = DVector::from_vec(vec![3.0, 0.0, 0.0]);
+            let sig = &x * &v * x.transpose() + DMatrix::identity(n, n) * sigma2;
+            let resid = &y_tilde - &x * &m;
+            let chol = sig.clone().cholesky().unwrap();
+            let log_det = 2.0 * chol.l().diagonal().iter().map(|z| z.ln()).sum::<f64>();
+            let quad = resid.dot(&chol.solve(&resid));
+            -0.5 * (log_det + quad)          // drops the omega-free -n/2 log(2 pi)
+        };
+
+        let oms = [0.5_f64, 2.5, 4.0, 6.0];
+        let mut diffs = Vec::new();
+        for &om in &oms {
+            let (u, _) = collapsed_omega_energy(
+                &data, &priors, &state, 0, &DVector::from_element(n, om), &y_tilde, sigma2);
+            // U = -log marginal + C, so U + direct should be the same constant.
+            diffs.push(u + direct(om));
+        }
+        let first = diffs[0];
+        for (i, d) in diffs.iter().enumerate() {
+            assert!((d - first).abs() < 1e-8,
+                    "omega-dependence mismatch at omega={}: {} vs {}", oms[i], d, first);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for the (b0, u) translation move
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod b0_translation_tests {
+    use super::*;
+    use crate::model::b0_translation_step;
+
+    /// n observations across `n_groups` groups, with an optional extra b0
+    /// covariate column and an optional ungrouped observation.
+    fn toy(n_groups: usize, per_group: usize, covariate: bool, orphan: bool)
+        -> (ModelData, Priors, State) {
+        let n = n_groups * per_group;
+        let mut x_b0 = DMatrix::<f64>::zeros(n, if covariate { 2 } else { 1 });
+        for i in 0..n {
+            x_b0[(i, 0)] = 1.0;
+            if covariate { x_b0[(i, 1)] = (i % 3) as f64; }
+        }
+        let mut group: Vec<i32> = (0..n).map(|i| (i / per_group) as i32).collect();
+        if orphan { group[0] = -1; }
+
+        let tau: Vec<f64> = (0..n).map(|i| -4.0 + 12.0 * (i % per_group) as f64
+                                             / (per_group - 1) as f64).collect();
+        let y: Vec<f64> = tau.iter().map(|&t| 3.0 + 0.4 * t).collect();
+
+        let data = ModelData {
+            y: DVector::from_vec(y),
+            tau: DVector::from_vec(tau),
+            x_b0,
+            x_b1: DMatrix::from_element(n, 1, 1.0),
+            x_deltas: vec![DMatrix::from_element(n, 1, 1.0)],
+            x_om: vec![DMatrix::from_element(n, 1, 1.0)],
+            x_rho: vec![DMatrix::from_element(n, 1, 1.0)],
+            group_b0: group,
+            n_groups_b0: n_groups,
+            n,
+            n_breakpoints: 1,
+            re_mask_om: vec![vec![false]],
+            re_mask_b1: vec![false],
+            re_mask_deltas: vec![vec![false]],
+            group_re: vec![-1; n],
+            n_subjects: 0,
+        };
+
+        let p_b0 = data.x_b0.ncols();
+        let priors = Priors {
+            b0_mean: vec![3.0; p_b0], b0_sd: vec![2.0; p_b0],
+            b0_lb: vec![f64::NEG_INFINITY; p_b0], b0_ub: vec![f64::INFINITY; p_b0],
+            b1_mean: vec![0.0], b1_sd: vec![1.0],
+            b1_lb: vec![f64::NEG_INFINITY], b1_ub: vec![f64::INFINITY],
+            delta_mean: vec![vec![0.0]], delta_sd: vec![vec![1.5]],
+            delta_lb: vec![vec![f64::NEG_INFINITY]], delta_ub: vec![vec![f64::INFINITY]],
+            om_mean: vec![vec![2.0]], om_sd: vec![vec![1.0]],
+            om_lb: vec![vec![-9.0]], om_ub: vec![vec![12.0]],
+            rho_mean: vec![vec![3.0]], rho_sd: vec![vec![0.0]],
+            rho_lb: vec![vec![0.0]], rho_ub: vec![vec![f64::INFINITY]],
+            sigma_shape: 2.0, sigma_scale: 1.0,
+            sigma_u_shape: 1.0, sigma_u_scale: 1.0,
+            sigma_re_om_shape: 1.0, sigma_re_om_scale: 1.0,
+            sigma_re_b1_shape: 1.0, sigma_re_b1_scale: 1.0,
+            sigma_re_deltas_shape: 1.0, sigma_re_deltas_scale: 1.0,
+            p_b0, p_b1: 1, p_deltas: vec![1], p_om: vec![1], p_rho: vec![1],
+        };
+
+        let beta_b0 = if covariate { vec![3.0, 0.25] } else { vec![3.0] };
+        let state = State {
+            beta_b0: DVector::from_vec(beta_b0),
+            u_b0: DVector::from_iterator(n_groups,
+                    (0..n_groups).map(|j| 0.4 * (j as f64) - 0.6)),
+            beta_b1: DVector::from_vec(vec![0.3]),
+            beta_deltas: vec![DVector::from_vec(vec![1.2])],
+            beta_om: vec![DVector::from_vec(vec![2.0])],
+            beta_rho: vec![DVector::from_vec(vec![3.0])],
+            sigma: 0.4, sigma_u: 0.9,
+            gamma_b1: vec![true],
+            gamma_deltas: vec![vec![true]],
+            pi: 0.5,
+            sigma_re_om: vec![1.0], sigma_re_b1: 1.0, sigma_re_deltas: vec![1.0],
+        };
+        (data, priors, state)
+    }
+
+    /// The move is accepted with probability one, so it must not touch the mean
+    /// function at all. Anything else silently changes the fit.
+    #[test]
+    fn translation_leaves_the_mean_function_unchanged() {
+        let mut rng = StdRng::seed_from_u64(20260812);
+        for &covariate in &[false, true] {
+            let (data, priors, mut state) = toy(5, 6, covariate, false);
+            let mu_before = state.means(&data);
+            let b0_before = state.beta_b0[0];
+            let mut moved = false;
+            for _ in 0..25 {
+                b0_translation_step(&data, &priors, &mut state, &mut rng);
+                let mu_after = state.means(&data);
+                for i in 0..data.n {
+                    assert!((mu_before[i] - mu_after[i]).abs() < 1e-10,
+                            "covariate={covariate} obs {i}: mean moved by {}",
+                            mu_before[i] - mu_after[i]);
+                }
+                if (state.beta_b0[0] - b0_before).abs() > 1e-8 { moved = true; }
+            }
+            assert!(moved, "covariate={covariate}: the move never actually moved b0");
+        }
+    }
+
+    /// If any observation has no group, the -c does not cancel the +c, so the
+    /// move must decline to act rather than corrupt the fit.
+    #[test]
+    fn translation_is_skipped_when_invariance_would_fail() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let (data, priors, mut state) = toy(5, 6, false, true);
+        let b0_before = state.beta_b0[0];
+        let u_before = state.u_b0.clone();
+        for _ in 0..25 {
+            b0_translation_step(&data, &priors, &mut state, &mut rng);
+        }
+        assert_eq!(state.beta_b0[0], b0_before, "b0 changed despite an ungrouped observation");
+        assert_eq!(state.u_b0, u_before, "u changed despite an ungrouped observation");
     }
 }

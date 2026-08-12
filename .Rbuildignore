@@ -29,6 +29,11 @@
 ^tools/part3_results$
 ^tools/part3_validation\.R$
 ^HANDOFF_0\.2\.4_release\.md$
+^HANDOFF_smoothbp\.md$
+^tools/collapsed_gamma_patch\.rs$
 ^repomix-output-ABindoff-smoothbp\.xml$
 ^smoothbp_manuscript\.
 \.tar\.gz$
+^\.Renviron$
+^src/rust/\.repro$
+^\.repro$

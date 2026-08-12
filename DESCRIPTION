@@ -1,7 +1,7 @@
 Package: smoothbp
 Title: Hierarchical Piecewise Regression with Smoothed Change-Points
-Version: 0.2.7
-Date: 2026-06-15
+Version: 0.2.8
+Date: 2026-08-11
 Authors@R:
     person("Aidan D", "Bindoff", , "aidan.bindoff@utas.edu.au", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0002-0943-2702"))
@@ -13,14 +13,14 @@ Description: Fits Bayesian hierarchical piecewise regression models with
     regularization is supported for selecting the number of breakpoints. 
     Posterior inference uses a Metropolis-within-Gibbs sampler implemented 
     in 'Rust' for speed. Methods are based on the smooth transition 
-    piecewise regression model of Bacon and Watts (1971) <doi:10.2307/2334389> 
-    and variable selection spike-and-slab priors of Kuo and Mallick (1998) 
-    <https://www.jstor.org/stable/25053023>.
+    piecewise regression model of Bacon and Watts (1971) <doi:10.2307/2334389>
+    and variable selection spike-and-slab priors of Kuo and Mallick (1998)
+    <https://www.jstor.org/stable/25053023>. Methods are described in
+    Bindoff (2026) <doi:10.48550/arXiv.2606.19044>.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Language: en-GB
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
 Config/rextendr/version: 0.5.0
 SystemRequirements: Cargo (Rust's package manager), rustc >= 1.65.0
 Depends:
@@ -46,5 +46,6 @@ Suggests:
     rjags
 Config/testthat/edition: 3
 VignetteBuilder: knitr
-URL: https://github.com/ABindoff/smoothbp
+URL: https://github.com/ABindoff/smoothbp, https://doi.org/10.48550/arXiv.2606.19044
 BugReports: https://github.com/ABindoff/smoothbp/issues
+Config/roxygen2/version: 8.0.0
