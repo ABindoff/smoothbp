@@ -107,7 +107,13 @@ fit_sbp <- smoothbp(
     b0      = prior_normal(0, 10),
     b1      = prior_normal(0, 2),
     omega   = list(prior_normal(3, 2, lb = 0, ub = max(dat$tau))),
-    rho     = list(prior_normal(3, 2, lb = 0))
+    rho     = list(prior_normal(3, 2, lb = 0)),
+    # Diffuse variance priors, matched (as closely as the two parameterisations
+    # allow) to the brms half-t below. smoothbp's variance update is conjugate,
+    # so the family must be inverse-gamma; (0.001, 0.001) makes it effectively
+    # non-informative for the well-identified residual SD.
+    sigma   = prior_invgamma(0.001, 0.001),
+    sigma_u = prior_invgamma(0.001, 0.001)
   ),
   chains  = 4L, iter = 2000L, warmup = 1000L,
   seed    = 31L, .verbose = FALSE
@@ -143,7 +149,14 @@ priors_brms <- c(
   brms::prior(normal(0, 2),  nlpar = "b2"),
   brms::prior_string("normal(3, 2)", nlpar = "omega",
                      lb = 0, ub = ub_omega),
-  brms::prior(normal(3, 2),  nlpar = "rho",   lb = 0)
+  brms::prior(normal(3, 2),  nlpar = "rho",   lb = 0),
+  # Diffuse variance priors, matched to smoothbp's near-non-informative
+  # inverse-gamma above. A wide half-t leaves the residual SD likelihood-
+  # dominated; the group SD remains weakly identified with only 25 subjects.
+  # In a non-linear model the group SD belongs to its nlpar, so `nlpar = "b0"`
+  # is required (a bare `class = "sd"` matches no parameter).
+  brms::prior(student_t(3, 0, 10), class = "sigma"),
+  brms::prior(student_t(3, 0, 10), class = "sd", nlpar = "b0")
 )
 
 # Initialise every chain near the prior mean.  Without this, Stan's default
@@ -240,7 +253,7 @@ draws_long %>%
 ## Overlaid marginal posteriors
 
 ```{r overlay, eval = have_brms, fig.height = 5}
-ggplot(draws_long, aes(x = value, fill = package, colour = package)) +
+p_overlay <- ggplot(draws_long, aes(x = value, fill = package, colour = package)) +
   geom_density(alpha = 0.35) +
   facet_wrap(~ parameter, scales = "free", ncol = 3) +
   scale_fill_manual(values  = c(smoothbp = "#1f77b4", brms = "#d62728")) +
@@ -255,6 +268,84 @@ ggplot(draws_long, aes(x = value, fill = package, colour = package)) +
   ) +
   theme_minimal(base_size = 11) +
   theme(legend.position = "bottom")
+p_overlay
+```
+
+## Distributional agreement (1-Wasserstein)
+
+Agreement of posterior *means* is necessary but not sufficient: two
+posteriors can share a mean yet differ in spread or shape. We therefore
+compare the full marginal distributions with the 1-Wasserstein
+(earth-mover's) distance, standardised by the pooled posterior SD so it is
+scale-free. As a Monte Carlo reference we also report the distance between
+two independent smoothbp runs (seeds 31 and 32); cross-package distances of
+the same order as this within-sampler reference indicate marginals that are
+indistinguishable up to Monte Carlo error.
+
+All priors, including the variance components, are matched as closely as the
+two parameterisations allow. smoothbp's variance update is conjugate, so its
+family must be inverse-gamma; here it is made near-non-informative
+(`prior_invgamma(0.001, 0.001)`) and brms is given a correspondingly wide
+half-t. Under matched diffuse priors the residual SD `sigma` is
+likelihood-dominated and should agree to Monte Carlo error. The random-effect
+SD `sigma_u` is only weakly identified by 25 subjects, so any small residual
+cross-package difference there reflects that weak identification (and the
+unavoidable inverse-gamma-versus-half-t tail difference) rather than a
+discrepancy between the samplers.
+
+```{r w1, eval = have_brms}
+# standardised 1-D 1-Wasserstein distance between two samples
+w1_std <- function(x, y) {
+  p  <- ppoints(1000)
+  qx <- quantile(x, p, names = FALSE, type = 8)
+  qy <- quantile(y, p, names = FALSE, type = 8)
+  mean(abs(qx - qy)) / stats::sd(c(x, y))
+}
+
+# second smoothbp run (different seed) as a within-sampler Monte Carlo reference
+fit_sbp_b <- smoothbp(
+  formula = y ~ tau,
+  b0      = ~ 1 + (1 | subject),
+  b1      = ~ 1,
+  deltas  = list(~ 1),
+  omega   = list(~ 1),
+  rho     = list(~ 1),
+  data    = dat,
+  priors  = smoothbp_priors(
+    b0      = prior_normal(0, 10),
+    b1      = prior_normal(0, 2),
+    omega   = list(prior_normal(3, 2, lb = 0, ub = max(dat$tau))),
+    rho     = list(prior_normal(3, 2, lb = 0)),
+    sigma   = prior_invgamma(0.001, 0.001),
+    sigma_u = prior_invgamma(0.001, 0.001)
+  ),
+  chains  = 4L, iter = 2000L, warmup = 1000L,
+  seed    = 32L, .verbose = FALSE
+)
+
+sbp_a  <- posterior::as_draws_df(fit_sbp$draws)[, sbp_names]
+sbp_b  <- posterior::as_draws_df(fit_sbp_b$draws)[, sbp_names]
+brms_w <- as.data.frame(posterior::as_draws_df(fit_brms))[, brms_names]
+colnames(brms_w) <- sbp_names
+
+data.frame(
+  parameter = sbp_names,
+  W1_cross  = vapply(sbp_names, function(nm) w1_std(sbp_a[[nm]], brms_w[[nm]]), numeric(1)),
+  W1_null   = vapply(sbp_names, function(nm) w1_std(sbp_a[[nm]], sbp_b[[nm]]),  numeric(1)),
+  row.names = NULL
+) |>
+  knitr::kable(digits = 3,
+    caption = "Standardised 1-Wasserstein distance (pooled-SD units): smoothbp vs
+               brms (W1_cross) and a within-sampler reference from two smoothbp
+               seeds (W1_null). Cross comparable to null => indistinguishable up
+               to Monte Carlo error.")
+```
+
+To export the overlay figure for the manuscript, run (outside CRAN):
+
+```{r overlay-export, eval = FALSE}
+ggplot2::ggsave("figure_overlay_s1.png", p_overlay,
+                width = 7, height = 5, dpi = 150)
 ```
 
 ## Effective sample size per second

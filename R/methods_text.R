@@ -511,6 +511,12 @@ model_methods.smoothbp_fit <- function(object,
     ),
     "",
     paste0(
+      "Bindoff, A. D. (2026). smoothbp: Fast Bayesian Hierarchical Piecewise ",
+      "Regression with Smoothed Transitions and Spike-and-Slab Model Selection. ",
+      "arXiv:2606.19044. doi:10.48550/arXiv.2606.19044"
+    ),
+    "",
+    paste0(
       "Bindoff, A. D. (2026). smoothbp: Hierarchical Piecewise Regression with ",
       "Smoothed Change-Points. R package version ", pkg_version, ". ",
       "https://github.com/ABindoff/smoothbp"
